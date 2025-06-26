@@ -38,5 +38,5 @@ pub const UDP_PACKET_LIMIT: usize = 1400;
 pub const DEFAULT_MESSAGE_SIZE_LIMIT: usize = 1024 * 1024; // 1 MiB limit for incoming messages
 
 pub const HANDSHAKE_START_SIZE: usize = 1 + 2 + 2 + 16; // header, qunet major, frag limit, qdb hash
-pub const HANDSHAKE_HEADER_SIZE: usize = 9; // connection ID (u64) + qdb presence (bool)
+pub const HANDSHAKE_HEADER_SIZE: usize = 1 + 9; // qunet header, connection ID (u64) + qdb presence (bool)
 pub const HANDSHAKE_HEADER_SIZE_WITH_QDB: usize = HANDSHAKE_HEADER_SIZE + 16; // four u32s: uncompressed size, qdb size, chunk offset, chunk size

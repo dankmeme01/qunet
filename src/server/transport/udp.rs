@@ -9,7 +9,7 @@ use crate::{
     server::{
         Server,
         message::{QunetMessage, channel::RawMessageReceiver},
-        protocol::HANDSHAKE_HEADER_SIZE_WITH_QDB,
+        protocol::{HANDSHAKE_HEADER_SIZE_WITH_QDB, MSG_HANDSHAKE_FINISH},
         transport::{ClientTransportData, TransportError},
     },
 };
@@ -90,6 +90,7 @@ impl ClientUdpTransport {
         let mut header_buf = [0u8; HANDSHAKE_HEADER_SIZE_WITH_QDB];
         let mut header_writer = ByteWriter::new(&mut header_buf);
 
+        header_writer.write_u8(MSG_HANDSHAKE_FINISH);
         header_writer.write_u64(transport_data.connection_id);
         header_writer.write_bool(qdb_data.is_some());
 
