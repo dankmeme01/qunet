@@ -1,0 +1,31 @@
+[package]
+name = "qunet"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+blake3 = "1.8.2"
+flume = { version = "0.11.1", features = ["async"] }
+futures = "0.3.31"
+hex = "0.4.3"
+libc = "0.2.174"
+nohash-hasher = "0.2.0"
+num-derive = "0.4.2"
+num-traits = "0.2.19"
+parking_lot = "0.12.4"
+rand = "0.9.1"
+s2n-quic = "1.59.0"
+socket2 = "0.5.10"
+thiserror = "2.0.12"
+tokio = { version = "1.45.1", features = [
+    "io-util",
+    "net",
+    "rt",
+    "fs",
+    "signal",
+    "time",
+    "sync",
+    "parking_lot",
+] }
+tracing = "0.1.41"
+zstd = { version = "0.13.3" }
