@@ -126,6 +126,27 @@ impl<'a> ByteWriter<'a> {
         self.try_write_u8(if value { 1 } else { 0 })
     }
 
+    #[inline]
+    pub fn perform_at<F: FnOnce(&mut Self)>(&mut self, pos: usize, f: F) {
+        let old_pos = self.pos;
+        self.set_pos(pos);
+        f(self);
+        self.set_pos(old_pos);
+    }
+
+    #[inline]
+    pub fn try_perform_at<F: FnOnce(&mut Self) -> Result<()>>(
+        &mut self,
+        pos: usize,
+        f: F,
+    ) -> Result<()> {
+        let old_pos = self.pos;
+        self.try_set_pos(pos)?;
+        let result = f(self);
+        self.try_set_pos(old_pos)?;
+        result
+    }
+
     // https://github.com/gimli-rs/leb128/blob/master/src/lib.rs
     pub fn write_varint(&mut self, mut value: i64) -> Result<usize> {
         let mut written = 0;
