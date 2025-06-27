@@ -97,6 +97,11 @@ pub enum QunetMessage {
         qdb_hash: [u8; 16],
     },
 
+    HandshakeFailure {
+        error_code: QunetHandshakeError,
+        reason: Option<String>,
+    },
+
     ClientClose {
         dont_terminate: bool,
     },
@@ -371,6 +376,7 @@ impl QunetMessage {
             QunetMessage::Keepalive { .. } => "Keepalive",
             QunetMessage::KeepaliveResponse { .. } => "KeepaliveResponse",
             QunetMessage::HandshakeStart { .. } => "HandshakeStart",
+            QunetMessage::HandshakeFailure { .. } => "HandshakeFailure",
             QunetMessage::ClientClose { .. } => "ClientClose",
             QunetMessage::ClientReconnect { .. } => "ClientReconnect",
             QunetMessage::ConnectionError { .. } => "ConnectionError",

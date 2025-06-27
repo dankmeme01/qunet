@@ -91,7 +91,9 @@ impl TcpServerListener {
                 }
 
                 Err(_) => {
-                    warn!("Client {addr} (TCP) did not complete the handshake in time");
+                    warn!(
+                        "Client {addr} (TCP) did not complete the handshake in time, closing connection"
+                    );
                 }
             }
         });

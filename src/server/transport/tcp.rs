@@ -54,9 +54,7 @@ impl ClientTcpTransport {
         loop {
             // first, try to parse a message from the buffer
             if self.buffer_pos >= 4 {
-                let length = ByteReader::new(&self.buffer[..self.buffer_pos])
-                    .read_u32()
-                    .unwrap() as usize;
+                let length = ByteReader::new(&self.buffer[..4]).read_u32().unwrap() as usize;
 
                 if length == 0 {
                     return Err(TransportError::ZeroLengthMessage);
@@ -68,6 +66,7 @@ impl ClientTcpTransport {
                 if self.buffer_pos >= total_len {
                     // we have a full message in the buffer
                     let data = &self.buffer[4..total_len];
+                    // TODO dont early return if parsing failed, still shift the buffer
                     let meta = QunetMessage::parse_header(data, false)?;
                     let msg = QunetMessage::decode(meta, &transport_data.buffer_pool).await?;
 
@@ -122,8 +121,13 @@ impl ClientTcpTransport {
         qdb_data: Option<&[u8]>,
         qdb_uncompressed_size: usize,
     ) -> Result<(), TransportError> {
-        let mut header_buf = [0u8; HANDSHAKE_HEADER_SIZE_WITH_QDB];
+        let mut header_buf = [0u8; HANDSHAKE_HEADER_SIZE_WITH_QDB + 4];
         let mut header_writer = ByteWriter::new(&mut header_buf);
+
+        // reserve space for the message length
+        header_writer.write_u32(0);
+
+        let msg_start = header_writer.pos();
 
         header_writer.write_u8(MSG_HANDSHAKE_FINISH);
         header_writer.write_u64(transport_data.connection_id);
@@ -143,6 +147,11 @@ impl ClientTcpTransport {
             header_writer.write_u32(0);
             header_writer.write_u32(qdb_data.len() as u32);
 
+            // write the full message length at the start
+            let header_len = header_writer.pos() - msg_start;
+            let full_len = header_len + qdb_data.len();
+            header_writer.perform_at(msg_start - 4, |w| w.write_u32(full_len as u32));
+
             let mut iovecs = [
                 IoSlice::new(header_writer.written()),
                 IoSlice::new(qdb_data),
@@ -151,6 +160,10 @@ impl ClientTcpTransport {
             self.send_packet_vectored(&mut iovecs).await?;
         } else {
             debug!("Sending TCP handshake response (no QDB)");
+
+            // write the full message length at the start
+            let header_len = header_writer.pos() - msg_start;
+            header_writer.perform_at(msg_start - 4, |w| w.write_u32(header_len as u32));
 
             self.send_packet(header_writer.written()).await?;
         }
