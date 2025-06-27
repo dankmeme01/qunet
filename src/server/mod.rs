@@ -22,7 +22,9 @@ use crate::{
             QunetMessage, QunetRawMessage,
             channel::{RawMessageReceiver, RawMessageSender},
         },
-        protocol::{DEFAULT_MESSAGE_SIZE_LIMIT, QunetConnectionError, UDP_PACKET_LIMIT},
+        protocol::{
+            DEFAULT_MESSAGE_SIZE_LIMIT, QunetConnectionError, QunetHandshakeError, UDP_PACKET_LIMIT,
+        },
         transport::{ClientTransport, TransportError},
     },
 };
@@ -266,9 +268,33 @@ impl Server {
         self: ServerHandle,
         mut transport: ClientTransport,
     ) -> Result<(), AcceptError> {
-        if transport.data.qunet_major_version != protocol::MAJOR_VERSION {
+        let client_ver = transport.data.qunet_major_version;
+
+        if client_ver != protocol::MAJOR_VERSION {
+            // also send an error to the client
+            tokio::spawn(async move {
+                let res = transport
+                    .send_message(&QunetMessage::HandshakeFailure {
+                        error_code: if client_ver < protocol::MAJOR_VERSION {
+                            QunetHandshakeError::VersionTooOld
+                        } else {
+                            QunetHandshakeError::VersionTooNew
+                        },
+                        reason: None,
+                    })
+                    .await;
+
+                if let Err(e) = res {
+                    warn!(
+                        "[{}] Failed to send handshake failure: {}",
+                        transport.address(),
+                        e
+                    );
+                }
+            });
+
             return Err(AcceptError::MajorVersionMismatch {
-                client: transport.data.qunet_major_version,
+                client: client_ver,
                 server: protocol::MAJOR_VERSION,
             });
         }
