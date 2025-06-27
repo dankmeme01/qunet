@@ -334,6 +334,8 @@ The next sections describe protocol-specific quirks.
 
 Each message (both client -> server and server -> client) should be prefixed with a `u32` which holds the full length of the message. This header, as well as the qunet message header, are included only once for a single message, letting the underlying network stack fragment the data.
 
+The only exception is `HandshakeStart`, this message does NOT include a length prefix.
+
 ## WebSockets
 
 As WebSockets are a simple framing layer over TCP, this protocol is almost identical to TCP. All messages must be encoded as `Binary` WebSocket messages, pings should not be used and instead qunet [Keepalive](#keepalive) message should be used.
