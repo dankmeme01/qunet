@@ -9,6 +9,7 @@ use crate::{
         message::{QunetMessage, QunetMessageDecodeError},
         transport::{
             lowlevel::{SocketAddrCRepr, socket_addr_to_c},
+            quic::ClientQuicTransport,
             tcp::ClientTcpTransport,
             udp::ClientUdpTransport,
         },
@@ -16,12 +17,15 @@ use crate::{
 };
 
 pub mod lowlevel;
+pub mod quic;
+mod stream;
 pub mod tcp;
 pub mod udp;
 
 pub(crate) enum ClientTransportKind {
     Udp(ClientUdpTransport),
     Tcp(ClientTcpTransport),
+    Quic(ClientQuicTransport),
 }
 
 pub(crate) struct ClientTransportData {
@@ -95,6 +99,7 @@ impl ClientTransport {
         match &self.kind {
             ClientTransportKind::Udp(_) => "UDP",
             ClientTransportKind::Tcp(_) => "TCP",
+            ClientTransportKind::Quic(_) => "QUIC",
         }
     }
 
@@ -129,6 +134,11 @@ impl ClientTransport {
                 tcp.send_handshake_response(&self.data, qdb_data, qdb_uncompressed_size)
                     .await
             }
+
+            ClientTransportKind::Quic(quic) => {
+                quic.send_handshake_response(&self.data, qdb_data, qdb_uncompressed_size)
+                    .await
+            }
         }
     }
 
@@ -137,6 +147,7 @@ impl ClientTransport {
         match &mut self.kind {
             ClientTransportKind::Udp(udp) => udp.run_setup(&self.data, server).await,
             ClientTransportKind::Tcp(tcp) => tcp.run_setup().await,
+            ClientTransportKind::Quic(quic) => quic.run_setup().await,
         }
     }
 
@@ -145,6 +156,7 @@ impl ClientTransport {
         match &mut self.kind {
             ClientTransportKind::Udp(udp) => udp.run_cleanup(&self.data, server).await,
             ClientTransportKind::Tcp(tcp) => tcp.run_cleanup().await,
+            ClientTransportKind::Quic(quic) => quic.run_cleanup().await,
         }
     }
 
@@ -153,6 +165,7 @@ impl ClientTransport {
         match &mut self.kind {
             ClientTransportKind::Udp(udp) => udp.receive_message(&self.data).await,
             ClientTransportKind::Tcp(tcp) => tcp.receive_message(&self.data).await,
+            ClientTransportKind::Quic(quic) => quic.receive_message(&self.data).await,
         }
     }
 
@@ -161,6 +174,7 @@ impl ClientTransport {
         match &mut self.kind {
             ClientTransportKind::Udp(udp) => udp.send_message(&self.data, message).await,
             ClientTransportKind::Tcp(tcp) => tcp.send_message(&self.data, message).await,
+            ClientTransportKind::Quic(quic) => quic.send_message(&self.data, message).await,
         }
     }
 }

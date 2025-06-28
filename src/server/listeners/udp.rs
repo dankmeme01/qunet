@@ -1,7 +1,8 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use socket2::{Domain, Socket, Type};
-use tokio::{net::UdpSocket, sync::Notify};
+use tokio::{net::UdpSocket, task::JoinSet};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
 use crate::{
@@ -9,7 +10,7 @@ use crate::{
     server::{
         Server, ServerHandle,
         builder::{UdpDiscoveryMode, UdpOptions},
-        listeners::listener::{BindError, ListenerError, ListenerHandle, ServerListener},
+        listeners::listener::{BindError, ListenerError, ServerListener},
         message::{QUNET_SMALL_MESSAGE_SIZE, QunetMessage, QunetRawMessage},
         protocol::{
             MSG_HANDSHAKE_START, MSG_PING, MSG_PONG, PROTO_TCP, PROTO_UDP, UDP_PACKET_LIMIT,
@@ -25,7 +26,7 @@ struct OneListener {
 pub(crate) struct UdpServerListener {
     opts: UdpOptions,
     sockets: Vec<OneListener>,
-    shutdown_notify: Notify,
+    shutdown_token: CancellationToken,
 }
 
 pub(crate) async fn make_socket(address: SocketAddr, multi: bool) -> std::io::Result<UdpSocket> {
@@ -52,7 +53,10 @@ pub(crate) async fn make_socket(address: SocketAddr, multi: bool) -> std::io::Re
 }
 
 impl UdpServerListener {
-    pub async fn new(opts: UdpOptions) -> Result<Self, BindError> {
+    pub async fn new(
+        opts: UdpOptions,
+        shutdown_token: CancellationToken,
+    ) -> Result<Self, BindError> {
         let binds = opts.binds.get();
 
         let mut sockets = Vec::with_capacity(binds);
@@ -68,7 +72,7 @@ impl UdpServerListener {
         Ok(UdpServerListener {
             opts,
             sockets,
-            shutdown_notify: Notify::new(),
+            shutdown_token,
         })
     }
 
@@ -330,59 +334,48 @@ impl UdpServerListener {
 }
 
 impl ServerListener for UdpServerListener {
-    fn run(self: Arc<UdpServerListener>, server: ServerHandle) -> ListenerHandle {
-        tokio::spawn(async move {
-            debug!(
-                "Starting {} UDP listeners on {}",
-                self.sockets.len(),
-                self.opts.address
-            );
+    async fn run(self: Arc<UdpServerListener>, server: ServerHandle) -> Result<(), ListenerError> {
+        debug!(
+            "Starting UDP listener on {} (sockets: {})",
+            self.opts.address,
+            self.sockets.len(),
+        );
 
-            let mut handles = Vec::with_capacity(self.sockets.len());
+        let mut set = JoinSet::new();
 
-            for i in 0..self.sockets.len() {
-                let self_clone = self.clone();
-                let server = server.clone();
+        for i in 0..self.sockets.len() {
+            let self_clone = self.clone();
+            let server = server.clone();
 
-                handles.push(tokio::spawn(async move {
-                    if self_clone.opts.discovery_mode == UdpDiscoveryMode::Discovery {
-                        self_clone.run_ping_listener(i, server).await
-                    } else {
-                        self_clone.run_listener(i, server).await
-                    }
-                }));
-            }
+            set.spawn(async move {
+                if self_clone.opts.discovery_mode == UdpDiscoveryMode::Discovery {
+                    self_clone.run_ping_listener(i, server).await
+                } else {
+                    self_clone.run_listener(i, server).await
+                }
+            });
+        }
 
-            let awaiter_f = futures::future::join_all(handles);
+        tokio::select! {
+            res = set.join_all() => {
+                warn!("All UDP sub-listeners have terminated");
 
-            tokio::select! {
-                res = awaiter_f => {
-                    warn!("All UDP sub-listeners have terminated");
+                for handle in res {
+                    match handle {
+                        // listeners should never terminate with no error
+                        Ok(()) => unreachable!(),
 
-                    for handle in res {
-                        match handle {
-                            Ok(Ok(())) => warn!("UDP sub-listener shut down with no error"),
-
-                            Ok(Err(e)) => {
-                                error!("UDP sub-listener exited with an error: {e}");
-                            }
-
-                            Err(e) => {
-                                error!("UDP sub-listener panicked: {e}");
-                            }
+                        Err(e) => {
+                            error!("UDP sub-listener exited with an error: {e}");
                         }
                     }
-                },
+                }
+            },
 
-                _ = self.shutdown_notify.notified() => {}
-            }
+            _ = self.shutdown_token.cancelled() => {}
+        }
 
-            Ok(())
-        })
-    }
-
-    fn shutdown(&self) {
-        self.shutdown_notify.notify_one();
+        Ok(())
     }
 
     fn identifier(&self) -> String {

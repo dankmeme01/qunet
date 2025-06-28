@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use thiserror::Error;
-use tokio::task::JoinHandle;
 
 use crate::{
     buffers::{byte_reader::ByteReaderError, byte_writer::ByteWriterError},
@@ -22,21 +21,26 @@ pub enum ListenerError {
     AcceptError(#[from] AcceptError),
     #[error("Handshake packet is invalid")]
     MalformedHandshake,
+    #[error("QUIC connection error: {0}")]
+    QuicConnectionError(#[from] s2n_quic::connection::Error),
+    #[error("Connection closed by peer")]
+    ConnectionClosed,
 }
 
-pub type ListenerHandle = JoinHandle<Result<(), ListenerError>>;
-
-pub trait ServerListener {
-    fn run(self: Arc<Self>, server: ServerHandle) -> ListenerHandle;
+pub(crate) trait ServerListener {
+    async fn run(self: Arc<Self>, server: ServerHandle) -> Result<(), ListenerError>;
     fn identifier(&self) -> String;
     fn port(&self) -> u16;
-    fn shutdown(&self);
 }
 
 #[derive(Debug, Error)]
 pub enum BindError {
     #[error("{0}")]
     IoError(#[from] std::io::Error),
+    #[error("Failed to start QUIC server: {0}")]
+    QuicStartError(#[from] s2n_quic::provider::StartError),
+    #[error("Failed to load TLS certificate: {0}")]
+    TlsError(Box<dyn std::error::Error + Send + Sync + 'static>),
 }
 
 #[inline(always)]

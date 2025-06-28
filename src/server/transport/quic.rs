@@ -1,36 +1,30 @@
-use tokio::net::{
-    TcpStream,
-    tcp::{OwnedReadHalf, OwnedWriteHalf},
-};
-
 use crate::server::{
     message::QunetMessage,
     transport::{ClientTransportData, TransportError},
 };
+use s2n_quic::stream::BidirectionalStream;
 
 use super::stream;
 
-pub(crate) struct ClientTcpTransport {
-    sock_write: OwnedWriteHalf,
-    sock_read: OwnedReadHalf,
+pub(crate) struct ClientQuicTransport {
+    conn: s2n_quic::Connection,
+    stream: BidirectionalStream,
     buffer: Vec<u8>,
     buffer_pos: usize,
 }
 
-impl ClientTcpTransport {
-    pub fn new(socket: TcpStream) -> Self {
-        let (sock_read, sock_write) = socket.into_split();
-
+impl ClientQuicTransport {
+    pub fn new(conn: s2n_quic::Connection, stream: BidirectionalStream) -> Self {
         Self {
-            sock_read,
-            sock_write,
-            buffer: vec![0u8; 512], // TODO: if it's a significant performance issue, don't zero the bytes, also maybe make size configurable
+            conn,
+            stream,
+            buffer: vec![0u8; 512], // TODO: see comment in ClientTcpTransport
             buffer_pos: 0,
         }
     }
 
     pub async fn run_setup(&mut self) -> Result<(), TransportError> {
-        // TCP transport does not require any setup, just return Ok
+        // QUIC transport does not require any setup, just return Ok
         Ok(())
     }
 
@@ -46,7 +40,7 @@ impl ClientTcpTransport {
             &mut self.buffer,
             &mut self.buffer_pos,
             transport_data,
-            &mut self.sock_read,
+            &mut self.stream,
         )
         .await
     }
@@ -56,7 +50,7 @@ impl ClientTcpTransport {
         transport_data: &ClientTransportData,
         msg: &QunetMessage,
     ) -> Result<(), TransportError> {
-        stream::send_message(&mut self.sock_write, transport_data, msg).await
+        stream::send_message(&mut self.stream, transport_data, msg).await
     }
 
     pub async fn send_handshake_response(
@@ -66,11 +60,11 @@ impl ClientTcpTransport {
         qdb_uncompressed_size: usize,
     ) -> Result<(), TransportError> {
         stream::send_handshake_response(
-            &mut self.sock_write,
+            &mut self.stream,
             transport_data,
             qdb_data,
             qdb_uncompressed_size,
-            "TCP",
+            "QUIC",
         )
         .await
     }

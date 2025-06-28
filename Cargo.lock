@@ -290,7 +290,6 @@ checksum = "65bc07b1a8bc7c85c5f2e110c476c7389b4554ba72af57d8445ea63a576b0876"
 dependencies = [
  "futures-channel",
  "futures-core",
- "futures-executor",
  "futures-io",
  "futures-sink",
  "futures-task",
@@ -312,17 +311,6 @@ name = "futures-core"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05f29059c0c2090612e8d742178b0580d2dc940c837851ad723096f87af6663e"
-
-[[package]]
-name = "futures-executor"
-version = "0.3.31"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e28d1d997f585e54aebc3f97d39e72338912123a67330d723fdbb564d646c9f"
-dependencies = [
- "futures-core",
- "futures-task",
- "futures-util",
-]
 
 [[package]]
 name = "futures-io"
@@ -747,7 +735,6 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "flume",
- "futures",
  "hex",
  "libc",
  "nohash-hasher",
@@ -756,9 +743,11 @@ dependencies = [
  "parking_lot",
  "rand 0.9.1",
  "s2n-quic",
+ "s2n-quic-rustls",
  "socket2",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tracing",
  "zstd",
 ]
@@ -998,7 +987,7 @@ dependencies = [
  "s2n-quic-core",
  "s2n-quic-crypto",
  "s2n-quic-platform",
- "s2n-quic-tls-default",
+ "s2n-quic-rustls",
  "s2n-quic-transport",
  "tokio",
  "zerocopy",
@@ -1070,31 +1059,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "s2n-quic-tls"
-version = "0.59.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5ceee4c13e5f954b8f54e19e6bf75fee1ca1bd7c2c7c099842aa86fc8fe468b"
-dependencies = [
- "bytes",
- "errno",
- "libc",
- "s2n-codec",
- "s2n-quic-core",
- "s2n-quic-crypto",
- "s2n-tls",
-]
-
-[[package]]
-name = "s2n-quic-tls-default"
-version = "0.59.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc190cceac5b0d84a1601ad1c7ca50662e72912e337cf2ecd93f3586760e1b69"
-dependencies = [
- "s2n-quic-rustls",
- "s2n-quic-tls",
-]
-
-[[package]]
 name = "s2n-quic-transport"
 version = "0.59.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1110,30 +1074,6 @@ dependencies = [
  "s2n-quic-core",
  "siphasher",
  "smallvec",
-]
-
-[[package]]
-name = "s2n-tls"
-version = "0.3.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23c23a50f9733440df3a1e8c94d71026b02e5080395f080f4f66d1fecc2fca86"
-dependencies = [
- "errno",
- "hex",
- "libc",
- "pin-project-lite",
- "s2n-tls-sys",
-]
-
-[[package]]
-name = "s2n-tls-sys"
-version = "0.3.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00d42ff433e7a1267cc7105ee1aa8f8785473cee48376ddbb13e2d9f23e2291d"
-dependencies = [
- "aws-lc-rs",
- "cc",
- "libc",
 ]
 
 [[package]]
@@ -1258,6 +1198,21 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "tokio-util"
+version = "0.7.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66a539a9ad6d5d281510d5bd368c973d636c02dbf8a67300bfb6b950696ad7df"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-sink",
+ "futures-util",
+ "hashbrown",
+ "pin-project-lite",
+ "tokio",
 ]
 
 [[package]]

@@ -1,27 +1,22 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-use tokio::{
-    io::AsyncReadExt,
-    net::{TcpListener, TcpStream},
-    sync::Notify,
-};
+use tokio::net::{TcpListener, TcpStream};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
-use crate::{
-    buffers::byte_reader::ByteReader,
-    server::{
-        ServerHandle,
-        builder::TcpOptions,
-        listeners::listener::{BindError, ListenerError, ListenerHandle, ServerListener},
-        protocol::{HANDSHAKE_START_SIZE, MSG_HANDSHAKE_START},
-        transport::{ClientTransport, ClientTransportKind, tcp::ClientTcpTransport},
-    },
+use crate::server::{
+    ServerHandle,
+    builder::TcpOptions,
+    listeners::listener::{BindError, ListenerError, ServerListener},
+    transport::{ClientTransport, ClientTransportKind, tcp::ClientTcpTransport},
 };
+
+use super::stream;
 
 pub(crate) struct TcpServerListener {
     opts: TcpOptions,
     socket: TcpListener,
-    shutdown_notify: Notify,
+    shutdown_token: CancellationToken,
 }
 
 struct PendingTcpConnection {
@@ -31,38 +26,21 @@ struct PendingTcpConnection {
 
 impl PendingTcpConnection {
     pub async fn wait_for_handshake(&mut self) -> Result<(u16, [u8; 16]), ListenerError> {
-        let mut buf = [0u8; HANDSHAKE_START_SIZE];
-        let mut read_bytes = 0;
-
-        while read_bytes < HANDSHAKE_START_SIZE {
-            read_bytes += self.stream.read(&mut buf[read_bytes..]).await?;
-        }
-
-        let mut reader = ByteReader::new(&buf[..read_bytes]);
-
-        let msg_type = reader.read_u8()?;
-        let qunet_major = reader.read_u16()?;
-        let _ = reader.read_u16()?; // we dont use udp frag limit in tcp
-
-        let mut qdb_hash = [0u8; 16];
-        reader.read_bytes(&mut qdb_hash)?;
-
-        if msg_type != MSG_HANDSHAKE_START {
-            return Err(ListenerError::MalformedHandshake);
-        }
-
-        Ok((qunet_major, qdb_hash))
+        stream::wait_for_handshake(&mut self.stream).await
     }
 }
 
 impl TcpServerListener {
-    pub async fn new(opts: TcpOptions) -> Result<Self, BindError> {
+    pub async fn new(
+        opts: TcpOptions,
+        shutdown_token: CancellationToken,
+    ) -> Result<Self, BindError> {
         let socket = TcpListener::bind(opts.address).await?;
 
         Ok(Self {
             opts,
             socket,
-            shutdown_notify: Notify::new(),
+            shutdown_token,
         })
     }
 
@@ -101,41 +79,35 @@ impl TcpServerListener {
 }
 
 impl ServerListener for TcpServerListener {
-    fn run(self: Arc<TcpServerListener>, server: ServerHandle) -> ListenerHandle {
-        tokio::spawn(async move {
-            debug!("Starting TCP listener on {}", self.opts.address);
+    async fn run(self: Arc<TcpServerListener>, server: ServerHandle) -> Result<(), ListenerError> {
+        debug!("Starting TCP listener on {}", self.opts.address);
 
-            loop {
-                tokio::select! {
-                    res = self.socket.accept() => match res {
-                        Ok((stream, addr)) => Self::accept_connection(server.clone(), stream, addr),
+        loop {
+            tokio::select! {
+                res = self.socket.accept() => match res {
+                    Ok((stream, addr)) => Self::accept_connection(server.clone(), stream, addr),
 
-                        Err(err) => {
-                            // unfortunately, EMFILE and ENFILE errors don't have a specific error kind,
-                            // we have to convert to string and check the contents
-                            let err_string = err.to_string();
+                    Err(err) => {
+                        // unfortunately, EMFILE and ENFILE errors don't have a specific error kind,
+                        // we have to convert to string and check the contents
+                        let err_string = err.to_string();
 
-                            if err_string == "Too many open files" {
-                                error!("Failed to accept TCP connection: Too many open files. Server is unable to accept new connections until the limit is raised. Sleeping for 1 second to prevent log spam.");
-                                tokio::time::sleep(Duration::from_secs(1)).await;
-                            } else {
-                                error!("Failed to accept TCP connection: {err_string}");
-                            }
+                        if err_string == "Too many open files" {
+                            error!("Failed to accept TCP connection: Too many open files. Server is unable to accept new connections until the limit is raised. Sleeping for 1 second to prevent log spam.");
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        } else {
+                            error!("Failed to accept TCP connection: {err_string}");
                         }
-                    },
-
-                    _ = self.shutdown_notify.notified() => {
-                        break;
                     }
+                },
+
+                _ = self.shutdown_token.cancelled() => {
+                    break;
                 }
             }
+        }
 
-            Ok(())
-        })
-    }
-
-    fn shutdown(&self) {
-        self.shutdown_notify.notify_one();
+        Ok(())
     }
 
     fn identifier(&self) -> String {

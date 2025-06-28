@@ -3,6 +3,7 @@ use std::{ops::Deref, sync::Arc, time::Duration};
 use nohash_hasher::IntMap;
 use parking_lot::Mutex;
 use thiserror::Error;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{debug, error, info, warn};
 
 use crate::{
@@ -14,7 +15,8 @@ use crate::{
     server::{
         builder::ServerBuilder,
         listeners::{
-            listener::{BindError, ListenerError, ListenerHandle, ServerListener},
+            listener::{BindError, ListenerError, ServerListener},
+            quic::QuicServerListener,
             tcp::TcpServerListener,
             udp::UdpServerListener,
         },
@@ -69,7 +71,11 @@ pub struct Server {
     _builder: ServerBuilder,
     udp_listener: Option<Arc<UdpServerListener>>,
     tcp_listener: Option<Arc<TcpServerListener>>,
+    quic_listener: Option<Arc<QuicServerListener>>,
     buffer_pool: Arc<BufferPool>,
+
+    shutdown_token: CancellationToken,
+    listener_tracker: TaskTracker,
 
     // TODO: rwlock? dashmap? arcswap?
     udp_router: Mutex<IntMap<u64, RawMessageSender>>,
@@ -94,7 +100,12 @@ impl Server {
             _builder: builder,
             udp_listener: None,
             tcp_listener: None,
+            quic_listener: None,
             buffer_pool: Arc::new(BufferPool::new(4096, 128, 1024)), // TODO: allow configuring this too
+
+            shutdown_token: CancellationToken::new(),
+            listener_tracker: TaskTracker::new(),
+
             udp_router: Mutex::new(IntMap::default()),
             _message_size_limit: 0,
 
@@ -108,13 +119,23 @@ impl Server {
     pub async fn setup(&mut self) -> Result<(), ServerOutcome> {
         // Setup connection listeners
         if let Some(opts) = self._builder.udp_opts.take() {
-            let listener = UdpServerListener::new(opts).await?;
+            let listener = UdpServerListener::new(opts, self.shutdown_token.clone()).await?;
             self.udp_listener = Some(Arc::new(listener));
         }
 
         if let Some(opts) = self._builder.tcp_opts.take() {
-            let listener = TcpServerListener::new(opts).await?;
+            let listener = TcpServerListener::new(opts, self.shutdown_token.clone()).await?;
             self.tcp_listener = Some(Arc::new(listener));
+        }
+
+        if let Some(opts) = self._builder.quic_opts.take() {
+            let listener = QuicServerListener::new(
+                opts,
+                self._builder.listener_opts.clone(),
+                self.shutdown_token.clone(),
+            )
+            .await?;
+            self.quic_listener = Some(Arc::new(listener));
         }
 
         // Setup misc settings
@@ -160,43 +181,49 @@ impl Server {
         Ok(())
     }
 
+    async fn run_listener<L: ServerListener>(self: ServerHandle, listener: Arc<L>) {
+        match listener.clone().run(self).await {
+            Ok(()) => info!(
+                "Listener {} terminated with no errors",
+                listener.identifier()
+            ),
+
+            Err(e) => {
+                error!(
+                    "Listener {} terminated with error: {}",
+                    listener.identifier(),
+                    e
+                );
+            }
+        }
+    }
+
     pub async fn run_server(self: ServerHandle) -> ServerOutcome {
         self.print_config();
 
-        let mut handles = Vec::new();
-        let mut idents = Vec::new();
-
-        if let Some(udp) = &self.udp_listener {
-            handles.push(udp.clone().run(self.clone()));
-            idents.push(udp.identifier());
+        if let Some(udp) = self.udp_listener.clone() {
+            let srv = self.clone();
+            self.listener_tracker
+                .spawn(async move { srv.run_listener(udp).await });
         }
 
-        if let Some(tcp) = &self.tcp_listener {
-            handles.push(tcp.clone().run(self.clone()));
-            idents.push(tcp.identifier());
-        };
+        if let Some(tcp) = self.tcp_listener.clone() {
+            let srv = self.clone();
+            self.listener_tracker
+                .spawn(async move { srv.run_listener(tcp).await });
+        }
 
-        let fut = futures::future::join_all(&mut handles);
+        if let Some(quic) = self.quic_listener.clone() {
+            let srv = self.clone();
+            self.listener_tracker
+                .spawn(async move { srv.run_listener(quic).await });
+        }
+
+        self.listener_tracker.close();
 
         tokio::select! {
-            res = fut => {
-                // this should never really be reached unless all listeners terminate out of nowhere
-                warn!("All listeners terminated unexpectedly");
-
-                for (ident, handle) in idents.into_iter().zip(res) {
-                    match handle {
-                        Ok(Ok(())) => warn!("Listener {ident} shut down with no error"),
-
-                        Ok(Err(e)) => {
-                            error!("Listener {ident} exited with an error: {e}");
-                        }
-
-                        Err(e) => {
-                            error!("Listener {ident} panicked: {e}");
-                        }
-                    }
-                }
-
+            _ = self.listener_tracker.wait() => {
+                error!("All listeners have unexpectedly terminated, shutting down!");
                 return ServerOutcome::AllListenersTerminated;
             },
 
@@ -209,7 +236,8 @@ impl Server {
             ._builder
             .graceful_shutdown_timeout
             .unwrap_or(Duration::from_secs(5));
-        match tokio::time::timeout(timeout, self.graceful_shutdown(&mut handles, &idents)).await {
+
+        match tokio::time::timeout(timeout, self.graceful_shutdown()).await {
             Ok(Ok(())) => info!("Shutdown successful"),
             Ok(Err(e)) => {
                 error!("Failed to shut down gracefully: {e}");
@@ -219,10 +247,6 @@ impl Server {
             Err(_) => {
                 warn!("Failed to shut down gracefully in the given time period, aborting");
 
-                for task in &mut handles {
-                    task.abort();
-                }
-
                 return ServerOutcome::ShutdownTimeout;
             }
         }
@@ -230,36 +254,10 @@ impl Server {
         ServerOutcome::GracefulShutdown
     }
 
-    async fn graceful_shutdown(
-        &self,
-        handles: &mut [ListenerHandle],
-        idents: &[String],
-    ) -> Result<(), ServerOutcome> {
-        if let Some(udp) = &self.udp_listener {
-            udp.shutdown();
-        }
+    async fn graceful_shutdown(&self) -> Result<(), ServerOutcome> {
+        self.shutdown_token.cancel();
 
-        if let Some(tcp) = &self.tcp_listener {
-            tcp.shutdown();
-        }
-
-        for (handle, ident) in handles.iter_mut().zip(idents.iter()) {
-            debug!("Waiting for listener {ident} to shut down");
-
-            match handle.await {
-                Ok(Ok(())) => info!("Listener {ident} shut down successfully"),
-
-                Ok(Err(e)) => {
-                    error!("Listener {ident} exited with an error: {e}");
-                    return Err(ServerOutcome::ListenerShutdown(e));
-                }
-
-                Err(e) => {
-                    error!("Listener {ident} panicked: {e}");
-                    return Err(ServerOutcome::ListenerPanic(e));
-                }
-            }
-        }
+        self.listener_tracker.wait().await;
 
         Ok(())
     }

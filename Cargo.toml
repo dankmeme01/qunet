@@ -6,7 +6,6 @@ edition = "2024"
 [dependencies]
 blake3 = "1.8.2"
 flume = { version = "0.11.1", features = ["async"] }
-futures = "0.3.31"
 hex = "0.4.3"
 libc = "0.2.174"
 nohash-hasher = "0.2.0"
@@ -14,7 +13,7 @@ num-derive = "0.4.2"
 num-traits = "0.2.19"
 parking_lot = "0.12.4"
 rand = "0.9.1"
-s2n-quic = "1.59.0"
+s2n-quic = { version = "1.59.0", default-features = false, features = ["provider-address-token-default", "provider-tls-rustls"] }
 socket2 = "0.5.10"
 thiserror = "2.0.12"
 tokio = { version = "1.45.1", features = [
@@ -27,5 +26,7 @@ tokio = { version = "1.45.1", features = [
     "sync",
     "parking_lot",
 ] }
+tokio-util = { version = "0.7.15", features = ["rt"] }
 tracing = "0.1.41"
 zstd = { version = "0.13.3" }
+s2n-quic-rustls = "0.59.0" # Note: we should use the same version as s2n-quic does, unfortunately it does not expose this dependency

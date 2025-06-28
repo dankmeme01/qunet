@@ -62,6 +62,7 @@ pub fn socket_addr_to_c(addr: &SocketAddr) -> (SocketAddrCRepr, libc::socklen_t)
 /// Appends data to a vector without zeroing it out first.
 #[inline]
 pub fn append_to_vec(vec: &mut Vec<u8>, data: &[u8]) {
+    // TODO: benchmark this against Vec::extend_from_slice
     let remaining_capacity = vec.capacity() - vec.len();
 
     if remaining_capacity < data.len() {
