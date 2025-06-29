@@ -271,6 +271,16 @@ Message structure:
 The flags bitmask is defined as:
 * Bit 0 (least significant) - "don't terminate" flag, if set to 0 then the session is terminated completely. If set to 1, the socket is still closed but the client session is not completely terminated, and the client is able to reconnect (whether using the same protocol or any other protocol) in order to recover the session without losing any active state. This is the same mechanism that is used automatically during non-graceful disconnects.
 
+## ServerClose
+
+This message is sent by the server when it wants to close a client connection, either gracefully (because the server might be shutting down), or due to a critical error.
+
+Message structure:
+* Error code (`u32`) - an error code indicating the issue
+* Error message (`String`) - **only present if error code == 0**, a custom error message saying what the issue is
+
+Error codes here are identical to the ones in [ConnectionError](#connectionerror).
+
 ## ClientReconnect
 
 This message is sent by the client instead of [HandshakeStart](#handshakestart) when it wants to recover an existing session, for example after a broken TCP connection. Some protocols will automatically recover when any message arrives and sending this message is not necessary for those.
@@ -280,7 +290,7 @@ Message structure:
 
 ## ConnectionError
 
-This message can be sent by either the client or the server when a connection error occurs. For example, if the client or the server sends a fragmented message when the other end is configured to reject those, this error should be returned. Connection errors are typically not critical, if a critical error occurs, it should be followed by a `ServerClose` packet.
+This message can be sent by either the client or the server when a connection error occurs. For example, if the client or the server sends a fragmented message when the other end is configured to reject those, this error should be returned. Connection errors are typically not critical, if a critical error occurs, a `ServerClose` message should be sent instead.
 
 Message structure:
 * Error code (`u32`) - an error code indicating the issue, see table below
@@ -291,6 +301,9 @@ Error codes:
 * 2 - Requested QDB chunk is too long
 * 3 - Requested QDB chunk is invalid (offset/length are out of bounds)
 * 4 - Client requested a QDB chunk but a QDB isn't available
+* 5 - Protocol violation: client sent a malformed zero-length stream message
+* 6 - Protocol violation: client sent a stream message that exceeds the maximum allowed length
+* 7 - Internal server error - this is not client's fault
 
 ## QdbChunkRequest
 

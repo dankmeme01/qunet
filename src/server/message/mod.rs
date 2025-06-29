@@ -106,6 +106,11 @@ pub enum QunetMessage {
         dont_terminate: bool,
     },
 
+    ServerClose {
+        error_code: QunetConnectionError,
+        error_message: Option<String>,
+    },
+
     ClientReconnect {
         connection_id: u64,
     },
@@ -378,6 +383,7 @@ impl QunetMessage {
             QunetMessage::HandshakeStart { .. } => "HandshakeStart",
             QunetMessage::HandshakeFailure { .. } => "HandshakeFailure",
             QunetMessage::ClientClose { .. } => "ClientClose",
+            QunetMessage::ServerClose { .. } => "ServerClose",
             QunetMessage::ClientReconnect { .. } => "ClientReconnect",
             QunetMessage::ConnectionError { .. } => "ConnectionError",
             QunetMessage::QdbChunkRequest { .. } => "QdbChunkRequest",

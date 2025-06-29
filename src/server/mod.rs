@@ -309,7 +309,37 @@ impl Server {
             let addr = transport.address();
 
             if let Err(e) = Self::client_handler(&self, &mut transport, send_qdb).await {
-                warn!("[{}] Client connection terminated: {}", addr, e);
+                warn!(
+                    "[{}] Client connection terminated due to error: {}",
+                    addr, e
+                );
+
+                // depending on the error, we might want to send a message to the client notifying about it
+                let (error_code, error_message) = match e {
+                    TransportError::MessageTooLong => {
+                        (QunetConnectionError::StreamMessageTooLong, None)
+                    }
+
+                    TransportError::ZeroLengthMessage => {
+                        (QunetConnectionError::ZeroLengthStreamMessage, None)
+                    }
+
+                    TransportError::MessageChannelClosed => {
+                        (QunetConnectionError::InternalServerError, None)
+                    }
+
+                    _ => (QunetConnectionError::Custom, Some(e.to_string())),
+                };
+
+                // we don't care if it fails here
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    transport.send_message(&QunetMessage::ServerClose {
+                        error_code,
+                        error_message,
+                    }),
+                )
+                .await;
             }
 
             // always run cleanup!
@@ -389,7 +419,9 @@ impl Server {
 
                 // Critical errors
                 Err(e @ TransportError::IoError(_))
-                | Err(e @ TransportError::MessageChannelClosed) => return Err(e),
+                | Err(e @ TransportError::MessageChannelClosed)
+                | Err(e @ TransportError::ZeroLengthMessage)
+                | Err(e @ TransportError::MessageTooLong) => return Err(e),
 
                 // Non-critical errors, just log and continue
                 Err(e) => {
