@@ -62,8 +62,23 @@ impl QuicServerListener {
 
         let tls = tls.build().map_err(BindError::TlsError)?;
 
+        // We only use one bidi quic stream
+        let conn_limits = s2n_quic::provider::limits::Limits::new()
+            .with_max_open_local_bidirectional_streams(2)
+            .unwrap()
+            .with_max_open_remote_bidirectional_streams(2)
+            .unwrap()
+            .with_max_open_local_unidirectional_streams(0)
+            .unwrap()
+            .with_max_open_remote_unidirectional_streams(0)
+            .unwrap()
+            .with_max_idle_timeout(Duration::from_secs(60))
+            .unwrap();
+
         let quic_server = s2n_quic::Server::builder()
             .with_tls(tls)
+            .unwrap()
+            .with_limits(conn_limits)
             .unwrap()
             .with_io(opts.address)?
             .start()?;
