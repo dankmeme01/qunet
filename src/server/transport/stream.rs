@@ -22,6 +22,11 @@ pub async fn receive_message<S: AsyncReadExt + Unpin>(
     transport_data: &ClientTransportData,
     stream: &mut S,
 ) -> Result<QunetMessage, TransportError> {
+    // TODO: maybe refactor this to add another position variable,
+    // then reset buffer positions to 0 if there is no leftover data
+    // this will probably improve performance by avoiding unnecessary memmoves,
+    // but will make things more complex if partial messages are received (though this is rare)
+
     loop {
         // first, try to parse a message from the buffer
         if *buffer_pos >= 4 {
