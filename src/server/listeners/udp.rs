@@ -319,7 +319,7 @@ impl UdpServerListener {
             frag_limit = UDP_PACKET_LIMIT as u16;
         }
 
-        frag_limit = frag_limit.clamp(1000, 1400);
+        frag_limit = frag_limit.clamp(1000, UDP_PACKET_LIMIT as u16);
 
         let transport = ClientTransport::new(
             ClientTransportKind::Udp(ClientUdpTransport::new(socket, frag_limit as usize)),

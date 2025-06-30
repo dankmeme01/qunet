@@ -5,28 +5,28 @@ use crate::{
     server::{message::QunetMessageDecodeError, protocol::*},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompressionType {
     Zstd,
     Lz4,
 }
 
 #[derive(Debug, Clone)]
-pub struct CompressionHeader {
-    compression_type: CompressionType,
-    uncompressed_size: NonZeroU32,
+pub(crate) struct CompressionHeader {
+    pub compression_type: CompressionType,
+    pub uncompressed_size: NonZeroU32,
 }
 
 #[derive(Debug, Clone)]
-pub struct FragmentationHeader {
+pub(crate) struct FragmentationHeader {
     message_id: u16,
-    fragment_index: u16,
-    fragment_offset: u32,
-    last_fragment: bool,
+    pub fragment_index: u16,
+    pub fragment_offset: u32,
+    pub last_fragment: bool,
 }
 
 #[derive(Debug, Clone)]
-pub struct ReliabilityHeader {
+pub(crate) struct ReliabilityHeader {
     // TODO
 }
 

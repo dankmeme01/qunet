@@ -17,6 +17,7 @@ pub enum QunetConnectionError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 #[repr(u32)]
 pub enum QunetHandshakeError {
+    Custom = 0,
     VersionTooOld = 1,
     VersionTooNew = 2,
     UnknownConnectionId = 3,

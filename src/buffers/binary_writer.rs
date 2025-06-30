@@ -129,4 +129,32 @@ impl<'a, W: io::Write> BinaryWriter<'a, W> {
 
         Ok(written)
     }
+
+    pub fn write_string_u16(&mut self, val: &str) -> io::Result<usize> {
+        if val.len() > u16::MAX as usize {
+            return Err(io::Error::other("write_string_u16: string too long"));
+        }
+
+        let written = 2 + val.len();
+        self.write_u16(val.len() as u16)?;
+        self.write_bytes(val.as_bytes())?;
+
+        Ok(written)
+    }
+
+    pub fn write_string(&mut self, val: &str) -> io::Result<usize> {
+        self.write_string_u16(val)
+    }
+
+    pub fn write_string_u8(&mut self, val: &str) -> io::Result<usize> {
+        if val.len() > u8::MAX as usize {
+            return Err(io::Error::other("write_string_u8: string too long"));
+        }
+
+        let written = 1 + val.len();
+        self.write_u8(val.len() as u8)?;
+        self.write_bytes(val.as_bytes())?;
+
+        Ok(written)
+    }
 }

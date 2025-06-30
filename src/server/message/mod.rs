@@ -1,27 +1,28 @@
+mod buffer_kind;
 pub mod channel;
 mod meta;
 mod raw;
 
-pub use meta::QunetMessageMeta;
-use num_traits::FromPrimitive;
+pub(crate) use buffer_kind::BufferKind;
+pub(crate) use meta::{
+    CompressionHeader, CompressionType, FragmentationHeader, QunetMessageBareMeta,
+    QunetMessageMeta, ReliabilityHeader,
+};
 pub use raw::{QUNET_SMALL_MESSAGE_SIZE, QunetRawMessage};
 
-use std::{ops::Deref, sync::Arc};
-
+use num_traits::FromPrimitive;
+use std::sync::Arc;
 use thiserror::Error;
+use tracing::warn;
 
 use crate::{
     buffers::{
+        binary_writer::BinaryWriter,
         bits::Bits,
         buffer_pool::{BorrowedMutBuffer, BufferPool},
         byte_reader::{ByteReader, ByteReaderError},
     },
-    server::{
-        message::meta::{
-            CompressionHeader, FragmentationHeader, QunetMessageBareMeta, ReliabilityHeader,
-        },
-        protocol::*,
-    },
+    server::protocol::*,
 };
 
 #[derive(Debug, Error)]
@@ -44,32 +45,6 @@ pub enum QunetMessageDecodeError {
     InvalidErrorCode(u32),
 }
 
-pub enum BufferKind {
-    Heap(Vec<u8>),
-    Pooled {
-        buf: BorrowedMutBuffer,
-        pos: usize,
-        size: usize,
-    },
-
-    Small {
-        buf: [u8; QUNET_SMALL_MESSAGE_SIZE],
-        size: usize,
-    },
-}
-
-impl Deref for BufferKind {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        match self {
-            BufferKind::Heap(buf) => buf,
-            BufferKind::Pooled { buf, pos, size } => &buf[*pos..*pos + *size],
-            BufferKind::Small { buf, size } => &buf[..*size],
-        }
-    }
-}
-
 pub enum DataMessageKind {
     Fragment {
         header: FragmentationHeader,
@@ -81,7 +56,7 @@ pub enum DataMessageKind {
     },
 }
 
-pub enum QunetMessage {
+pub(crate) enum QunetMessage {
     Keepalive {
         timestamp: u64,
     },
@@ -373,6 +348,112 @@ impl QunetMessage {
             // control message, connection ID is right after the header byte
             ByteReader::new(&data[1..]).read_u64().ok()
         }
+    }
+
+    pub fn is_data(&self) -> bool {
+        matches!(self, QunetMessage::Data { .. })
+    }
+
+    /// Convenience method that returns bytes of a `Data` message. Returns None if the message is not a `Data` message.
+    pub fn data_bytes(&self) -> Option<&[u8]> {
+        if let QunetMessage::Data { kind, .. } = self {
+            match kind {
+                DataMessageKind::Fragment { data, .. } => Some(data),
+                DataMessageKind::Regular { data } => Some(data),
+            }
+        } else {
+            None
+        }
+    }
+
+    // Encodes a control message into the given writers. Panics if this is a `QunetMessage::Data` message.
+    // The header writer must fit at least 8 bytes, and the body writer does not have a strict size limit.
+    pub fn encode_control_msg<W: std::io::Write, W2: std::io::Write>(
+        &self,
+        header_writer: &mut W,
+        body_writer: &mut W2,
+    ) -> std::io::Result<()> {
+        let mut header_writer = BinaryWriter::new(header_writer);
+        let mut body_writer = BinaryWriter::new(body_writer);
+
+        match self {
+            Self::Keepalive { timestamp } => {
+                header_writer.write_u8(MSG_KEEPALIVE)?;
+                body_writer.write_u64(*timestamp)?;
+                body_writer.write_u8(0)?; // flags, currently unused
+            }
+
+            Self::KeepaliveResponse { timestamp, data } => {
+                header_writer.write_u8(MSG_KEEPALIVE_RESPONSE)?;
+                body_writer.write_u64(*timestamp)?;
+                if let Some(data) = data {
+                    body_writer.write_u16(data.len() as u16)?;
+                    body_writer.write_bytes(data)?;
+                } else {
+                    body_writer.write_u16(0)?;
+                }
+            }
+
+            Self::HandshakeFailure { error_code, reason } => {
+                header_writer.write_u8(MSG_HANDSHAKE_FAILURE)?;
+                body_writer.write_u32(*error_code as u32)?;
+
+                if *error_code == QunetHandshakeError::Custom {
+                    if let Some(reason) = reason {
+                        body_writer.write_string(reason)?;
+                    } else {
+                        panic!(
+                            "QunetMessage::encode_control_msg: HandshakeFailure with 0 error code and no reason"
+                        );
+                    }
+                }
+            }
+
+            Self::ServerClose {
+                error_code,
+                error_message,
+            } => {
+                header_writer.write_u8(MSG_SERVER_CLOSE)?;
+                body_writer.write_u32(*error_code as u32)?;
+
+                if *error_code == QunetConnectionError::Custom {
+                    if let Some(reason) = error_message {
+                        body_writer.write_string(reason)?;
+                    } else {
+                        panic!(
+                            "QunetMessage::encode_control_msg: ServerClose with 0 error code and no reason"
+                        );
+                    }
+                }
+            }
+
+            Self::ConnectionError { error_code } => {
+                header_writer.write_u8(MSG_CONNECTION_ERROR)?;
+                body_writer.write_u32(*error_code as u32)?;
+            }
+
+            Self::QdbChunkResponse {
+                offset,
+                size,
+                qdb_data,
+            } => {
+                header_writer.write_u8(MSG_QDB_CHUNK_RESPONSE)?;
+                body_writer.write_u32(*offset)?;
+                body_writer.write_u32(*size)?;
+
+                let offset = *offset as usize;
+                let size = *size as usize;
+
+                body_writer.write_bytes(&qdb_data[offset..offset + size])?;
+            }
+
+            _ => panic!(
+                "QunetMessage::encode_control_msg: called with unexpected message: {}",
+                self.type_str()
+            ),
+        };
+
+        Ok(())
     }
 
     #[inline]

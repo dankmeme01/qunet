@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use thiserror::Error;
 
 pub struct ByteWriter<'a> {
@@ -253,5 +255,17 @@ impl<'a> ByteWriter<'a> {
 
         self.try_write_u16(val.len() as u16)?;
         self.try_write_bytes(val.as_bytes())
+    }
+}
+
+impl<'a> Write for ByteWriter<'a> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.try_write_bytes(buf)
+            .map(|_| buf.len())
+            .map_err(std::io::Error::other)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }

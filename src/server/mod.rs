@@ -73,6 +73,7 @@ pub struct Server {
     tcp_listener: Option<Arc<TcpServerListener>>,
     quic_listener: Option<Arc<QuicServerListener>>,
     buffer_pool: Arc<BufferPool>,
+    large_buffer_pool: Arc<BufferPool>,
 
     shutdown_token: CancellationToken,
     listener_tracker: TaskTracker,
@@ -102,6 +103,7 @@ impl Server {
             tcp_listener: None,
             quic_listener: None,
             buffer_pool: Arc::new(BufferPool::new(4096, 128, 1024)), // TODO: allow configuring this too
+            large_buffer_pool: Arc::new(BufferPool::new(65536, 16, 256)), // TODO: allow configuring this too
 
             shutdown_token: CancellationToken::new(),
             listener_tracker: TaskTracker::new(),
@@ -272,7 +274,7 @@ impl Server {
             // also send an error to the client
             tokio::spawn(async move {
                 let res = transport
-                    .send_message(&QunetMessage::HandshakeFailure {
+                    .send_message(QunetMessage::HandshakeFailure {
                         error_code: if client_ver < protocol::MAJOR_VERSION {
                             QunetHandshakeError::VersionTooOld
                         } else {
@@ -334,7 +336,7 @@ impl Server {
                 // we don't care if it fails here
                 let _ = tokio::time::timeout(
                     Duration::from_secs(10),
-                    transport.send_message(&QunetMessage::ServerClose {
+                    transport.send_message(QunetMessage::ServerClose {
                         error_code,
                         error_message,
                     }),
@@ -455,7 +457,7 @@ impl Server {
             QunetMessage::Keepalive { timestamp } => {
                 // TODO: custom data
                 transport
-                    .send_message(&QunetMessage::KeepaliveResponse {
+                    .send_message(QunetMessage::KeepaliveResponse {
                         timestamp: *timestamp,
                         data: None,
                     })
@@ -481,7 +483,7 @@ impl Server {
 
                 if self.qdb_data.is_empty() {
                     transport
-                        .send_message(&QunetMessage::ConnectionError {
+                        .send_message(QunetMessage::ConnectionError {
                             error_code: QunetConnectionError::QdbUnavailable,
                         })
                         .await?;
@@ -489,7 +491,7 @@ impl Server {
                     return Ok(());
                 } else if size > UDP_PACKET_LIMIT {
                     transport
-                        .send_message(&QunetMessage::ConnectionError {
+                        .send_message(QunetMessage::ConnectionError {
                             error_code: QunetConnectionError::QdbChunkTooLong,
                         })
                         .await?;
@@ -500,7 +502,7 @@ impl Server {
                 // check if offset and size are valid
                 if offset + size > self.qdb_data.len() || offset >= self.qdb_data.len() {
                     transport
-                        .send_message(&QunetMessage::ConnectionError {
+                        .send_message(QunetMessage::ConnectionError {
                             error_code: QunetConnectionError::QdbInvalidChunk,
                         })
                         .await?;
@@ -511,7 +513,7 @@ impl Server {
                 // send the requested chunk
 
                 transport
-                    .send_message(&QunetMessage::QdbChunkResponse {
+                    .send_message(QunetMessage::QdbChunkResponse {
                         offset: offset as u32,
                         size: size as u32,
                         qdb_data: self.qdb_data.clone(),

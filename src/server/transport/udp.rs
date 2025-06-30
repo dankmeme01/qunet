@@ -70,11 +70,24 @@ impl ClientUdpTransport {
         transport_data: &ClientTransportData,
         msg: &QunetMessage,
     ) -> Result<(), TransportError> {
-        warn!(
-            "[{}] Unimplemented, sending message: {}",
-            transport_data.address,
-            msg.type_str()
-        );
+        let mut header_buf = [0u8; 8];
+        let mut header_writer = ByteWriter::new(&mut header_buf);
+
+        if msg.is_data() {
+            warn!("trying to send data message, unimplemented");
+        } else {
+            let mut body_buf = [0u8; 256];
+            let mut body_writer = ByteWriter::new(&mut body_buf);
+
+            msg.encode_control_msg(&mut header_writer, &mut body_writer)?;
+
+            let mut vecs = [
+                IoSlice::new(header_writer.written()),
+                IoSlice::new(body_writer.written()),
+            ];
+
+            self.send_packet_vectored(&mut vecs, transport_data).await?;
+        }
 
         Ok(())
     }

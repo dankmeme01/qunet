@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, num::NonZeroU32, ops::DerefMut as _, sync::Arc};
 
 use thiserror::Error;
 
@@ -6,7 +6,10 @@ use crate::{
     buffers::buffer_pool::BufferPool,
     server::{
         Server,
-        message::{QunetMessage, QunetMessageDecodeError},
+        message::{
+            BufferKind, CompressionHeader, CompressionType, DataMessageKind, QunetMessage,
+            QunetMessageDecodeError,
+        },
         transport::{
             lowlevel::{SocketAddrCRepr, socket_addr_to_c},
             quic::ClientQuicTransport,
@@ -36,6 +39,7 @@ pub(crate) struct ClientTransportData {
     pub initial_qdb_hash: [u8; 16],
     pub message_size_limit: usize,
     pub buffer_pool: Arc<BufferPool>,
+    pub large_buffer_pool: Arc<BufferPool>,
 
     c_sockaddr_data: SocketAddrCRepr,
     c_sockaddr_len: libc::socklen_t,
@@ -60,6 +64,8 @@ pub enum TransportError {
     DecodeError(#[from] QunetMessageDecodeError),
     #[error("Message channel was closed")]
     MessageChannelClosed,
+    #[error("Failed to compress data with lz4: {0}")]
+    CompressionError(#[from] lz4_flex::block::CompressError),
 }
 
 impl ClientTransportData {
@@ -88,6 +94,7 @@ impl ClientTransport {
                 initial_qdb_hash,
                 message_size_limit: server.message_size_limit(),
                 buffer_pool: server.buffer_pool.clone(),
+                large_buffer_pool: server.large_buffer_pool.clone(),
                 c_sockaddr_data,
                 c_sockaddr_len,
             },
@@ -170,11 +177,132 @@ impl ClientTransport {
     }
 
     #[inline]
-    pub async fn send_message(&mut self, message: &QunetMessage) -> Result<(), TransportError> {
-        match &mut self.kind {
-            ClientTransportKind::Udp(udp) => udp.send_message(&self.data, message).await,
-            ClientTransportKind::Tcp(tcp) => tcp.send_message(&self.data, message).await,
-            ClientTransportKind::Quic(quic) => quic.send_message(&self.data, message).await,
+    pub async fn send_message(&mut self, mut message: QunetMessage) -> Result<(), TransportError> {
+        // Compress this message?
+        if let QunetMessage::Data { .. } = &message
+            && let Some(comp_type) = self.should_compress_data_message(&message)
+        {
+            message = self.do_compress_data_message(message, comp_type).await?;
         }
+
+        match &mut self.kind {
+            ClientTransportKind::Udp(udp) => udp.send_message(&self.data, &message).await,
+            ClientTransportKind::Tcp(tcp) => tcp.send_message(&self.data, &message).await,
+            ClientTransportKind::Quic(quic) => quic.send_message(&self.data, &message).await,
+        }
+    }
+
+    #[inline]
+    fn should_compress_data_message(&self, message: &QunetMessage) -> Option<CompressionType> {
+        let data_buf = message
+            .data_bytes()
+            .expect("Non data message passed to compression check");
+
+        // determine if it's worth compressing
+
+        // TODO: properly benchmark these values,
+        // we want to be careful especially with udp game packets
+        if data_buf.len() < 512 {
+            None
+        } else if data_buf.len() < 2048 {
+            Some(CompressionType::Lz4)
+        } else {
+            Some(CompressionType::Zstd)
+        }
+    }
+
+    #[inline]
+    async fn get_new_buffer(&self, size: usize) -> BufferKind {
+        if size < self.data.buffer_pool.buf_size() {
+            BufferKind::Pooled {
+                buf: self.data.buffer_pool.get().await,
+                pos: 0,
+                size: 0,
+            }
+        } else if size < self.data.large_buffer_pool.buf_size() {
+            BufferKind::Pooled {
+                buf: self.data.large_buffer_pool.get().await,
+                pos: 0,
+                size: 0,
+            }
+        } else {
+            // fallback for very large needs
+            BufferKind::Heap(Vec::with_capacity(size))
+        }
+    }
+
+    async fn do_compress_data_message(
+        &mut self,
+        message: QunetMessage,
+        comp_type: CompressionType,
+    ) -> Result<QunetMessage, TransportError> {
+        let data_buf = message
+            .data_bytes()
+            .expect("Non data message passed to compression check");
+
+        assert!(!data_buf.is_empty(), "Data buffer must not be empty");
+
+        let compression_header = CompressionHeader {
+            compression_type: comp_type,
+            uncompressed_size: NonZeroU32::new(data_buf.len() as u32).unwrap(),
+        };
+
+        let compressed_buf = match comp_type {
+            CompressionType::Lz4 => self.do_compress_lz4(data_buf).await?,
+
+            CompressionType::Zstd => Self::do_compress_zstd(data_buf).await?,
+        };
+
+        let reliability = match message {
+            QunetMessage::Data { reliability, .. } => reliability,
+            _ => unreachable!(),
+        };
+
+        Ok(QunetMessage::Data {
+            kind: DataMessageKind::Regular {
+                data: compressed_buf,
+            },
+            reliability,
+            compression: Some(compression_header),
+        })
+    }
+
+    async fn do_compress_lz4(&self, data: &[u8]) -> Result<BufferKind, TransportError> {
+        let needed_len = lz4_flex::block::get_maximum_output_size(data.len());
+
+        let mut buf = self.get_new_buffer(needed_len).await;
+
+        let output = match &mut buf {
+            // safety: the buffer is only used for writing
+            BufferKind::Heap(vec) => unsafe {
+                std::slice::from_raw_parts_mut(vec.as_mut_ptr(), vec.capacity())
+            },
+
+            _ => buf.deref_mut(),
+        };
+
+        let written = lz4_flex::compress_into(data, output)?;
+
+        match &mut buf {
+            // safety: exactly `written` bytes are guaranteed to be initialized
+            BufferKind::Heap(vec) => unsafe {
+                vec.set_len(written);
+            },
+
+            BufferKind::Pooled { size, .. } => {
+                *size = written;
+            }
+
+            BufferKind::Small { size, .. } => {
+                *size = written;
+            }
+        }
+
+        Ok(buf)
+    }
+
+    async fn do_compress_zstd(data: &[u8]) -> Result<BufferKind, TransportError> {
+        // TODO: actually use the zstd dictionary stuff
+        todo!()
     }
 }

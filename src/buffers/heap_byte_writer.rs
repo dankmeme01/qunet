@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use thiserror::Error;
 
 #[derive(Debug, Default, Clone)]
@@ -22,13 +24,12 @@ impl HeapByteWriter {
     }
 
     #[inline]
-    pub fn set_pos(&mut self, pos: usize) -> Result<()> {
+    pub fn set_pos(&mut self, pos: usize) {
         if pos > self.buffer.len() {
             self.buffer.resize(pos, 0);
         }
 
         self.pos = pos;
-        Ok(())
     }
 
     #[inline]
@@ -37,7 +38,7 @@ impl HeapByteWriter {
     }
 
     #[inline]
-    pub fn write_bytes(&mut self, data: &[u8]) -> Result<()> {
+    pub fn write_bytes(&mut self, data: &[u8]) {
         let len = data.len();
 
         if self.pos + len > self.buffer.len() {
@@ -46,61 +47,60 @@ impl HeapByteWriter {
 
         self.buffer[self.pos..self.pos + len].copy_from_slice(data);
         self.pos += len;
-        Ok(())
     }
 
     #[inline]
-    pub fn write_u8(&mut self, value: u8) -> Result<()> {
+    pub fn write_u8(&mut self, value: u8) {
         self.write_bytes(&[value])
     }
 
     #[inline]
-    pub fn write_u16(&mut self, value: u16) -> Result<()> {
+    pub fn write_u16(&mut self, value: u16) {
         self.write_bytes(&value.to_le_bytes())
     }
 
     #[inline]
-    pub fn write_u32(&mut self, value: u32) -> Result<()> {
+    pub fn write_u32(&mut self, value: u32) {
         self.write_bytes(&value.to_le_bytes())
     }
 
     #[inline]
-    pub fn write_u64(&mut self, value: u64) -> Result<()> {
+    pub fn write_u64(&mut self, value: u64) {
         self.write_bytes(&value.to_le_bytes())
     }
 
     #[inline]
-    pub fn write_i8(&mut self, value: i8) -> Result<()> {
+    pub fn write_i8(&mut self, value: i8) {
         self.write_u8(value as u8)
     }
 
     #[inline]
-    pub fn write_i16(&mut self, value: i16) -> Result<()> {
+    pub fn write_i16(&mut self, value: i16) {
         self.write_u16(value as u16)
     }
 
     #[inline]
-    pub fn write_i32(&mut self, value: i32) -> Result<()> {
+    pub fn write_i32(&mut self, value: i32) {
         self.write_u32(value as u32)
     }
 
     #[inline]
-    pub fn write_i64(&mut self, value: i64) -> Result<()> {
+    pub fn write_i64(&mut self, value: i64) {
         self.write_u64(value as u64)
     }
 
     #[inline]
-    pub fn write_bool(&mut self, value: bool) -> Result<()> {
+    pub fn write_bool(&mut self, value: bool) {
         self.write_u8(if value { 1 } else { 0 })
     }
 
     #[inline]
-    pub fn write_f32(&mut self, value: f32) -> Result<()> {
+    pub fn write_f32(&mut self, value: f32) {
         self.write_u32(value.to_bits())
     }
 
     #[inline]
-    pub fn write_f64(&mut self, value: f64) -> Result<()> {
+    pub fn write_f64(&mut self, value: f64) {
         self.write_u64(value.to_bits())
     }
 
@@ -121,7 +121,7 @@ impl HeapByteWriter {
                 byte |= 0x80;
             }
 
-            self.write_u8(byte)?;
+            self.write_u8(byte);
             written += 1;
 
             if done {
@@ -142,7 +142,7 @@ impl HeapByteWriter {
                 byte |= 0x80;
             }
 
-            self.write_u8(byte)?;
+            self.write_u8(byte);
             written += 1;
 
             if value == 0 {
@@ -161,7 +161,7 @@ impl HeapByteWriter {
         written += self.write_varuint(val.len() as u64)?;
 
         if !val.is_empty() {
-            self.write_bytes(val.as_bytes())?;
+            self.write_bytes(val.as_bytes());
             written += val.len();
         }
 
@@ -173,8 +173,10 @@ impl HeapByteWriter {
             return Err(HeapByteWriterError::StringTooLong);
         }
 
-        self.write_u8(val.len() as u8)?;
-        self.write_bytes(val.as_bytes())
+        self.write_u8(val.len() as u8);
+        self.write_bytes(val.as_bytes());
+
+        Ok(())
     }
 
     pub fn write_string_u16(&mut self, val: &str) -> Result<()> {
@@ -182,7 +184,20 @@ impl HeapByteWriter {
             return Err(HeapByteWriterError::StringTooLong);
         }
 
-        self.write_u16(val.len() as u16)?;
-        self.write_bytes(val.as_bytes())
+        self.write_u16(val.len() as u16);
+        self.write_bytes(val.as_bytes());
+
+        Ok(())
+    }
+}
+
+impl Write for HeapByteWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.write_bytes(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }

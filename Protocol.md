@@ -18,6 +18,10 @@ Table of contents:
 * * [TCP](#tcp)
 * * [WebSockets](#websockets)
 * * [UDP](#udp)
+* * [QUIC](#quic)
+* [Message Examples](#message-examples)
+* * [Stream based](#stream-based)
+* * [UDP](#udp-1)
 
 # Encoding rules
 
@@ -391,3 +395,68 @@ The implementation of this transport protocol should manually handle fragmentati
 If a message is longer than a specific preset limit (this can be the MTU of the link layer, or for safety a slightly lower number), the message should be split up into fragments. Each fragment includes the qunet header, with the **Fragmentation** bit set to 1, and followed by the **Fragmentation Information** header, which should contain a message ID (must be the same for all fragments), index of the fragment (starts from 0, increments for each fragment, top bit must be set for the last fragment), and the fragment offset, which indicates where to put this fragment.
 
 Once all the fragments have arrived, the message can be reassambled and decoded. If all the fragments don't arrive after a specified period of time, the message can be discarded. Clients and servers can also be configured to completely reject fragmented messages and return a [ConnectionError](#connectionerror) when receiving one.
+
+## QUIC
+
+One bidirectional stream is used for the connection, and it must be opened by the client as soon as the QUIC handshake is completed. If any unidirectional streams are opened, or any additional bidirectional streams are opened, the other end may terminate the connection or simply ignore them. ALPN must include `qunet1` as the protocol, or connections may be silently dropped.
+
+As for the data flow inside the stream, rules identical to ones in the [TCP section](#tcp) apply.
+
+# Message Examples
+
+This sections shows a couple of examples for how messages can be encoded. For simplicity sake, encoding is shown using C-like types, not raw bytes.
+
+## Stream-based
+
+Bytestream-based protocols like TCP and QUIC have identical message structure (obviously ignoring TCP/UDP/QUIC headers, only counting actual application data), so they are covered under one section.
+
+HandshakeStart message structure (c -> s):
+```
+uint8_t   type = MSG_HANDSHAKE_START (0x05)
+uint16_t  qunetMajor = 1
+uint16_t  fragLimit = 0
+byte[16]  qdbHash = {0, 0, ...}
+```
+
+HandshakeFinishPartial message structure (s -> c). Note that we have a guarantee that `chunkSize == compressedSize` and `chunkOffset == 0`
+```
+uint32_t  msgLength        = ... (total length of all fields except msgLength)
+uint8_t   type             = MSG_HANDSHAKE_FINISH (0x06)
+uint64_t  connectionId     = 0x1234567812345678
+bool      qdbPresent       = true (0x1)
+uint32_t  uncompressedSize = 12345
+uint32_t  compressedSize   = 1234
+uint32_t  chunkOffset      = 0
+uint32_t  chunkSize        = 1234
+uint8_t[1234] qdbData      = ...
+```
+
+## UDP
+
+HandshakeStart message structure (c -> s):
+```
+uint8_t   type = MSG_HANDSHAKE_START (0x05)
+uint16_t  qunetMajor = 1
+uint16_t  fragLimit = 0
+byte[16]  qdbHash = {0, 0, ...}
+```
+
+HandshakeFinishPartial message structure (s -> c):
+```
+uint8_t   type             = MSG_HANDSHAKE_FINISH (0x06)
+uint64_t  connectionId     = 0x1234567812345678
+bool      qdbPresent       = true (0x1)
+uint32_t  uncompressedSize = 12345
+uint32_t  compressedSize   = 1234
+uint32_t  chunkOffset      = 234
+uint32_t  chunkSize        = 1000
+uint8_t[1000] qdbData      = ...
+```
+
+Keepalive message structure (c -> s):
+```
+uint8_t   type         = MSG_KEEPALIVE (0x03)
+uint64_t  connectionId = 0x1234567812345678
+uint64_t  timestamp    = 1751224984476
+uint8_t   flags        = 0x00
+```
