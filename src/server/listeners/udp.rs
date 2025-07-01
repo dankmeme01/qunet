@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{marker::PhantomData, net::SocketAddr, sync::Arc};
 
 use socket2::{Domain, Socket, Type};
 use tokio::{net::UdpSocket, task::JoinSet};
@@ -9,12 +9,11 @@ use crate::{
     buffers::{buffer_pool::BufferPool, byte_reader::ByteReader, byte_writer::ByteWriter},
     server::{
         Server, ServerHandle,
+        app_handler::AppHandler,
         builder::{UdpDiscoveryMode, UdpOptions},
         listeners::listener::{BindError, ListenerError, ServerListener},
         message::{QUNET_SMALL_MESSAGE_SIZE, QunetMessage, QunetRawMessage},
-        protocol::{
-            MSG_HANDSHAKE_START, MSG_PING, MSG_PONG, PROTO_TCP, PROTO_UDP, UDP_PACKET_LIMIT,
-        },
+        protocol::*,
         transport::{ClientTransport, ClientTransportKind, udp::ClientUdpTransport},
     },
 };
@@ -23,10 +22,11 @@ struct OneListener {
     socket: Arc<UdpSocket>,
 }
 
-pub(crate) struct UdpServerListener {
+pub(crate) struct UdpServerListener<H: AppHandler> {
     opts: UdpOptions,
     sockets: Vec<OneListener>,
     shutdown_token: CancellationToken,
+    _phantom: PhantomData<H>,
 }
 
 pub(crate) async fn make_socket(address: SocketAddr, multi: bool) -> std::io::Result<UdpSocket> {
@@ -52,7 +52,7 @@ pub(crate) async fn make_socket(address: SocketAddr, multi: bool) -> std::io::Re
     Ok(udp_socket)
 }
 
-impl UdpServerListener {
+impl<H: AppHandler> UdpServerListener<H> {
     pub async fn new(
         opts: UdpOptions,
         shutdown_token: CancellationToken,
@@ -73,6 +73,7 @@ impl UdpServerListener {
             opts,
             sockets,
             shutdown_token,
+            _phantom: PhantomData,
         })
     }
 
@@ -100,7 +101,7 @@ impl UdpServerListener {
     pub async fn run_listener(
         self: Arc<Self>,
         index: usize,
-        server: ServerHandle,
+        server: ServerHandle<H>,
     ) -> Result<(), ListenerError> {
         let socket_arc = &self.sockets[index].socket;
         let socket = &*self.sockets[index].socket;
@@ -184,7 +185,7 @@ impl UdpServerListener {
     pub async fn run_ping_listener(
         self: Arc<Self>,
         index: usize,
-        server: ServerHandle,
+        server: ServerHandle<H>,
     ) -> Result<(), ListenerError> {
         let socket = &self.sockets[index].socket;
         let mut buf = [0u8; 1500];
@@ -224,7 +225,7 @@ impl UdpServerListener {
         mut reader: ByteReader<'_>,
         socket: &UdpSocket,
         peer: SocketAddr,
-        server: &ServerHandle,
+        server: &ServerHandle<H>,
     ) -> Result<(), ListenerError> {
         assert_eq!(reader.read_u8()?, MSG_PING);
         let ping_id = reader.read_u32()?;
@@ -307,7 +308,7 @@ impl UdpServerListener {
         socket: Arc<UdpSocket>,
         mut reader: ByteReader<'_>,
         peer: SocketAddr,
-        server: &ServerHandle,
+        server: &ServerHandle<H>,
     ) -> Result<(), ListenerError> {
         let major_version = reader.read_u16()?;
         let mut frag_limit = reader.read_u16()?;
@@ -333,8 +334,11 @@ impl UdpServerListener {
     }
 }
 
-impl ServerListener for UdpServerListener {
-    async fn run(self: Arc<UdpServerListener>, server: ServerHandle) -> Result<(), ListenerError> {
+impl<H: AppHandler> ServerListener<H> for UdpServerListener<H> {
+    async fn run(
+        self: Arc<UdpServerListener<H>>,
+        server: ServerHandle<H>,
+    ) -> Result<(), ListenerError> {
         debug!(
             "Starting UDP listener on {} (sockets: {})",
             self.opts.address,

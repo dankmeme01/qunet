@@ -6,6 +6,7 @@ use crate::{
     buffers::buffer_pool::BufferPool,
     server::{
         Server,
+        app_handler::AppHandler,
         message::{
             BufferKind, CompressionHeader, CompressionType, DataMessageKind, QunetMessage,
             QunetMessageDecodeError,
@@ -25,8 +26,8 @@ mod stream;
 pub mod tcp;
 pub mod udp;
 
-pub(crate) enum ClientTransportKind {
-    Udp(ClientUdpTransport),
+pub(crate) enum ClientTransportKind<H: AppHandler> {
+    Udp(ClientUdpTransport<H>),
     Tcp(ClientTcpTransport),
     Quic(ClientQuicTransport),
 }
@@ -45,8 +46,8 @@ pub(crate) struct ClientTransportData {
     c_sockaddr_len: libc::socklen_t,
 }
 
-pub(crate) struct ClientTransport {
-    kind: ClientTransportKind,
+pub(crate) struct ClientTransport<H: AppHandler> {
+    pub(crate) kind: ClientTransportKind<H>,
     pub data: ClientTransportData,
 }
 
@@ -74,13 +75,13 @@ impl ClientTransportData {
     }
 }
 
-impl ClientTransport {
+impl<H: AppHandler> ClientTransport<H> {
     pub fn new(
-        kind: ClientTransportKind,
+        kind: ClientTransportKind<H>,
         address: SocketAddr,
         qunet_major_version: u16,
         initial_qdb_hash: [u8; 16],
-        server: &Server,
+        server: &Server<H>,
     ) -> Self {
         let (c_sockaddr_data, c_sockaddr_len) = socket_addr_to_c(&address);
 
@@ -150,7 +151,7 @@ impl ClientTransport {
     }
 
     #[inline]
-    pub async fn run_setup(&mut self, server: &Server) -> Result<(), TransportError> {
+    pub async fn run_setup(&mut self, server: &Server<H>) -> Result<(), TransportError> {
         match &mut self.kind {
             ClientTransportKind::Udp(udp) => udp.run_setup(&self.data, server).await,
             ClientTransportKind::Tcp(tcp) => tcp.run_setup().await,
@@ -159,7 +160,7 @@ impl ClientTransport {
     }
 
     #[inline]
-    pub async fn run_cleanup(&mut self, server: &Server) -> Result<(), TransportError> {
+    pub async fn run_cleanup(&mut self, server: &Server<H>) -> Result<(), TransportError> {
         match &mut self.kind {
             ClientTransportKind::Udp(udp) => udp.run_cleanup(&self.data, server).await,
             ClientTransportKind::Tcp(tcp) => tcp.run_cleanup().await,
@@ -306,3 +307,5 @@ impl ClientTransport {
         todo!()
     }
 }
+
+impl<H: AppHandler> ClientTransportKind<H> {}

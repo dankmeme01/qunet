@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{marker::PhantomData, net::SocketAddr, sync::Arc, time::Duration};
 
 use s2n_quic::stream::BidirectionalStream;
 use tokio::sync::Mutex;
@@ -7,6 +7,7 @@ use tracing::{debug, warn};
 
 use crate::server::{
     ServerHandle,
+    app_handler::AppHandler,
     builder::{ListenerOptions, QuicOptions},
     listeners::listener::{BindError, ListenerError, ServerListener},
     transport::{ClientTransport, ClientTransportKind, quic::ClientQuicTransport},
@@ -14,11 +15,12 @@ use crate::server::{
 
 use super::stream;
 
-pub(crate) struct QuicServerListener {
+pub(crate) struct QuicServerListener<H: AppHandler> {
     opts: QuicOptions,
     opts2: ListenerOptions,
     shutdown_token: CancellationToken,
     quic_server: Mutex<s2n_quic::Server>,
+    _phantom: PhantomData<H>,
 }
 
 struct PendingQuicConnection {
@@ -48,7 +50,7 @@ impl PendingQuicConnection {
     }
 }
 
-impl QuicServerListener {
+impl<H: AppHandler> QuicServerListener<H> {
     pub async fn new(
         opts: QuicOptions,
         opts2: ListenerOptions,
@@ -56,11 +58,11 @@ impl QuicServerListener {
     ) -> Result<Self, BindError> {
         let tls = s2n_quic::provider::tls::rustls::Server::builder()
             .with_application_protocols([&b"qunet1"[..], &b"h3"[..]].iter())
-            .map_err(BindError::TlsError)?
+            .map_err(BindError::Tls)?
             .with_certificate(opts.tls_cert_path.as_path(), opts.tls_key_path.as_path())
-            .map_err(BindError::TlsError)?;
+            .map_err(BindError::Tls)?;
 
-        let tls = tls.build().map_err(BindError::TlsError)?;
+        let tls = tls.build().map_err(BindError::Tls)?;
 
         // We only use one bidi quic stream
         let conn_limits = s2n_quic::provider::limits::Limits::new()
@@ -88,10 +90,15 @@ impl QuicServerListener {
             opts2,
             shutdown_token,
             quic_server: Mutex::new(quic_server),
+            _phantom: PhantomData,
         })
     }
 
-    pub fn accept_connection(server: ServerHandle, conn: s2n_quic::Connection, timeout: Duration) {
+    pub fn accept_connection(
+        server: ServerHandle<H>,
+        conn: s2n_quic::Connection,
+        timeout: Duration,
+    ) {
         tokio::spawn(async move {
             let remote_addr = conn
                 .remote_addr()
@@ -143,8 +150,8 @@ impl QuicServerListener {
     }
 }
 
-impl ServerListener for QuicServerListener {
-    async fn run(self: Arc<Self>, server: ServerHandle) -> Result<(), ListenerError> {
+impl<H: AppHandler> ServerListener<H> for QuicServerListener<H> {
+    async fn run(self: Arc<Self>, server: ServerHandle<H>) -> Result<(), ListenerError> {
         debug!("Starting QUIC listener on {}", self.opts.address);
 
         let mut qsrv = self.quic_server.lock().await;

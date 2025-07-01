@@ -6,7 +6,10 @@ use std::{
     time::Duration,
 };
 
-use crate::server::{Server, ServerHandle, ServerOutcome};
+use crate::server::{
+    Server, ServerHandle, ServerOutcome,
+    app_handler::{AppHandler, DefaultAppHandler},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UdpDiscoveryMode {
@@ -53,12 +56,13 @@ impl Default for ListenerOptions {
 }
 
 #[derive(Default, Debug)]
-pub struct ServerBuilder {
+pub struct ServerBuilder<H: AppHandler = DefaultAppHandler> {
     pub(crate) udp_opts: Option<UdpOptions>,
     pub(crate) tcp_opts: Option<TcpOptions>,
     pub(crate) quic_opts: Option<QuicOptions>,
     pub(crate) ws_opts: Option<WsOptions>,
     pub(crate) listener_opts: ListenerOptions,
+    pub(crate) app_handler: Option<H>,
 
     pub(crate) message_size_limit: Option<usize>,
 
@@ -66,9 +70,10 @@ pub struct ServerBuilder {
     pub(crate) qdb_data: Option<Vec<u8>>,
 
     pub(crate) graceful_shutdown_timeout: Option<Duration>,
+    pub(crate) max_suspend_time: Option<Duration>,
 }
 
-impl ServerBuilder {
+impl<H: AppHandler> ServerBuilder<H> {
     pub fn with_udp(mut self, address: SocketAddr, discovery_mode: UdpDiscoveryMode) -> Self {
         self.udp_opts = Some(UdpOptions {
             address,
@@ -136,8 +141,29 @@ impl ServerBuilder {
         self
     }
 
-    pub fn build(self) -> Server {
-        Server::from_builder(self)
+    pub fn with_max_suspend_time(mut self, timeout: Duration) -> Self {
+        self.max_suspend_time = Some(timeout);
+        self
+    }
+
+    pub fn with_app_handler<NewH: AppHandler>(self, app_handler: NewH) -> ServerBuilder<NewH> {
+        ServerBuilder {
+            udp_opts: self.udp_opts,
+            tcp_opts: self.tcp_opts,
+            quic_opts: self.quic_opts,
+            ws_opts: self.ws_opts,
+            listener_opts: self.listener_opts,
+            app_handler: Some(app_handler),
+            message_size_limit: self.message_size_limit,
+            qdb_path: self.qdb_path,
+            qdb_data: self.qdb_data,
+            graceful_shutdown_timeout: self.graceful_shutdown_timeout,
+            max_suspend_time: self.max_suspend_time,
+        }
+    }
+
+    pub fn build(self) -> Server<H> {
+        Server::<H>::from_builder(self)
     }
 
     pub async fn run(self) -> ServerOutcome {

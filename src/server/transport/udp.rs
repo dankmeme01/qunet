@@ -1,5 +1,5 @@
-use std::io::IoSlice;
 use std::sync::Arc;
+use std::{io::IoSlice, marker::PhantomData};
 
 use tokio::net::UdpSocket;
 use tracing::{debug, warn};
@@ -8,24 +8,27 @@ use crate::{
     buffers::byte_writer::ByteWriter,
     server::{
         Server,
+        app_handler::AppHandler,
         message::{QunetMessage, channel::RawMessageReceiver},
         protocol::{HANDSHAKE_HEADER_SIZE_WITH_QDB, MSG_HANDSHAKE_FINISH},
         transport::{ClientTransportData, TransportError},
     },
 };
 
-pub(crate) struct ClientUdpTransport {
+pub(crate) struct ClientUdpTransport<H> {
     socket: Arc<UdpSocket>,
     mtu: usize,
     receiver: Option<RawMessageReceiver>,
+    _phantom: PhantomData<H>,
 }
 
-impl ClientUdpTransport {
+impl<H: AppHandler> ClientUdpTransport<H> {
     pub fn new(socket: Arc<UdpSocket>, mtu: usize) -> Self {
         Self {
             socket,
             mtu,
             receiver: None,
+            _phantom: PhantomData,
         }
     }
 
@@ -33,7 +36,7 @@ impl ClientUdpTransport {
     pub async fn run_setup(
         &mut self,
         transport_data: &ClientTransportData,
-        server: &Server,
+        server: &Server<H>,
     ) -> Result<(), TransportError> {
         self.receiver = Some(server.create_udp_route(transport_data.connection_id));
         Ok(())
@@ -43,7 +46,7 @@ impl ClientUdpTransport {
     pub async fn run_cleanup(
         &mut self,
         transport_data: &ClientTransportData,
-        server: &Server,
+        server: &Server<H>,
     ) -> Result<(), TransportError> {
         server.remove_udp_route(transport_data.connection_id);
         Ok(())

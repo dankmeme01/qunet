@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{marker::PhantomData, net::SocketAddr, sync::Arc, time::Duration};
 
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
@@ -6,6 +6,7 @@ use tracing::{debug, error, warn};
 
 use crate::server::{
     ServerHandle,
+    app_handler::AppHandler,
     builder::TcpOptions,
     listeners::listener::{BindError, ListenerError, ServerListener},
     transport::{ClientTransport, ClientTransportKind, tcp::ClientTcpTransport},
@@ -13,10 +14,11 @@ use crate::server::{
 
 use super::stream;
 
-pub(crate) struct TcpServerListener {
+pub(crate) struct TcpServerListener<H: AppHandler> {
     opts: TcpOptions,
     socket: TcpListener,
     shutdown_token: CancellationToken,
+    _phantom: PhantomData<H>,
 }
 
 struct PendingTcpConnection {
@@ -30,7 +32,7 @@ impl PendingTcpConnection {
     }
 }
 
-impl TcpServerListener {
+impl<H: AppHandler> TcpServerListener<H> {
     pub async fn new(
         opts: TcpOptions,
         shutdown_token: CancellationToken,
@@ -41,10 +43,11 @@ impl TcpServerListener {
             opts,
             socket,
             shutdown_token,
+            _phantom: PhantomData,
         })
     }
 
-    pub fn accept_connection(server: ServerHandle, stream: TcpStream, addr: SocketAddr) {
+    pub fn accept_connection(server: ServerHandle<H>, stream: TcpStream, addr: SocketAddr) {
         tokio::spawn(async move {
             debug!("Accepted TCP connection from {addr}, waiting for the handshake");
 
@@ -78,8 +81,11 @@ impl TcpServerListener {
     }
 }
 
-impl ServerListener for TcpServerListener {
-    async fn run(self: Arc<TcpServerListener>, server: ServerHandle) -> Result<(), ListenerError> {
+impl<H: AppHandler> ServerListener<H> for TcpServerListener<H> {
+    async fn run(
+        self: Arc<TcpServerListener<H>>,
+        server: ServerHandle<H>,
+    ) -> Result<(), ListenerError> {
         debug!("Starting TCP listener on {}", self.opts.address);
 
         loop {

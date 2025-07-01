@@ -1,7 +1,6 @@
 use std::{ops::Deref, sync::Arc, time::Duration};
 
-use nohash_hasher::IntMap;
-use parking_lot::Mutex;
+use dashmap::DashMap;
 use thiserror::Error;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{debug, error, info, warn};
@@ -13,7 +12,9 @@ use crate::{
     },
     database::{self, QunetDatabase},
     server::{
+        app_handler::{AppHandler, DefaultAppHandler},
         builder::ServerBuilder,
+        client::ClientState,
         listeners::{
             listener::{BindError, ListenerError, ServerListener},
             quic::QuicServerListener,
@@ -31,11 +32,13 @@ use crate::{
     },
 };
 
+pub mod app_handler;
 pub mod builder;
-pub mod listeners;
+pub mod client;
+pub(crate) mod listeners;
 pub mod message;
 pub mod protocol;
-pub mod transport;
+pub(crate) mod transport;
 
 #[derive(Error, Debug)]
 pub enum ServerOutcome {
@@ -57,8 +60,8 @@ pub enum ServerOutcome {
     ListenerShutdown(ListenerError),
     #[error("All listeners terminated unsuccessfully")]
     AllListenersTerminated,
-    #[error("Listener panicked: {0}")]
-    ListenerPanic(#[from] tokio::task::JoinError),
+    #[error("Application error: {0}")]
+    CustomError(Box<dyn std::error::Error + Send + Sync + 'static>),
 }
 
 #[derive(Debug, Error)]
@@ -67,19 +70,21 @@ pub enum AcceptError {
     MajorVersionMismatch { client: u16, server: u16 },
 }
 
-pub struct Server {
-    _builder: ServerBuilder,
-    udp_listener: Option<Arc<UdpServerListener>>,
-    tcp_listener: Option<Arc<TcpServerListener>>,
-    quic_listener: Option<Arc<QuicServerListener>>,
+pub struct Server<H: AppHandler> {
+    _builder: ServerBuilder<H>,
+    udp_listener: Option<Arc<UdpServerListener<H>>>,
+    tcp_listener: Option<Arc<TcpServerListener<H>>>,
+    quic_listener: Option<Arc<QuicServerListener<H>>>,
     buffer_pool: Arc<BufferPool>,
     large_buffer_pool: Arc<BufferPool>,
+    app_handler: H,
 
     shutdown_token: CancellationToken,
     listener_tracker: TaskTracker,
 
     // TODO: rwlock? dashmap? arcswap?
-    udp_router: Mutex<IntMap<u64, RawMessageSender>>,
+    udp_router: DashMap<u64, RawMessageSender>,
+    clients: DashMap<u64, Arc<ClientState<H>>>,
 
     // misc settings
     _message_size_limit: usize,
@@ -91,12 +96,19 @@ pub struct Server {
     qdb_uncompressed_size: usize,
 }
 
-impl Server {
-    pub fn builder() -> ServerBuilder {
-        ServerBuilder::default()
+impl Server<DefaultAppHandler> {
+    pub fn builder() -> ServerBuilder<DefaultAppHandler> {
+        ServerBuilder::<DefaultAppHandler>::default().with_app_handler(DefaultAppHandler)
     }
+}
 
-    pub(crate) fn from_builder(builder: ServerBuilder) -> Self {
+impl<H: AppHandler> Server<H> {
+    pub(crate) fn from_builder(mut builder: ServerBuilder<H>) -> Self {
+        let app_handler = builder
+            .app_handler
+            .take()
+            .expect("App handler must be set in the builder");
+
         Server {
             _builder: builder,
             udp_listener: None,
@@ -104,11 +116,13 @@ impl Server {
             quic_listener: None,
             buffer_pool: Arc::new(BufferPool::new(4096, 128, 1024)), // TODO: allow configuring this too
             large_buffer_pool: Arc::new(BufferPool::new(65536, 16, 256)), // TODO: allow configuring this too
+            app_handler,
 
             shutdown_token: CancellationToken::new(),
             listener_tracker: TaskTracker::new(),
 
-            udp_router: Mutex::new(IntMap::default()),
+            udp_router: DashMap::new(),
+            clients: DashMap::new(),
             _message_size_limit: 0,
 
             qdb: QunetDatabase::default(),
@@ -119,6 +133,13 @@ impl Server {
     }
 
     pub async fn setup(&mut self) -> Result<(), ServerOutcome> {
+        self.print_config();
+
+        self.app_handler
+            .pre_setup(self)
+            .await
+            .map_err(ServerOutcome::CustomError)?;
+
         // Setup connection listeners
         if let Some(opts) = self._builder.udp_opts.take() {
             let listener = UdpServerListener::new(opts, self.shutdown_token.clone()).await?;
@@ -180,10 +201,15 @@ impl Server {
             self.qdb_data = destination.into();
         }
 
+        self.app_handler
+            .post_setup(self)
+            .await
+            .map_err(ServerOutcome::CustomError)?;
+
         Ok(())
     }
 
-    async fn run_listener<L: ServerListener>(self: ServerHandle, listener: Arc<L>) {
+    async fn run_listener<L: ServerListener<H>>(self: ServerHandle<H>, listener: Arc<L>) {
         match listener.clone().run(self).await {
             Ok(()) => info!(
                 "Listener {} terminated with no errors",
@@ -200,9 +226,7 @@ impl Server {
         }
     }
 
-    pub async fn run_server(self: ServerHandle) -> ServerOutcome {
-        self.print_config();
-
+    pub async fn run_server(self: ServerHandle<H>) -> ServerOutcome {
         if let Some(udp) = self.udp_listener.clone() {
             let srv = self.clone();
             self.listener_tracker
@@ -222,6 +246,11 @@ impl Server {
         }
 
         self.listener_tracker.close();
+
+        // invoke launch hook
+        if let Err(o) = self.app_handler.on_launch(&self).await {
+            return ServerOutcome::CustomError(o);
+        }
 
         tokio::select! {
             _ = self.listener_tracker.wait() => {
@@ -257,16 +286,25 @@ impl Server {
     }
 
     async fn graceful_shutdown(&self) -> Result<(), ServerOutcome> {
-        self.shutdown_token.cancel();
+        self.app_handler
+            .pre_shutdown(self)
+            .await
+            .map_err(ServerOutcome::CustomError)?;
 
+        self.shutdown_token.cancel();
         self.listener_tracker.wait().await;
+
+        self.app_handler
+            .post_shutdown(self)
+            .await
+            .map_err(ServerOutcome::CustomError)?;
 
         Ok(())
     }
 
     pub(crate) async fn accept_connection(
-        self: ServerHandle,
-        mut transport: ClientTransport,
+        self: ServerHandle<H>,
+        mut transport: ClientTransport<H>,
     ) -> Result<(), AcceptError> {
         let client_ver = transport.data.qunet_major_version;
 
@@ -310,7 +348,36 @@ impl Server {
         tokio::spawn(async move {
             let addr = transport.address();
 
-            if let Err(e) = Self::client_handler(&self, &mut transport, send_qdb).await {
+            let client_data = match self
+                .app_handler
+                .on_client_connect(
+                    &self,
+                    transport.connection_id(),
+                    transport.address(),
+                    transport.kind_str(),
+                )
+                .await
+            {
+                Ok(data) => data,
+                Err(e) => {
+                    // The application rejected this connection, so we silently drop it.
+                    // cleanup does not need to be run as the transport setup has never been called.
+                    debug!("[{addr}] Connection rejected due to application error: {e}");
+                    return;
+                }
+            };
+
+            let client = Arc::new(ClientState::<H> {
+                app_data: client_data,
+                connection_id: transport.connection_id(),
+                address: transport.address(),
+            });
+
+            self.clients.insert(client.connection_id, client.clone());
+
+            if let Err(e) =
+                Self::client_handler(&self, &mut transport, client.clone(), send_qdb).await
+            {
                 warn!(
                     "[{}] Client connection terminated due to error: {}",
                     addr, e
@@ -345,7 +412,7 @@ impl Server {
             }
 
             // always run cleanup!
-            match Self::cleanup_connection(&self, &mut transport).await {
+            match Self::cleanup_connection(&self, &mut transport, client).await {
                 Ok(()) => {}
                 Err(err) => warn!("[{}] Failed to clean up connection: {}", addr, err),
             }
@@ -359,7 +426,7 @@ impl Server {
         connection_id: u64,
         msg: QunetRawMessage,
     ) -> bool {
-        if let Some(route) = self.udp_router.lock().get(&connection_id) {
+        if let Some(route) = self.udp_router.get(&connection_id) {
             route.send(msg)
         } else {
             false
@@ -368,13 +435,13 @@ impl Server {
 
     pub(crate) fn create_udp_route(&self, connection_id: u64) -> RawMessageReceiver {
         let (tx, rx) = message::channel::new_channel();
-        self.udp_router.lock().insert(connection_id, tx);
+        self.udp_router.insert(connection_id, tx);
 
         rx
     }
 
     pub(crate) fn remove_udp_route(&self, connection_id: u64) {
-        self.udp_router.lock().remove(&connection_id);
+        self.udp_router.remove(&connection_id);
     }
 
     fn generate_connection_id(&self) -> u64 {
@@ -388,16 +455,10 @@ impl Server {
 
     async fn client_handler(
         &self,
-        transport: &mut ClientTransport,
+        transport: &mut ClientTransport<H>,
+        client: Arc<ClientState<H>>,
         send_qdb: bool,
     ) -> Result<(), TransportError> {
-        info!(
-            "[{}] New connection ({}{})",
-            transport.address(),
-            transport.kind_str(),
-            if send_qdb { ", outdated QDB" } else { "" }
-        );
-
         // run setup (udp needs this)
         transport.run_setup(self).await?;
 
@@ -443,7 +504,7 @@ impl Server {
 
     async fn handle_client_message(
         &self,
-        transport: &mut ClientTransport,
+        transport: &mut ClientTransport<H>,
         msg: &QunetMessage,
     ) -> Result<(), TransportError> {
         #[cfg(debug_assertions)]
@@ -538,7 +599,7 @@ impl Server {
 
     async fn handle_data_message(
         &self,
-        _transport: &mut ClientTransport,
+        _transport: &mut ClientTransport<H>,
         _msg: &QunetMessage,
     ) -> Result<(), TransportError> {
         // TODO!
@@ -548,8 +609,11 @@ impl Server {
     #[inline]
     async fn cleanup_connection(
         &self,
-        transport: &mut ClientTransport,
+        transport: &mut ClientTransport<H>,
+        client: Arc<ClientState<H>>,
     ) -> Result<(), TransportError> {
+        self.app_handler.on_client_disconnect(self, &client).await;
+
         transport.run_cleanup(self).await
     }
 
@@ -583,19 +647,26 @@ impl Server {
     }
 }
 
-#[derive(Clone)]
-pub struct ServerHandle {
-    server: Arc<Server>,
+pub struct ServerHandle<H: AppHandler> {
+    server: Arc<Server<H>>,
 }
 
-impl ServerHandle {
+impl<H: AppHandler> Clone for ServerHandle<H> {
+    fn clone(&self) -> Self {
+        ServerHandle {
+            server: Arc::clone(&self.server),
+        }
+    }
+}
+
+impl<H: AppHandler> ServerHandle<H> {
     pub async fn run(self) -> ServerOutcome {
         Server::run_server(self.clone()).await
     }
 }
 
-impl Deref for ServerHandle {
-    type Target = Server;
+impl<H: AppHandler> Deref for ServerHandle<H> {
+    type Target = Server<H>;
 
     fn deref(&self) -> &Self::Target {
         &self.server
