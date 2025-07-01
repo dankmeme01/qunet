@@ -76,3 +76,17 @@ pub fn append_to_vec(vec: &mut Vec<u8>, data: &[u8]) {
         vec[len..].copy_from_slice(data);
     }
 }
+
+#[inline]
+pub fn uninit_box_bytes(size: usize) -> Box<[u8]> {
+    assert!(size > 0);
+
+    let mut vec = Vec::with_capacity(size);
+    let ptr = vec.as_mut_ptr();
+
+    let real_size = vec.capacity();
+    std::mem::forget(vec);
+
+    // safety: the pointer is valid and the size is correct
+    unsafe { Box::from_raw(std::slice::from_raw_parts_mut(ptr, real_size)) }
+}
