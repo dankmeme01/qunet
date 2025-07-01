@@ -494,7 +494,7 @@ impl<H: AppHandler> Server<H> {
                 }
             };
 
-            self.handle_client_message(transport, &msg).await?;
+            self.handle_client_message(transport, &client, &msg).await?;
         }
 
         debug!("[{}] Connection terminated", transport.address());
@@ -505,6 +505,7 @@ impl<H: AppHandler> Server<H> {
     async fn handle_client_message(
         &self,
         transport: &mut ClientTransport<H>,
+        client: &ClientState<H>,
         msg: &QunetMessage,
     ) -> Result<(), TransportError> {
         #[cfg(debug_assertions)]
@@ -583,7 +584,7 @@ impl<H: AppHandler> Server<H> {
             }
 
             msg @ QunetMessage::Data { .. } => {
-                self.handle_data_message(transport, msg).await?;
+                self.handle_data_message(client, msg).await?;
             }
 
             _ => {
@@ -597,9 +598,10 @@ impl<H: AppHandler> Server<H> {
         Ok(())
     }
 
+    #[inline]
     async fn handle_data_message(
         &self,
-        _transport: &mut ClientTransport<H>,
+        client: &ClientState<H>,
         _msg: &QunetMessage,
     ) -> Result<(), TransportError> {
         // TODO!
