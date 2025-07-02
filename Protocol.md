@@ -12,6 +12,7 @@ Table of contents:
 * * * [Type section (ID 1)](#type-section-id-1)
 * * * [Options section (ID 2)](#options-section-id-2)
 * * * [Dict section (ID 3)](#dict-section-id-3)
+* [Data encoding](#data-encoding)
 * [Socket Protocol](#socket-protocol)
 * * [Qunet Message](#qunet-message)
 * [Transport Protocols](#transport-protocols)
@@ -87,7 +88,7 @@ This section contains all the serializable types. It is encoded as follows:
 
 The `Tag` and `TypeId` types are special - they doesn't have a constant size. Instead, the count of tags/types is taken, 1 is added to it (as 0 is not a valid tag nor a type), and the type becomes either `u8`, `u16` or `u32`, depending on which one of those is the smallest type that can represent the given number. For example, if there are 255 unique tags, `Tag` type will be `u8`, but if there is 256 or more, it will be `u16`, up until 65536 tags.
 
-`TypeId` 0 is reserved for `Any`, while `Tag` 0 means the type has no unique tag.
+`TypeId` 0 is reserved for `Any`, while `Tag` 0 means the type has no unique tag (but is also used for `None` in encoding)
 
 All encoded types have a unique type ID and they may have non-unique tag. If the type has no tag, the tag is encoded as zero. Type ID is not explicitly encoded, and instead it is the index of the type, starting from 1 (not 0!).
 
@@ -153,6 +154,33 @@ Given that bit 0 is least significant and bit 15 is most significant:
 ## Dict section (ID 3)
 
 This section contains a zstd compression dictionary
+
+# Data encoding
+
+All the data transmitted using `Data` messages is encoded and decoded using a [qunet database](#qunet-database). Some types in this section are described in that part of the document rather than here.
+
+A `Data` message (after applying decompression and reassembly, if appropriate) consists of:
+* A root structure of type `Any`.
+* Events. Their count is specified in the message header, and the way they are encoded is [described below](#event-encoding).
+
+## Data encoding
+
+The type `Any` is encoded as the tag (type `Tag`, see [type section](#type-section-id-1)) which identifies the specific type, followed by the object itself. Tag 0 is a special type `None`, which carries no data.
+
+* Builtins (integers, strings) - their encoding rules are specified in the [Encoding rules](#encoding-rules) section
+* Plain enums - simply encoded as the underlying integer type
+* Structs - each field is encoded sequentially in the exact same order as they are specified in the qunet database (which might be different than the order specified in the struct definition!). Fields do **not** encode their name, index or type, only the actual data they represent. Of course, `Any` is an exception and if used as a field it will include a tag.
+
+## Event encoding
+
+If the qunet message has the **Events** bit set in the header, then event data is included right after the root data structure. Each event is encoded sequentially and has a header (single byte), whose structure is:
+* Bit 0 (least significant) - whether more events come after this one, if set to `0` then this is the last event
+* Bit 1 - whether this is a reliable event and must be ACKed
+* Bit 2 - if set, this is not an event and is an ACK
+
+If the event is a reliable event, a `u16` representing the sequential event ID is included after the flags. If this is an ACK, instead a `u16` is included representing the ID of the last received event (only if there is no gaps, i.e. if events with IDs 1 and 3 are received, an endpoint must **not** send an ACK with ID 3, instead it must wait for the event 2 to be retransmitted).
+
+If this is an event and not an ACK, the header is followed by an `Any`, aka a `Tag` and an object. TODO: can this be `None`?
 
 # Socket Protocol
 
@@ -327,6 +355,7 @@ Message structure:
 This is a special message type for application data. It covers values from 128 to 255, aka all values with the most significant bit being `1`. The other 7 bits are used for flags:
 
 * Bits 0 and 1 (least significant) - compression algorithm, `00` - uncompressed, `01` - zstd, `10` - lz4, `11` - reserved, must not be used
+* Bit 2 - **Events** bit, indicates whether events are included in the message
 * All the other bits should be set to 0 by the qunet protocol, however they **may be modified by the transport layer**. For example the UDP transport reuses some bits for fragmentation or reliability information.
 
 If compression is enabled, the **Compression** extension is included right after the qunet header byte. Structure:
