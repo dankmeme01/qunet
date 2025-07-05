@@ -1,6 +1,7 @@
 use std::{
     io::Write,
     ops::{Deref, DerefMut},
+    sync::Arc,
 };
 
 use crate::{buffers::buffer_pool::BorrowedMutBuffer, server::message::QUNET_SMALL_MESSAGE_SIZE};
@@ -17,6 +18,7 @@ pub enum BufferKind {
         buf: [u8; QUNET_SMALL_MESSAGE_SIZE],
         size: usize,
     },
+    Reference(Arc<BufferKind>),
 }
 
 impl BufferKind {
@@ -54,6 +56,16 @@ impl BufferKind {
 
                 true
             }
+
+            BufferKind::Reference(arc) => {
+                if let Some(inner) = Arc::get_mut(arc) {
+                    inner.append_bytes(data)
+                } else {
+                    panic!(
+                        "tried calling deref_mut on BufferKind::Reference with more than 1 reference"
+                    );
+                }
+            }
         }
     }
 }
@@ -80,6 +92,7 @@ impl Deref for BufferKind {
             BufferKind::Heap(buf) => buf,
             BufferKind::Pooled { buf, pos, size } => &buf[*pos..*pos + *size],
             BufferKind::Small { buf, size } => &buf[..*size],
+            BufferKind::Reference(arc) => arc.deref(),
         }
     }
 }
@@ -90,6 +103,15 @@ impl DerefMut for BufferKind {
             BufferKind::Heap(buf) => buf,
             BufferKind::Pooled { buf, pos, size } => &mut buf[*pos..*pos + *size],
             BufferKind::Small { buf, size } => &mut buf[..*size],
+            BufferKind::Reference(arc) => {
+                if let Some(inner) = Arc::get_mut(arc) {
+                    inner.deref_mut()
+                } else {
+                    panic!(
+                        "tried calling deref_mut on BufferKind::Reference with more than 1 reference"
+                    );
+                }
+            }
         }
     }
 }

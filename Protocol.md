@@ -76,111 +76,19 @@ Section options are a `u16` bitmask. Currently, it is reserved and there are no 
 
 ## Type section (ID 1)
 
-This section contains all the serializable types. It is encoded as follows:
-
-* Count of unique types (`u32`)
-* Count of unique tags (`u32`)
-* Each type is encoded as:
-* * Tag (`Tag`) - tag, see below for more information
-* * Name ([StringVar](#string--stringvar--stringu8--stringu16)) - name of the type
-* * Kind of the type (`TypeKind`) - kind of the type, see [TypeKind](#typekind)
-* * Rest of the data is specific to the kind, see [TypeKind](#typekind).
-
-The `Tag` and `TypeId` types are special - they doesn't have a constant size. Instead, the count of tags/types is taken, 1 is added to it (as 0 is not a valid tag nor a type), and the type becomes either `u8`, `u16` or `u32`, depending on which one of those is the smallest type that can represent the given number. For example, if there are 255 unique tags, `Tag` type will be `u8`, but if there is 256 or more, it will be `u16`, up until 65536 tags.
-
-`TypeId` 0 is reserved for `Any`, while `Tag` 0 means the type has no unique tag (but is also used for `None` in encoding)
-
-All encoded types have a unique type ID and they may have non-unique tag. If the type has no tag, the tag is encoded as zero. Type ID is not explicitly encoded, and instead it is the index of the type, starting from 1 (not 0!).
-
-### TypeKind
-
-This type is encoded as a `u8` and may have one of the following values:
-
-* Builtin type `bool` (1)
-* Builtin type `u8` (2)
-* Builtin type `u16` (3)
-* Builtin type `u32` (4)
-* Builtin type `u64` (5)
-* Builtin type `i8` (6)
-* Builtin type `i16` (7)
-* Builtin type `i32` (8)
-* Builtin type `i64` (9)
-* Builtin type `f32` (10)
-* Builtin type `f64` (11)
-* Builtin type `StringVar` (12)
-* Builtin type `StringU8` (13)
-* Builtin type `StringU16` (14)
-* Alias (128) - this is an alias to another type
-* Struct (129) - this is a struct that contains fields
-* EnumU8 (160) - this type is a plain enumeration, encoded using a `u8`
-* EnumU16 (161) - this type is a plain enumeration, encoded using a `u16`
-* EnumU32 (162) - this type is a plain enumeration, encoded using a `u32`
-* EnumI8 (163) - this type is a plain enumeration, encoded using a `i8`
-* EnumI16 (164) - this type is a plain enumeration, encoded using a `i16`
-* EnumI32 (165) - this type is a plain enumeration, encoded using a `i32`
-
-The kind-specific data is as follows:
-
-* For builtin types (0 to 127), there is no data. These types exist simply for binding a builtin qunet type to a specific type ID / tag.
-* Alias (128) - a `TypeId` to represent the type it is an alias of
-* Struct (129):
-* * Field count ([VarUint](#varint))
-* * For each field:
-* * * Type ID (`TypeId`)
-* * * Name ([StringVar](#string--stringvar--stringu8--stringu16))
-* Plain enum types (160 - 180):
-* * Variant count (dependant type, i.e. for `EnumU8`/`EnumI8` it's `u8`, etc.)
-* * For each variant:
-* * * Value (dependant type, i.e. for `EnumU8` it's `u8`, for `EnumI8` it's `i8`, etc.)
-* * * Name ([StringVar](#string--stringvar--stringu8--stringu16))
+This section is now unused.
 
 ## Options section (ID 2)
 
-This section is for assigning options to various types, such as event priority. It is encoded as follows:
-
-* Count of types (`u32`)
-* For each type:
-* * Type ID (`TypeId`, see [Type section](#type-section-id-1) for more information)
-* * Options (`u16`) - a bitmask
-
-### Option bitmask
-
-Given that bit 0 is least significant and bit 15 is most significant:
-
-* Bits 0 and 1 define event priority. `00` is none or default, `01` is low, `10` is medium, `11` is high.
-* Bits 2 and 3 define event reliability, `00` is unreliable, `01` is reliable but unordered, `11` is reliable and ordered. `10` should not be used. See [TODO](#todo) for more information about event reliability.
-* All the other bits are reserved.
+This section is now unused.
 
 ## Dict section (ID 3)
 
-This section contains a zstd compression dictionary
+This section contains a zstd compression dictionary that will be used for messages compressed with zstd.
 
 # Data encoding
 
-All the data transmitted using `Data` messages is encoded and decoded using a [qunet database](#qunet-database). Some types in this section are described in that part of the document rather than here.
-
-A `Data` message (after applying decompression and reassembly, if appropriate) consists of:
-* A root structure of type `Any`.
-* Events. Their count is specified in the message header, and the way they are encoded is [described below](#event-encoding).
-
-## Data encoding
-
-The type `Any` is encoded as the tag (type `Tag`, see [type section](#type-section-id-1)) which identifies the specific type, followed by the object itself. Tag 0 is a special type `None`, which carries no data.
-
-* Builtins (integers, strings) - their encoding rules are specified in the [Encoding rules](#encoding-rules) section
-* Plain enums - simply encoded as the underlying integer type
-* Structs - each field is encoded sequentially in the exact same order as they are specified in the qunet database (which might be different than the order specified in the struct definition!). Fields do **not** encode their name, index or type, only the actual data they represent. Of course, `Any` is an exception and if used as a field it will include a tag.
-
-## Event encoding
-
-If the qunet message has the **Events** bit set in the header, then event data is included right after the root data structure. Each event is encoded sequentially and has a header (single byte), whose structure is:
-* Bit 0 (least significant) - whether more events come after this one, if set to `0` then this is the last event
-* Bit 1 - whether this is a reliable event and must be ACKed
-* Bit 2 - if set, this is not an event and is an ACK
-
-If the event is a reliable event, a `u16` representing the sequential event ID is included after the flags. If this is an ACK, instead a `u16` is included representing the ID of the last received event (only if there is no gaps, i.e. if events with IDs 1 and 3 are received, an endpoint must **not** send an ACK with ID 3, instead it must wait for the event 2 to be retransmitted).
-
-If this is an event and not an ACK, the header is followed by an `Any`, aka a `Tag` and an object. TODO: can this be `None`?
+Data encoding is left completely to the application.
 
 # Socket Protocol
 
@@ -355,7 +263,6 @@ Message structure:
 This is a special message type for application data. It covers values from 128 to 255, aka all values with the most significant bit being `1`. The other 7 bits are used for flags:
 
 * Bits 0 and 1 (least significant) - compression algorithm, `00` - uncompressed, `01` - zstd, `10` - lz4, `11` - reserved, must not be used
-* Bit 2 - **Events** bit, indicates whether events are included in the message
 * All the other bits should be set to 0 by the qunet protocol, however they **may be modified by the transport layer**. For example the UDP transport reuses some bits for fragmentation or reliability information.
 
 If compression is enabled, the **Compression** extension is included right after the qunet header byte. Structure:

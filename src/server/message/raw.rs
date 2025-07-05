@@ -3,7 +3,7 @@ use std::ops::Deref;
 use crate::buffers::buffer_pool::BorrowedMutBuffer;
 
 // TODO: measure which size we really should aim for
-pub const QUNET_SMALL_MESSAGE_SIZE: usize = 119;
+pub const QUNET_SMALL_MESSAGE_SIZE: usize = 71; // 119
 
 pub enum QunetRawMessage {
     Small {

@@ -106,7 +106,7 @@ pub(crate) enum QunetMessage {
         qdb_data: Arc<[u8]>,
     },
 
-    Data {
+    DataIncoming {
         kind: DataMessageKind,
         reliability: Option<ReliabilityHeader>,
         compression: Option<CompressionHeader>,
@@ -296,7 +296,7 @@ impl QunetMessage {
             DataMessageKind::Regular { data: buf_kind }
         };
 
-        Ok(QunetMessage::Data {
+        Ok(QunetMessage::DataIncoming {
             kind: data_kind,
             reliability: meta.reliability_header,
             compression: meta.compression_header,
@@ -351,12 +351,12 @@ impl QunetMessage {
     }
 
     pub fn is_data(&self) -> bool {
-        matches!(self, QunetMessage::Data { .. })
+        matches!(self, QunetMessage::DataIncoming { .. })
     }
 
     /// Convenience method that returns bytes of a `Data` message. Returns None if the message is not a `Data` message.
     pub fn data_bytes(&self) -> Option<&[u8]> {
-        if let QunetMessage::Data { kind, .. } = self {
+        if let QunetMessage::DataIncoming { kind, .. } = self {
             match kind {
                 DataMessageKind::Fragment { data, .. } => Some(data),
                 DataMessageKind::Regular { data } => Some(data),
@@ -469,7 +469,7 @@ impl QunetMessage {
             QunetMessage::ConnectionError { .. } => "ConnectionError",
             QunetMessage::QdbChunkRequest { .. } => "QdbChunkRequest",
             QunetMessage::QdbChunkResponse { .. } => "QdbChunkResponse",
-            QunetMessage::Data { .. } => "Data",
+            QunetMessage::DataIncoming { .. } => "Data",
         }
     }
 }

@@ -2,7 +2,10 @@ use std::net::SocketAddr;
 
 use tracing::info;
 
-use crate::server::{Server, ServerHandle, ServerOutcome, client::ClientState};
+use crate::{
+    buffers::byte_writer::{ByteWriter, ByteWriterError},
+    server::{Server, client::ClientState},
+};
 
 pub type AppError = Box<dyn std::error::Error + Send + Sync>;
 pub type AppResult<T> = Result<T, AppError>;
@@ -89,6 +92,38 @@ pub trait AppHandler: Send + Sync + Sized + 'static {
         client: &ClientState<Self>,
     ) -> impl Future<Output = ()> + Send {
         async move {}
+    }
+
+    /// This callback is invoked when a client sends a data packet to the server.
+    fn on_client_data(
+        &self,
+        server: &Server<Self>,
+        client: &ClientState<Self>,
+        data: &[u8],
+    ) -> impl Future<Output = ()> + Send {
+        async move {}
+    }
+
+    // Custom ping/keepalive data
+
+    /// This callback is invoked when an unconnected client sends a ping packet to the server.
+    /// The application can use this callback to write custom data into the ping response packet.
+    fn on_ping(
+        &self,
+        server: &Server<Self>,
+        writer: &mut ByteWriter,
+    ) -> Result<(), ByteWriterError> {
+        Ok(())
+    }
+
+    /// This callback is invoked when a connected client sends a keepalive packet to the server.
+    /// The application can use this callback to write custom data into the keepalive response packet.
+    fn on_keepalive(
+        &self,
+        server: &Server<Self>,
+        writer: &mut ByteWriter,
+    ) -> Result<(), ByteWriterError> {
+        Ok(())
     }
 }
 

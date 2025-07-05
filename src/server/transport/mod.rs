@@ -7,9 +7,10 @@ use crate::{
     server::{
         Server,
         app_handler::AppHandler,
+        client::ClientNotification,
         message::{
             BufferKind, CompressionHeader, CompressionType, DataMessageKind, QunetMessage,
-            QunetMessageDecodeError,
+            QunetMessageDecodeError, channel,
         },
         transport::{
             lowlevel::{SocketAddrCRepr, socket_addr_to_c},
@@ -49,6 +50,10 @@ pub(crate) struct ClientTransportData {
 pub(crate) struct ClientTransport<H: AppHandler> {
     pub(crate) kind: ClientTransportKind<H>,
     pub data: ClientTransportData,
+    pub notif_chan: (
+        channel::Sender<ClientNotification>,
+        channel::Receiver<ClientNotification>,
+    ),
 }
 
 #[derive(Debug, Error)]
@@ -99,6 +104,7 @@ impl<H: AppHandler> ClientTransport<H> {
                 c_sockaddr_data,
                 c_sockaddr_len,
             },
+            notif_chan: channel::new_channel(),
         }
     }
 
@@ -180,7 +186,7 @@ impl<H: AppHandler> ClientTransport<H> {
     #[inline]
     pub async fn send_message(&mut self, mut message: QunetMessage) -> Result<(), TransportError> {
         // Compress this message?
-        if let QunetMessage::Data { .. } = &message
+        if let QunetMessage::DataIncoming { .. } = &message
             && let Some(comp_type) = self.should_compress_data_message(&message)
         {
             message = self.do_compress_data_message(message, comp_type).await?;
@@ -255,11 +261,11 @@ impl<H: AppHandler> ClientTransport<H> {
         };
 
         let reliability = match message {
-            QunetMessage::Data { reliability, .. } => reliability,
+            QunetMessage::DataIncoming { reliability, .. } => reliability,
             _ => unreachable!(),
         };
 
-        Ok(QunetMessage::Data {
+        Ok(QunetMessage::DataIncoming {
             kind: DataMessageKind::Regular {
                 data: compressed_buf,
             },
@@ -297,6 +303,8 @@ impl<H: AppHandler> ClientTransport<H> {
             BufferKind::Small { size, .. } => {
                 *size = written;
             }
+
+            BufferKind::Reference(_) => unreachable!(),
         }
 
         Ok(buf)

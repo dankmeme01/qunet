@@ -15,7 +15,7 @@ use crate::{
     server::{
         app_handler::{AppHandler, DefaultAppHandler},
         builder::ServerBuilder,
-        client::ClientState,
+        client::{ClientNotification, ClientState},
         listeners::{
             listener::{BindError, ListenerError, ServerListener},
             quic::QuicServerListener,
@@ -23,7 +23,7 @@ use crate::{
             udp::UdpServerListener,
         },
         message::{
-            QunetMessage, QunetRawMessage,
+            BufferKind, DataMessageKind, QUNET_SMALL_MESSAGE_SIZE, QunetMessage, QunetRawMessage,
             channel::{RawMessageReceiver, RawMessageSender},
         },
         protocol::{
@@ -103,6 +103,12 @@ impl Server<DefaultAppHandler> {
     }
 }
 
+enum ErrorOutcome {
+    Terminate,
+    GracefulClosure,
+    Ignore,
+}
+
 impl<H: AppHandler> Server<H> {
     pub(crate) fn from_builder(mut builder: ServerBuilder<H>) -> Self {
         let app_handler = builder
@@ -133,7 +139,7 @@ impl<H: AppHandler> Server<H> {
         }
     }
 
-    pub async fn setup(&mut self) -> Result<(), ServerOutcome> {
+    pub(crate) async fn setup(&mut self) -> Result<(), ServerOutcome> {
         self.print_config();
 
         self.app_handler
@@ -372,6 +378,7 @@ impl<H: AppHandler> Server<H> {
                 app_data: client_data,
                 connection_id: transport.connection_id(),
                 address: transport.address(),
+                notif_tx: transport.notif_chan.0.clone(),
             });
 
             self.clients.insert(client.connection_id, client.clone());
@@ -422,6 +429,7 @@ impl<H: AppHandler> Server<H> {
         Ok(())
     }
 
+    #[inline]
     pub(crate) async fn dispatch_udp_message(
         &self,
         connection_id: u64,
@@ -434,6 +442,7 @@ impl<H: AppHandler> Server<H> {
         }
     }
 
+    #[inline]
     pub(crate) fn create_udp_route(&self, connection_id: u64) -> RawMessageReceiver {
         let (tx, rx) = message::channel::new_channel();
         self.udp_router.insert(connection_id, tx);
@@ -441,15 +450,18 @@ impl<H: AppHandler> Server<H> {
         rx
     }
 
+    #[inline]
     pub(crate) fn remove_udp_route(&self, connection_id: u64) {
         self.udp_router.remove(&connection_id);
     }
 
+    #[inline]
     fn generate_connection_id(&self) -> u64 {
         // TODO: check if there already is a connection with this ID
         rand::random()
     }
 
+    #[inline]
     fn message_size_limit(&self) -> usize {
         self._message_size_limit
     }
@@ -475,53 +487,46 @@ impl<H: AppHandler> Server<H> {
             )
             .await?;
 
+        let notif_chan = transport.notif_chan.1.clone();
+
         while !transport.data.closed {
-            let fut = async {
-                let msg = transport.receive_message().await?;
-                self.handle_client_message(transport, &client, &msg).await?;
-                Ok(())
-            };
+            tokio::select! {
+                msg = transport.receive_message() => match msg {
+                    Ok(msg) => {
+                        match self.handle_client_message(transport, &client, &msg).await {
+                            Ok(()) => {},
+                            Err(e) => match self.on_client_error(transport, &e) {
+                                ErrorOutcome::Terminate => return Err(e),
+                                ErrorOutcome::GracefulClosure => break,
+                                ErrorOutcome::Ignore => {}
+                            }
+                        }
+                    },
 
-            match fut.await {
-                Ok(()) => {}
+                    Err(e) => match self.on_client_error(transport, &e) {
+                        ErrorOutcome::Terminate => return Err(e),
+                        ErrorOutcome::GracefulClosure => break,
+                        ErrorOutcome::Ignore => {}
+                    }
+                },
 
-                Err(TransportError::ConnectionClosed) => break,
-                Err(TransportError::IoError(e)) => {
-                    use std::io::Write;
-                    // unfortunately we have to write the error to a buffer, i tried `downcast` but it just refused to work with s2n_quic errors
-
-                    let mut buf = [0u8; 256];
-                    let mut cursor = Cursor::new(&mut buf[..]);
-
-                    let write_res = write!(cursor, "{e}");
-                    let cpos = cursor.position();
-
-                    if write_res.is_ok() {
-                        // check for the error type
-                        if let Ok(str) = std::str::from_utf8(&buf[..cpos as usize])
-                            && (str.contains("closed on the application level")
-                                || str.contains("connection was closed without an error"))
-                        {
-                            // s2n-quic no-error message, treat it the same as ConnectionClosed
-                            break;
+                notif = notif_chan.recv() => match notif {
+                    Some(notif) => match notif {
+                        ClientNotification::DataMessage(buf) => {
+                            match transport.send_message(QunetMessage::DataIncoming { kind: DataMessageKind::Regular { data: buf }, reliability: None, compression: None }).await {
+                                Ok(()) => {},
+                                Err(e) => match self.on_client_error(transport, &e) {
+                                    ErrorOutcome::Terminate => return Err(e),
+                                    ErrorOutcome::GracefulClosure => break,
+                                    ErrorOutcome::Ignore => {}
+                                }
+                            }
                         }
                     }
 
-                    return Err(TransportError::IoError(e));
+                    None => return Err(TransportError::MessageChannelClosed),
                 }
-
-                // Critical errors
-                Err(e @ TransportError::MessageChannelClosed)
-                | Err(e @ TransportError::ZeroLengthMessage)
-                | Err(e @ TransportError::MessageTooLong) => return Err(e),
-
-                // Non-critical errors, just log and continue
-                Err(e) => {
-                    debug!("[{}] Error handling message: {}", transport.address(), e);
-
-                    continue;
-                }
-            };
+            }
         }
 
         debug!("[{}] Connection terminated", transport.address());
@@ -529,6 +534,59 @@ impl<H: AppHandler> Server<H> {
         Ok(())
     }
 
+    fn on_client_error(
+        &self,
+        transport: &ClientTransport<H>,
+        err: &TransportError,
+    ) -> ErrorOutcome {
+        match err {
+            TransportError::ConnectionClosed => ErrorOutcome::GracefulClosure,
+            TransportError::IoError(e) => {
+                use std::io::Write;
+                // unfortunately we have to write the error to a buffer, i tried `downcast` but it just refused to work with s2n_quic errors
+
+                let mut buf = [0u8; 256];
+                let mut cursor = Cursor::new(&mut buf[..]);
+
+                let write_res = write!(cursor, "{e}");
+                let cpos = cursor.position();
+
+                if write_res.is_ok() {
+                    // check for the error type
+                    if let Ok(str) = std::str::from_utf8(&buf[..cpos as usize])
+                        && (str.contains("closed on the application level")
+                            || str.contains("connection was closed without an error"))
+                    {
+                        // s2n-quic no-error message, treat it the same as ConnectionClosed
+                        return ErrorOutcome::GracefulClosure;
+                    }
+                }
+
+                // TODO: handle other IO errors
+
+                ErrorOutcome::Terminate
+            }
+
+            // Critical errors
+            TransportError::MessageChannelClosed
+            | TransportError::ZeroLengthMessage
+            | TransportError::MessageTooLong => ErrorOutcome::Terminate,
+
+            // Errors that indicate a bug in the server
+            TransportError::CompressionError(e) => {
+                warn!("[{}] Error compressing message: {}", transport.address(), e);
+                ErrorOutcome::Ignore
+            }
+
+            // Non-critical errors, just log and continue
+            e => {
+                debug!("[{}] Error handling message: {}", transport.address(), e);
+                ErrorOutcome::Ignore
+            }
+        }
+    }
+
+    #[inline]
     async fn handle_client_message(
         &self,
         transport: &mut ClientTransport<H>,
@@ -610,7 +668,7 @@ impl<H: AppHandler> Server<H> {
                     .await?;
             }
 
-            msg @ QunetMessage::Data { .. } => {
+            msg @ QunetMessage::DataIncoming { .. } => {
                 self.handle_data_message(client, msg).await?;
             }
 
@@ -629,9 +687,15 @@ impl<H: AppHandler> Server<H> {
     async fn handle_data_message(
         &self,
         client: &ClientState<H>,
-        _msg: &QunetMessage,
+        msg: &QunetMessage,
     ) -> Result<(), TransportError> {
-        // TODO!
+        let bytes = match msg.data_bytes() {
+            Some(x) => x,
+            None => unreachable!(),
+        };
+
+        self.app_handler.on_client_data(self, client, bytes).await;
+
         Ok(())
     }
 
@@ -642,6 +706,8 @@ impl<H: AppHandler> Server<H> {
         client: Arc<ClientState<H>>,
     ) -> Result<(), TransportError> {
         self.app_handler.on_client_disconnect(self, &client).await;
+
+        self.clients.remove(&client.connection_id);
 
         transport.run_cleanup(self).await
     }
@@ -669,10 +735,37 @@ impl<H: AppHandler> Server<H> {
         }
     }
 
-    pub fn write_ping_appdata(&self, writer: &mut ByteWriter) -> Result<(), ByteWriterError> {
-        // right now placeholder, later let the application write custom data
-        writer.try_write_bytes(b"hi")?;
-        Ok(())
+    #[inline]
+    pub(crate) fn write_ping_appdata(
+        &self,
+        writer: &mut ByteWriter,
+    ) -> Result<(), ByteWriterError> {
+        self.app_handler.on_ping(self, writer)
+    }
+
+    // Public API for the application (sending packets, etc.)
+
+    pub async fn request_buffer(&self, size: usize) -> BufferKind {
+        if size <= QUNET_SMALL_MESSAGE_SIZE {
+            BufferKind::Small {
+                buf: [0; QUNET_SMALL_MESSAGE_SIZE],
+                size: 0,
+            }
+        } else if size <= self.buffer_pool.buf_size() {
+            BufferKind::Pooled {
+                buf: self.buffer_pool.get().await,
+                pos: 0,
+                size: 0,
+            }
+        } else if size <= self.large_buffer_pool.buf_size() {
+            BufferKind::Pooled {
+                buf: self.large_buffer_pool.get().await,
+                pos: 0,
+                size: 0,
+            }
+        } else {
+            BufferKind::Heap(Vec::with_capacity(size))
+        }
     }
 }
 
