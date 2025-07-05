@@ -146,6 +146,13 @@ impl<'a, R: io::Read> BinaryReader<'a, R> {
         }
     }
 
+    pub fn read_string_fixed(&mut self, length: usize) -> io::Result<String> {
+        let mut buffer = vec![0; length];
+        self.read_bytes(&mut buffer)?;
+
+        String::from_utf8(buffer).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
     pub fn read_string_var(&mut self) -> io::Result<String> {
         let length = self.read_varuint()? as usize;
 
@@ -157,8 +164,22 @@ impl<'a, R: io::Read> BinaryReader<'a, R> {
             ));
         }
 
-        let mut buffer = vec![0; length];
-        self.read_bytes(&mut buffer)?;
-        String::from_utf8(buffer).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        self.read_string_fixed(length)
+    }
+
+    pub fn read_string_u8(&mut self) -> io::Result<String> {
+        let length = self.read_u8()? as usize;
+
+        self.read_string_fixed(length)
+    }
+
+    pub fn read_string_u16(&mut self) -> io::Result<String> {
+        let length = self.read_u16()? as usize;
+
+        self.read_string_fixed(length)
+    }
+
+    pub fn read_string(&mut self) -> io::Result<String> {
+        self.read_string_u16()
     }
 }

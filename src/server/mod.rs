@@ -1,6 +1,7 @@
-use std::{ops::Deref, sync::Arc, time::Duration};
+use std::{io::Cursor, ops::Deref, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
+use nohash_hasher::BuildNoHashHasher;
 use thiserror::Error;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{debug, error, info, warn};
@@ -83,8 +84,8 @@ pub struct Server<H: AppHandler> {
     listener_tracker: TaskTracker,
 
     // TODO: rwlock? dashmap? arcswap?
-    udp_router: DashMap<u64, RawMessageSender>,
-    clients: DashMap<u64, Arc<ClientState<H>>>,
+    udp_router: DashMap<u64, RawMessageSender, BuildNoHashHasher<u64>>,
+    clients: DashMap<u64, Arc<ClientState<H>>, BuildNoHashHasher<u64>>,
 
     // misc settings
     _message_size_limit: usize,
@@ -121,8 +122,8 @@ impl<H: AppHandler> Server<H> {
             shutdown_token: CancellationToken::new(),
             listener_tracker: TaskTracker::new(),
 
-            udp_router: DashMap::new(),
-            clients: DashMap::new(),
+            udp_router: DashMap::default(),
+            clients: DashMap::default(),
             _message_size_limit: 0,
 
             qdb: QunetDatabase::default(),
@@ -475,26 +476,52 @@ impl<H: AppHandler> Server<H> {
             .await?;
 
         while !transport.data.closed {
-            let msg = match transport.receive_message().await {
-                Ok(msg) => msg,
+            let fut = async {
+                let msg = transport.receive_message().await?;
+                self.handle_client_message(transport, &client, &msg).await?;
+                Ok(())
+            };
+
+            match fut.await {
+                Ok(()) => {}
 
                 Err(TransportError::ConnectionClosed) => break,
+                Err(TransportError::IoError(e)) => {
+                    use std::io::Write;
+                    // unfortunately we have to write the error to a buffer, i tried `downcast` but it just refused to work with s2n_quic errors
+
+                    let mut buf = [0u8; 256];
+                    let mut cursor = Cursor::new(&mut buf[..]);
+
+                    let write_res = write!(cursor, "{e}");
+                    let cpos = cursor.position();
+
+                    if write_res.is_ok() {
+                        // check for the error type
+                        if let Ok(str) = std::str::from_utf8(&buf[..cpos as usize])
+                            && (str.contains("closed on the application level")
+                                || str.contains("connection was closed without an error"))
+                        {
+                            // s2n-quic no-error message, treat it the same as ConnectionClosed
+                            break;
+                        }
+                    }
+
+                    return Err(TransportError::IoError(e));
+                }
 
                 // Critical errors
-                Err(e @ TransportError::IoError(_))
-                | Err(e @ TransportError::MessageChannelClosed)
+                Err(e @ TransportError::MessageChannelClosed)
                 | Err(e @ TransportError::ZeroLengthMessage)
                 | Err(e @ TransportError::MessageTooLong) => return Err(e),
 
                 // Non-critical errors, just log and continue
                 Err(e) => {
-                    debug!("[{}] Error receiving message: {}", transport.address(), e);
+                    debug!("[{}] Error handling message: {}", transport.address(), e);
 
                     continue;
                 }
             };
-
-            self.handle_client_message(transport, &client, &msg).await?;
         }
 
         debug!("[{}] Connection terminated", transport.address());

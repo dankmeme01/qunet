@@ -219,7 +219,21 @@ impl<'a> ByteReader<'a> {
         }
     }
 
-    pub fn read_string_var(&mut self) -> Result<String> {
+    pub fn read_string_fixed(&mut self, length: usize) -> Result<&str> {
+        if length > self.remaining() {
+            return Err(ByteReaderError::OutOfBounds {
+                pos: self.pos + length,
+                len: self.buffer.len(),
+            });
+        }
+
+        let str_bytes = &self.buffer[self.pos..self.pos + length];
+        self.pos += length;
+
+        std::str::from_utf8(str_bytes).map_err(|_| ByteReaderError::InvalidUtf8)
+    }
+
+    pub fn read_string_var(&mut self) -> Result<&str> {
         let length = self.read_varuint()? as usize;
 
         // arbitrary limit tbh
@@ -227,24 +241,18 @@ impl<'a> ByteReader<'a> {
             return Err(ByteReaderError::StringTooLong);
         }
 
-        let mut buffer = vec![0; length];
-        self.read_bytes(&mut buffer)?;
-        String::from_utf8(buffer).map_err(|_| ByteReaderError::InvalidUtf8)
+        self.read_string_fixed(length)
     }
 
-    pub fn read_string_u8(&mut self) -> Result<String> {
+    pub fn read_string_u8(&mut self) -> Result<&str> {
         let length = self.read_u8()? as usize;
 
-        let mut buffer = vec![0; length];
-        self.read_bytes(&mut buffer)?;
-        String::from_utf8(buffer).map_err(|_| ByteReaderError::InvalidUtf8)
+        self.read_string_fixed(length)
     }
 
-    pub fn read_string_u16(&mut self) -> Result<String> {
+    pub fn read_string_u16(&mut self) -> Result<&str> {
         let length = self.read_u16()? as usize;
 
-        let mut buffer = vec![0; length];
-        self.read_bytes(&mut buffer)?;
-        String::from_utf8(buffer).map_err(|_| ByteReaderError::InvalidUtf8)
+        self.read_string_fixed(length)
     }
 }

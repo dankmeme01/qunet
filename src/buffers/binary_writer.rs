@@ -158,3 +158,14 @@ impl<'a, W: io::Write> BinaryWriter<'a, W> {
         Ok(written)
     }
 }
+
+impl<'a, W: io::Write> io::Write for BinaryWriter<'a, W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.write_bytes(buf)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer.flush()
+    }
+}
