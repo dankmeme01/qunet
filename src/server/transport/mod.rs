@@ -184,18 +184,22 @@ impl<H: AppHandler> ClientTransport<H> {
     }
 
     #[inline]
-    pub async fn send_message(&mut self, mut message: QunetMessage) -> Result<(), TransportError> {
+    pub async fn send_message(
+        &mut self,
+        mut message: QunetMessage,
+        reliable: bool,
+    ) -> Result<(), TransportError> {
         // Compress this message?
-        if let QunetMessage::DataIncoming { .. } = &message
+        if let QunetMessage::Data { .. } = &message
             && let Some(comp_type) = self.should_compress_data_message(&message)
         {
             message = self.do_compress_data_message(message, comp_type).await?;
         }
 
         match &mut self.kind {
-            ClientTransportKind::Udp(udp) => udp.send_message(&self.data, &message).await,
-            ClientTransportKind::Tcp(tcp) => tcp.send_message(&self.data, &message).await,
-            ClientTransportKind::Quic(quic) => quic.send_message(&self.data, &message).await,
+            ClientTransportKind::Udp(udp) => udp.send_message(&self.data, message, reliable).await,
+            ClientTransportKind::Tcp(tcp) => tcp.send_message(&self.data, message).await,
+            ClientTransportKind::Quic(quic) => quic.send_message(&self.data, message).await,
         }
     }
 
@@ -214,7 +218,9 @@ impl<H: AppHandler> ClientTransport<H> {
         } else if data_buf.len() < 2048 {
             Some(CompressionType::Lz4)
         } else {
-            Some(CompressionType::Zstd)
+            // Some(CompressionType::Zstd)
+            Some(CompressionType::Lz4)
+            // None
         }
     }
 
@@ -256,16 +262,15 @@ impl<H: AppHandler> ClientTransport<H> {
 
         let compressed_buf = match comp_type {
             CompressionType::Lz4 => self.do_compress_lz4(data_buf).await?,
-
             CompressionType::Zstd => Self::do_compress_zstd(data_buf).await?,
         };
 
         let reliability = match message {
-            QunetMessage::DataIncoming { reliability, .. } => reliability,
+            QunetMessage::Data { reliability, .. } => reliability,
             _ => unreachable!(),
         };
 
-        Ok(QunetMessage::DataIncoming {
+        Ok(QunetMessage::Data {
             kind: DataMessageKind::Regular {
                 data: compressed_buf,
             },
@@ -285,8 +290,22 @@ impl<H: AppHandler> ClientTransport<H> {
                 std::slice::from_raw_parts_mut(vec.as_mut_ptr(), vec.capacity())
             },
 
-            _ => buf.deref_mut(),
+            BufferKind::Pooled { buf, .. } => {
+                let cap = buf.len();
+                &mut buf.deref_mut()[..cap]
+            }
+
+            BufferKind::Small { buf, size } => &mut buf[..*size],
+
+            BufferKind::Reference(_) => unreachable!(),
         };
+
+        debug_assert!(
+            output.len() >= needed_len,
+            "Output buffer is too small ({} < {})",
+            output.len(),
+            needed_len
+        );
 
         let written = lz4_flex::compress_into(data, output)?;
 

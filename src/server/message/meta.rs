@@ -27,7 +27,8 @@ pub(crate) struct FragmentationHeader {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ReliabilityHeader {
-    // TODO
+    pub message_id: u16,
+    pub acks: heapless::Vec<u16, 8>,
 }
 
 pub struct QunetMessageBareMeta {
@@ -123,7 +124,17 @@ impl<'a> QunetMessageMeta<'a> {
         };
 
         let reliability_header = if udp && bits.get_bit(5) {
-            Some(ReliabilityHeader {})
+            let message_id = reader.read_u16()?;
+            let ack_count = reader.read_u16()?.min(8);
+
+            let mut acks = heapless::Vec::new();
+
+            for _ in 0..ack_count {
+                let ack_id = reader.read_u16()?;
+                let _ = acks.push(ack_id);
+            }
+
+            Some(ReliabilityHeader { message_id, acks })
         } else {
             None
         };

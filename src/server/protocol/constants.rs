@@ -26,6 +26,8 @@ pub const MSG_DATA_MASK: u8 = MSG_DATA;
 
 pub const MSG_DATA_BIT_COMPRESSION_1: usize = 0; // least significant bit
 pub const MSG_DATA_BIT_COMPRESSION_2: usize = 1; // second least significant bit
+pub const MSG_DATA_BIT_RELIABILITY: usize = 4; // second least significant bit
+pub const MSG_DATA_BIT_FRAGMENTATION: usize = 5; // second least significant bit
 
 pub const MSG_DATA_LAST_FRAGMENT_MASK: u16 = 0x8000; // most significant bit of fragment index
 

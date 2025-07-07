@@ -319,14 +319,17 @@ impl<H: AppHandler> Server<H> {
             // also send an error to the client
             tokio::spawn(async move {
                 let res = transport
-                    .send_message(QunetMessage::HandshakeFailure {
-                        error_code: if client_ver < protocol::MAJOR_VERSION {
-                            QunetHandshakeError::VersionTooOld
-                        } else {
-                            QunetHandshakeError::VersionTooNew
+                    .send_message(
+                        QunetMessage::HandshakeFailure {
+                            error_code: if client_ver < protocol::MAJOR_VERSION {
+                                QunetHandshakeError::VersionTooOld
+                            } else {
+                                QunetHandshakeError::VersionTooNew
+                            },
+                            reason: None,
                         },
-                        reason: None,
-                    })
+                        false,
+                    )
                     .await;
 
                 if let Err(e) = res {
@@ -411,10 +414,13 @@ impl<H: AppHandler> Server<H> {
                 // we don't care if it fails here
                 let _ = tokio::time::timeout(
                     Duration::from_secs(10),
-                    transport.send_message(QunetMessage::ServerClose {
-                        error_code,
-                        error_message,
-                    }),
+                    transport.send_message(
+                        QunetMessage::ServerClose {
+                            error_code,
+                            error_message,
+                        },
+                        false,
+                    ),
                 )
                 .await;
             }
@@ -512,8 +518,8 @@ impl<H: AppHandler> Server<H> {
 
                 notif = notif_chan.recv() => match notif {
                     Some(notif) => match notif {
-                        ClientNotification::DataMessage(buf) => {
-                            match transport.send_message(QunetMessage::DataIncoming { kind: DataMessageKind::Regular { data: buf }, reliability: None, compression: None }).await {
+                        ClientNotification::DataMessage{ buf, reliable } => {
+                            match transport.send_message(QunetMessage::Data { kind: DataMessageKind::Regular { data: buf }, reliability: None, compression: None }, reliable).await {
                                 Ok(()) => {},
                                 Err(e) => match self.on_client_error(transport, &e) {
                                     ErrorOutcome::Terminate => return Err(e),
@@ -604,10 +610,13 @@ impl<H: AppHandler> Server<H> {
             QunetMessage::Keepalive { timestamp } => {
                 // TODO: custom data
                 transport
-                    .send_message(QunetMessage::KeepaliveResponse {
-                        timestamp: *timestamp,
-                        data: None,
-                    })
+                    .send_message(
+                        QunetMessage::KeepaliveResponse {
+                            timestamp: *timestamp,
+                            data: None,
+                        },
+                        false,
+                    )
                     .await?;
             }
 
@@ -630,17 +639,23 @@ impl<H: AppHandler> Server<H> {
 
                 if self.qdb_data.is_empty() {
                     transport
-                        .send_message(QunetMessage::ConnectionError {
-                            error_code: QunetConnectionError::QdbUnavailable,
-                        })
+                        .send_message(
+                            QunetMessage::ConnectionError {
+                                error_code: QunetConnectionError::QdbUnavailable,
+                            },
+                            false,
+                        )
                         .await?;
 
                     return Ok(());
                 } else if size > UDP_PACKET_LIMIT {
                     transport
-                        .send_message(QunetMessage::ConnectionError {
-                            error_code: QunetConnectionError::QdbChunkTooLong,
-                        })
+                        .send_message(
+                            QunetMessage::ConnectionError {
+                                error_code: QunetConnectionError::QdbChunkTooLong,
+                            },
+                            false,
+                        )
                         .await?;
 
                     return Ok(());
@@ -649,9 +664,12 @@ impl<H: AppHandler> Server<H> {
                 // check if offset and size are valid
                 if offset + size > self.qdb_data.len() || offset >= self.qdb_data.len() {
                     transport
-                        .send_message(QunetMessage::ConnectionError {
-                            error_code: QunetConnectionError::QdbInvalidChunk,
-                        })
+                        .send_message(
+                            QunetMessage::ConnectionError {
+                                error_code: QunetConnectionError::QdbInvalidChunk,
+                            },
+                            false,
+                        )
                         .await?;
 
                     return Ok(());
@@ -660,15 +678,18 @@ impl<H: AppHandler> Server<H> {
                 // send the requested chunk
 
                 transport
-                    .send_message(QunetMessage::QdbChunkResponse {
-                        offset: offset as u32,
-                        size: size as u32,
-                        qdb_data: self.qdb_data.clone(),
-                    })
+                    .send_message(
+                        QunetMessage::QdbChunkResponse {
+                            offset: offset as u32,
+                            size: size as u32,
+                            qdb_data: self.qdb_data.clone(),
+                        },
+                        false,
+                    )
                     .await?;
             }
 
-            msg @ QunetMessage::DataIncoming { .. } => {
+            msg @ QunetMessage::Data { .. } => {
                 self.handle_data_message(client, msg).await?;
             }
 

@@ -145,9 +145,7 @@ pub async fn send_message<S: AsyncWriteExt + Unpin>(
     // reserve space for the message length
     header_writer.write_u32(0);
 
-    if msg.is_data() {
-        warn!("trying to send data message, unimplemented");
-    } else {
+    if !msg.is_data() {
         let mut body_buf = [0u8; 256];
         let mut body_writer = ByteWriter::new(&mut body_buf);
 
@@ -163,7 +161,24 @@ pub async fn send_message<S: AsyncWriteExt + Unpin>(
         ];
 
         send_raw_bytes_vectored(_stream, &mut vecs, &transport_data.buffer_pool).await?;
+
+        return Ok(());
     }
+
+    // handle data messages
+    let Some(data) = msg.data_bytes() else {
+        unreachable!()
+    };
+
+    msg.encode_data_header(&mut header_writer, false).unwrap();
+
+    let msg_len = header_writer.pos() + data.len() - 4; // -4 for the reserved length field
+
+    header_writer.perform_at(0, |wr| wr.write_u32(msg_len as u32));
+
+    let mut vecs = [IoSlice::new(header_writer.written()), IoSlice::new(data)];
+
+    send_raw_bytes_vectored(_stream, &mut vecs, &transport_data.buffer_pool).await?;
 
     Ok(())
 }
@@ -219,6 +234,7 @@ async fn do_vectored_write<S: AsyncWriteExt + Unpin>(
     mut bufs: &mut [IoSlice<'_>],
 ) -> Result<(), TransportError> {
     // Unfortunately there's no method like write_all_vectored, so we have to make sure all data is written ourselves
+
     while !bufs.is_empty() {
         let mut written = stream.write_vectored(bufs).await?;
 

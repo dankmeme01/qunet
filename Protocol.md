@@ -116,6 +116,7 @@ Message types:
 * 11 - [ConnectionError](#connectionerror)
 * 12 - [QdbChunkRequest](#qdbchunkrequest)
 * 13 - [QdbChunkResponse](#qdbchunkresponse)
+* 14 - [AckMessages](#ackmessages)
 * 64 - QdbgToggle
 * 65 - QdbgReport
 * 128-255 (`1xxxxxxx` in binary) - Data
@@ -258,6 +259,13 @@ Message structure:
 * Qdb size (`u32`) - size of the qdb chunk
 * Qdb data (byte array) - chunk of the zstd compressed qunet database data
 
+## AckMessages
+
+Message structure:
+* ACK count (`u16`)
+* For each ACK:
+* * Reliable message ID (`u16`)
+
 ## Data
 
 This is a special message type for application data. It covers values from 128 to 255, aka all values with the most significant bit being `1`. The other 7 bits are used for flags:
@@ -268,7 +276,7 @@ This is a special message type for application data. It covers values from 128 t
 If compression is enabled, the **Compression** extension is included right after the qunet header byte. Structure:
 * Uncompressed size (`u32`) - size of the uncompressed payload, does not include any headers.
 
-After the header, application data follows. If compression is enabled, the payload is first compressed and only then passed to the transport protocol.
+After the header, application data follows. If compression is enabled, the payload is first compressed and only then passed to the transport protocol. No headers are compressed.
 
 # Transport Protocols
 
@@ -310,17 +318,19 @@ The UDP transport layer modifies the qunet header to add the following flags for
 * Bit 5 (0 being least significant, 7 being most significant) - whether a **Fragmentation Information** extension follows this header
 * Bit 4 - whether a **Reliability Information** extension follows this header
 
-Additionally, when fragmenting, this transport *may* set the compression bits (bits 0 and 1) to zeroes and omit the **Compression** header extension for all but one fragment, as this data is redundant.
+Additionally, when fragmenting, this transport *may* set the compression/reliability bits to zeroes and omit the **Compression** or **Reliability** header extensions for all but one fragment, as this data is redundant.
 
-If the **Fragmentation** bit is set, the following header is encoded right after the qunet header:
+If the **Reliability** bit is set, the following header is encoded after the qunet header:
+
+* Reliable message ID (`u16`) - this should be unique per each reliable message. Use zero if this is not a reliable message and just used for ACKing.
+* ACK count (`u16`) - how many messages to acknowledge. This typically can be up to 8 in one message.
+* * Message ID (`u16`) - message to acknowledge
+
+If the **Fragmentation** bit is set, the following header is encoded after the qunet header (or after the reliability header, if one is present):
 
 * Fragmented message ID (`u16`) - this should be unique per qunet message, exists to differentiate fragments of unrelated messages
 * Fragment index (`u16`) - only the lower 15 bits of this should be used (so maximum 32768 fragments), the top bit indicates if this is the last fragment
 * Fragment offset (`u32`)
-
-If the **Realiability** bit is set, the following header is encoded after the qunet header (or after the fragmentation header, if one is present):
-
-* TODO
 
 Additionally, right after the qunet header and before UDP-specific extensions, the **Connection ID** (`u64`) must be included (**only for client -> server packets**). This applies to every message type except [HandshakeStart](#handshakestart), connection ID is completely omitted during the handshake.
 

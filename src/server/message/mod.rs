@@ -3,7 +3,7 @@ pub mod channel;
 mod meta;
 mod raw;
 
-pub(crate) use buffer_kind::BufferKind;
+pub use buffer_kind::BufferKind;
 pub(crate) use meta::{
     CompressionHeader, CompressionType, FragmentationHeader, QunetMessageBareMeta,
     QunetMessageMeta, ReliabilityHeader,
@@ -13,7 +13,6 @@ pub use raw::{QUNET_SMALL_MESSAGE_SIZE, QunetRawMessage};
 use num_traits::FromPrimitive;
 use std::sync::Arc;
 use thiserror::Error;
-use tracing::warn;
 
 use crate::{
     buffers::{
@@ -21,6 +20,7 @@ use crate::{
         bits::Bits,
         buffer_pool::{BorrowedMutBuffer, BufferPool},
         byte_reader::{ByteReader, ByteReaderError},
+        byte_writer::{ByteWriter, ByteWriterError},
     },
     server::protocol::*,
 };
@@ -106,7 +106,7 @@ pub(crate) enum QunetMessage {
         qdb_data: Arc<[u8]>,
     },
 
-    DataIncoming {
+    Data {
         kind: DataMessageKind,
         reliability: Option<ReliabilityHeader>,
         compression: Option<CompressionHeader>,
@@ -296,7 +296,7 @@ impl QunetMessage {
             DataMessageKind::Regular { data: buf_kind }
         };
 
-        Ok(QunetMessage::DataIncoming {
+        Ok(QunetMessage::Data {
             kind: data_kind,
             reliability: meta.reliability_header,
             compression: meta.compression_header,
@@ -350,19 +350,29 @@ impl QunetMessage {
         }
     }
 
+    #[inline]
     pub fn is_data(&self) -> bool {
-        matches!(self, QunetMessage::DataIncoming { .. })
+        matches!(self, QunetMessage::Data { .. })
     }
 
     /// Convenience method that returns bytes of a `Data` message. Returns None if the message is not a `Data` message.
     pub fn data_bytes(&self) -> Option<&[u8]> {
-        if let QunetMessage::DataIncoming { kind, .. } = self {
+        if let QunetMessage::Data { kind, .. } = self {
             match kind {
                 DataMessageKind::Fragment { data, .. } => Some(data),
                 DataMessageKind::Regular { data } => Some(data),
             }
         } else {
             None
+        }
+    }
+
+    /// Convenience method that returns whether a `Data` message is compressed.
+    pub fn is_data_compressed(&self) -> bool {
+        if let QunetMessage::Data { compression, .. } = self {
+            compression.is_some()
+        } else {
+            false
         }
     }
 
@@ -456,6 +466,77 @@ impl QunetMessage {
         Ok(())
     }
 
+    /// Writes the header of a `Data` message to the given writer.
+    pub fn encode_data_header(
+        &self,
+        writer: &mut ByteWriter,
+        omit_headers: bool,
+    ) -> Result<(), ByteWriterError> {
+        let Self::Data {
+            reliability,
+            compression,
+            ..
+        } = self
+        else {
+            unreachable!(
+                "encode_data_header called on non-data message: {}",
+                self.type_str()
+            );
+        };
+
+        let mut hb = Bits::new(0u8);
+
+        // top bit is always set for data messages
+        hb.set_bit(7);
+
+        if !omit_headers {
+            // set compression bits
+            hb.set_multiple_bits(
+                MSG_DATA_BIT_COMPRESSION_1,
+                MSG_DATA_BIT_COMPRESSION_2,
+                match compression {
+                    Some(CompressionHeader {
+                        compression_type, ..
+                    }) => match compression_type {
+                        CompressionType::Zstd => 0b01,
+                        CompressionType::Lz4 => 0b10,
+                    },
+
+                    None => 0b00,
+                },
+            );
+
+            // set reliability bits
+            if reliability.is_some() {
+                hb.set_bit(MSG_DATA_BIT_RELIABILITY);
+            }
+        }
+
+        // write header byte
+        writer.write_u8(hb.to_bits());
+
+        if !omit_headers {
+            // write compression header
+            if let Some(CompressionHeader {
+                uncompressed_size, ..
+            }) = compression
+            {
+                writer.write_u32(uncompressed_size.get());
+            }
+
+            // write reliability header
+            if let Some(ReliabilityHeader { message_id, acks }) = reliability {
+                writer.write_u16(*message_id);
+                writer.write_u16(acks.len() as u16);
+                for ack in acks {
+                    writer.write_u16(*ack);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     #[inline]
     pub fn type_str(&self) -> &'static str {
         match self {
@@ -469,7 +550,7 @@ impl QunetMessage {
             QunetMessage::ConnectionError { .. } => "ConnectionError",
             QunetMessage::QdbChunkRequest { .. } => "QdbChunkRequest",
             QunetMessage::QdbChunkResponse { .. } => "QdbChunkResponse",
-            QunetMessage::DataIncoming { .. } => "Data",
+            QunetMessage::Data { .. } => "Data",
         }
     }
 }

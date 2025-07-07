@@ -1,9 +1,14 @@
+use std::collections::VecDeque;
+use std::num::NonZeroU16;
 use std::sync::Arc;
 use std::{io::IoSlice, marker::PhantomData};
 
+use heapless::Deque;
 use tokio::net::UdpSocket;
 use tracing::{debug, warn};
 
+use crate::server::message::{FragmentationHeader, ReliabilityHeader};
+use crate::server::protocol::{MSG_DATA_BIT_FRAGMENTATION, UDP_PACKET_LIMIT};
 use crate::{
     buffers::byte_writer::ByteWriter,
     server::{
@@ -15,10 +20,21 @@ use crate::{
     },
 };
 
+struct UnackedMessage {
+    message_id: u16,
+    msg: QunetMessage,
+}
+
 pub(crate) struct ClientUdpTransport<H> {
     socket: Arc<UdpSocket>,
     mtu: usize,
     receiver: Option<RawMessageReceiver>,
+    next_tx_rid: u16,
+    next_tx_fragid: u16,
+
+    ack_queue: Deque<u16, 64>,
+    unacked_messages: VecDeque<UnackedMessage>,
+
     _phantom: PhantomData<H>,
 }
 
@@ -28,8 +44,81 @@ impl<H: AppHandler> ClientUdpTransport<H> {
             socket,
             mtu,
             receiver: None,
+            next_tx_rid: 1,
+            next_tx_fragid: 1,
+            ack_queue: Deque::new(),
+            unacked_messages: VecDeque::with_capacity(32),
             _phantom: PhantomData,
         }
+    }
+
+    #[inline]
+    fn next_reliable_id(&mut self) -> u16 {
+        let id = self.next_tx_rid;
+
+        self.next_tx_rid = self.next_tx_rid.wrapping_add(1);
+        if self.next_tx_rid == 0 {
+            self.next_tx_rid = 1; // avoid zero
+        }
+
+        id
+    }
+
+    #[inline]
+    fn next_fragment_id(&mut self) -> u16 {
+        let id = self.next_tx_fragid;
+
+        self.next_tx_fragid = self.next_tx_fragid.wrapping_add(1);
+
+        id
+    }
+
+    #[inline]
+    fn get_acks<const LIM: usize>(&mut self) -> heapless::Vec<u16, LIM> {
+        let mut acks = heapless::Vec::new();
+
+        // drain the queue into the acks vector
+        for _ in 0..LIM {
+            if let Some(ack) = self.ack_queue.pop_front() {
+                let _ = acks.push(ack);
+            } else {
+                break; // no more acks to process
+            }
+        }
+
+        acks
+    }
+
+    fn add_unacked(&mut self, transport_data: &ClientTransportData, msg: QunetMessage) -> bool {
+        if self.unacked_messages.len() >= 64 {
+            debug!(
+                "[{}] Unacked messages queue is full, dropping oldest message",
+                transport_data.address
+            );
+
+            self.unacked_messages.pop_front();
+        }
+
+        let QunetMessage::Data { reliability, .. } = &msg else {
+            unreachable!("add_unacked called with a non-data message");
+        };
+
+        let Some(ReliabilityHeader { message_id, .. }) = reliability else {
+            panic!("add_unacked called with an unreliable message");
+        };
+
+        #[cfg(debug_assertions)]
+        debug!(
+            "[{}] Adding unacked message with ID {}",
+            transport_data.address, message_id
+        );
+
+        self.unacked_messages.push_back(UnackedMessage {
+            message_id: *message_id,
+            msg,
+        });
+
+        true
     }
 
     #[inline]
@@ -71,14 +160,15 @@ impl<H: AppHandler> ClientUdpTransport<H> {
     pub async fn send_message(
         &mut self,
         transport_data: &ClientTransportData,
-        msg: &QunetMessage,
+        mut msg: QunetMessage,
+        reliable: bool,
     ) -> Result<(), TransportError> {
-        let mut header_buf = [0u8; 8];
+        const MAX_HEADER_SIZE: usize = 1 + 4 + 20 + 8; // qunet, compression, reliability, fragmentation headers
+
+        let mut header_buf = [0u8; MAX_HEADER_SIZE];
         let mut header_writer = ByteWriter::new(&mut header_buf);
 
-        if msg.is_data() {
-            warn!("trying to send data message, unimplemented");
-        } else {
+        if !msg.is_data() {
             let mut body_buf = [0u8; 256];
             let mut body_writer = ByteWriter::new(&mut body_buf);
 
@@ -90,6 +180,104 @@ impl<H: AppHandler> ClientUdpTransport<H> {
             ];
 
             self.send_packet_vectored(&mut vecs, transport_data).await?;
+
+            return Ok(());
+        }
+
+        // handle data messages
+
+        let mut rel_hdr_size = 0;
+        let comp_hdr_size = if msg.is_data_compressed() { 4usize } else { 0 };
+
+        if reliable {
+            let QunetMessage::Data { reliability, .. } = &mut msg else {
+                unreachable!();
+            };
+
+            let message_id = self.next_reliable_id();
+            let acks = self.get_acks();
+
+            rel_hdr_size = 4 + acks.len() * 2;
+
+            *reliability = Some(ReliabilityHeader { message_id, acks });
+        }
+
+        let Some(data) = msg.data_bytes() else {
+            unreachable!()
+        };
+
+        // decide if the message needs to be fragmented.
+
+        let unfrag_total_size = header_writer.pos() + rel_hdr_size + comp_hdr_size + data.len();
+
+        if unfrag_total_size <= self.mtu {
+            // no fragmentation :)
+
+            msg.encode_data_header(&mut header_writer, false).unwrap();
+
+            let mut vecs = [IoSlice::new(header_writer.written()), IoSlice::new(data)];
+            self.send_packet_vectored(&mut vecs, transport_data).await?;
+
+            if reliable {
+                self.add_unacked(transport_data, msg);
+            }
+
+            return Ok(());
+        }
+
+        // fragmentation is needed :(
+
+        // determine the maximum size of the payload for each fragment
+        // first fragment must include reliability and compression headers if they are present, rest don't have to
+
+        let frag_hdr_size = 8;
+
+        let first_payload_size =
+            self.mtu - header_writer.pos() - rel_hdr_size - comp_hdr_size - frag_hdr_size;
+        let rest_payload_size = self.mtu - header_writer.pos() - frag_hdr_size;
+
+        let frag_message_id = self.next_fragment_id();
+
+        let mut offset = 0usize;
+        let mut fragment_index = 0u16;
+
+        while offset < data.len() {
+            let is_first = offset == 0;
+            let payload_size = if is_first {
+                first_payload_size
+            } else {
+                rest_payload_size
+            };
+
+            let chunk = &data[offset..(offset + payload_size).min(data.len())];
+
+            // write the header
+            let mut header_buf = [0u8; MAX_HEADER_SIZE];
+            let mut header_writer = ByteWriter::new(&mut header_buf);
+
+            // omit headers for all but the first fragment
+            msg.encode_data_header(&mut header_writer, !is_first)
+                .unwrap();
+
+            // ... but add the fragmentation header!
+            header_buf[0] &= 1u8 << MSG_DATA_BIT_FRAGMENTATION;
+
+            // this reinit is scuffed but needed
+            let mut header_writer = ByteWriter::new(&mut header_buf);
+            header_writer.write_u16(frag_message_id);
+            header_writer.write_u16(fragment_index);
+            header_writer.write_u32(offset as u32);
+
+            offset += chunk.len();
+            fragment_index += 1;
+
+            let mut vecs = [IoSlice::new(header_writer.written()), IoSlice::new(chunk)];
+
+            self.send_packet_vectored(&mut vecs, transport_data).await?;
+        }
+
+        if reliable {
+            self.add_unacked(transport_data, msg);
         }
 
         Ok(())

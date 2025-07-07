@@ -48,9 +48,9 @@ impl ClientQuicTransport {
     pub async fn send_message(
         &mut self,
         transport_data: &ClientTransportData,
-        msg: &QunetMessage,
+        msg: QunetMessage,
     ) -> Result<(), TransportError> {
-        stream::send_message(&mut self.stream, transport_data, msg).await
+        stream::send_message(&mut self.stream, transport_data, &msg).await
     }
 
     pub async fn send_handshake_response(
