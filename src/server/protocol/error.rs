@@ -21,4 +21,5 @@ pub enum QunetHandshakeError {
     VersionTooOld = 1,
     VersionTooNew = 2,
     UnknownConnectionId = 3,
+    DuplicateConnection = 4,
 }

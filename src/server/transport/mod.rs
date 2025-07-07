@@ -12,6 +12,7 @@ use crate::{
             BufferKind, CompressionHeader, CompressionType, DataMessageKind, QunetMessage,
             QunetMessageDecodeError, channel,
         },
+        protocol::QunetHandshakeError,
         transport::{
             lowlevel::{SocketAddrCRepr, socket_addr_to_c},
             quic::ClientQuicTransport,
@@ -62,6 +63,8 @@ pub enum TransportError {
     IoError(#[from] std::io::Error),
     #[error("Connection closed by peer")]
     ConnectionClosed,
+    #[error("Operation timed out")]
+    Timeout,
     #[error("Client sent an invalid zero-length message")]
     ZeroLengthMessage,
     #[error("Client sent a message that exceeds the size limit")]
@@ -201,6 +204,18 @@ impl<H: AppHandler> ClientTransport<H> {
             ClientTransportKind::Tcp(tcp) => tcp.send_message(&self.data, message).await,
             ClientTransportKind::Quic(quic) => quic.send_message(&self.data, message).await,
         }
+    }
+
+    /// Shorthand for sending a handshake error message.
+    #[inline]
+    pub async fn send_handshake_error(
+        &mut self,
+        error_code: QunetHandshakeError,
+        reason: Option<String>,
+    ) -> Result<(), TransportError> {
+        let message = QunetMessage::HandshakeFailure { error_code, reason };
+
+        self.send_message(message, false).await
     }
 
     #[inline]

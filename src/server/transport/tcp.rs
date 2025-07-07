@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use tokio::net::{
     TcpStream,
     tcp::{OwnedReadHalf, OwnedWriteHalf},
@@ -56,7 +58,15 @@ impl ClientTcpTransport {
         transport_data: &ClientTransportData,
         msg: QunetMessage,
     ) -> Result<(), TransportError> {
-        stream::send_message(&mut self.sock_write, transport_data, &msg).await
+        match tokio::time::timeout(
+            Duration::from_secs(30),
+            stream::send_message(&mut self.sock_write, transport_data, &msg),
+        )
+        .await
+        {
+            Ok(res) => res,
+            Err(_) => Err(TransportError::Timeout),
+        }
     }
 
     pub async fn send_handshake_response(

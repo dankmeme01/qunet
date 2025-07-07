@@ -124,12 +124,7 @@ impl<H: AppHandler> QuicServerListener<H> {
                         &server,
                     );
 
-                    if let Err(err) = server.accept_connection(transport).await {
-                        warn!(
-                            "Failed to accept handshake from client {} (QUIC): {err}",
-                            remote_addr
-                        );
-                    }
+                    server.accept_connection(transport).await;
                 }
 
                 Ok(Err(err)) => {

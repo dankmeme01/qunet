@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::server::{
     message::QunetMessage,
     transport::{ClientTransportData, TransportError},
@@ -50,7 +52,15 @@ impl ClientQuicTransport {
         transport_data: &ClientTransportData,
         msg: QunetMessage,
     ) -> Result<(), TransportError> {
-        stream::send_message(&mut self.stream, transport_data, &msg).await
+        match tokio::time::timeout(
+            Duration::from_secs(30),
+            stream::send_message(&mut self.stream, transport_data, &msg),
+        )
+        .await
+        {
+            Ok(res) => res,
+            Err(_) => Err(TransportError::Timeout),
+        }
     }
 
     pub async fn send_handshake_response(

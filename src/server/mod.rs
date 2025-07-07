@@ -1,6 +1,6 @@
-use std::{io::Cursor, ops::Deref, sync::Arc, time::Duration};
+use std::{io::Cursor, net::SocketAddr, ops::Deref, sync::Arc, time::Duration};
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use nohash_hasher::BuildNoHashHasher;
 use thiserror::Error;
 use tokio::task::JoinSet;
@@ -87,6 +87,7 @@ pub struct Server<H: AppHandler> {
     // TODO: rwlock? dashmap? arcswap?
     udp_router: DashMap<u64, RawMessageSender, BuildNoHashHasher<u64>>,
     clients: DashMap<u64, Arc<ClientState<H>>, BuildNoHashHasher<u64>>,
+    connected_addrs: DashSet<SocketAddr>, // this serves to disallow duplicate connections from the same ip:port tuple
     schedules: parking_lot::Mutex<JoinSet<!>>,
 
     // misc settings
@@ -132,6 +133,7 @@ impl<H: AppHandler> Server<H> {
 
             udp_router: DashMap::default(),
             clients: DashMap::default(),
+            connected_addrs: DashSet::default(),
             schedules: parking_lot::Mutex::new(JoinSet::new()),
             _message_size_limit: 0,
 
@@ -325,51 +327,44 @@ impl<H: AppHandler> Server<H> {
     pub(crate) async fn accept_connection(
         self: ServerHandle<H>,
         mut transport: ClientTransport<H>,
-    ) -> Result<(), AcceptError> {
-        let client_ver = transport.data.qunet_major_version;
+    ) {
+        // spawn a new task for the connection
+        tokio::spawn(async move {
+            let client_ver = transport.data.qunet_major_version;
+            let address = transport.address();
 
-        if client_ver != protocol::MAJOR_VERSION {
-            // also send an error to the client
-            tokio::spawn(async move {
-                let res = transport
-                    .send_message(
-                        QunetMessage::HandshakeFailure {
-                            error_code: if client_ver < protocol::MAJOR_VERSION {
-                                QunetHandshakeError::VersionTooOld
-                            } else {
-                                QunetHandshakeError::VersionTooNew
-                            },
-                            reason: None,
-                        },
-                        false,
-                    )
+            // send an error to the client if the version is not compatible
+            if client_ver != protocol::MAJOR_VERSION {
+                self.send_handshake_error(
+                    &mut transport,
+                    if client_ver < protocol::MAJOR_VERSION {
+                        QunetHandshakeError::VersionTooOld
+                    } else {
+                        QunetHandshakeError::VersionTooNew
+                    },
+                )
+                .await;
+
+                return;
+            }
+
+            // early reject duplicate connections from the same IP and port
+            if !self.connected_addrs.insert(address) {
+                warn!("[{address}] Duplicate connection attempt from same address, rejecting");
+
+                self.send_handshake_error(&mut transport, QunetHandshakeError::DuplicateConnection)
                     .await;
 
-                if let Err(e) = res {
-                    warn!(
-                        "[{}] Failed to send handshake failure: {}",
-                        transport.address(),
-                        e
-                    );
-                }
-            });
+                return;
+            }
 
-            return Err(AcceptError::MajorVersionMismatch {
-                client: client_ver,
-                server: protocol::MAJOR_VERSION,
-            });
-        }
+            let client_qdb_hash = &transport.data.initial_qdb_hash[..];
+            let server_qdb_hash = &self.qdb_hash[..16];
 
-        let client_qdb_hash = &transport.data.initial_qdb_hash[..];
-        let server_qdb_hash = &self.qdb_hash[..16];
+            let send_qdb = client_qdb_hash != server_qdb_hash && !self.qdb_data.is_empty();
+            let connection_id = self.generate_connection_id();
 
-        let send_qdb = client_qdb_hash != server_qdb_hash && !self.qdb_data.is_empty();
-        let connection_id = self.generate_connection_id();
-
-        transport.set_connection_id(connection_id);
-
-        tokio::spawn(async move {
-            let addr = transport.address();
+            transport.set_connection_id(connection_id);
 
             let client_data = match self
                 .app_handler
@@ -385,7 +380,10 @@ impl<H: AppHandler> Server<H> {
                 Err(e) => {
                     // The application rejected this connection, so we silently drop it.
                     // cleanup does not need to be run as the transport setup has never been called.
-                    debug!("[{addr}] Connection rejected due to application error: {e}");
+                    debug!("[{address}] Connection rejected due to application error: {e}");
+
+                    // though we still should remove the address from the set
+                    self.connected_addrs.remove(&address);
                     return;
                 }
             };
@@ -393,7 +391,7 @@ impl<H: AppHandler> Server<H> {
             let client = Arc::new(ClientState::<H> {
                 app_data: client_data,
                 connection_id: transport.connection_id(),
-                address: transport.address(),
+                address,
                 notif_tx: transport.notif_chan.0.clone(),
             });
 
@@ -404,7 +402,7 @@ impl<H: AppHandler> Server<H> {
             {
                 warn!(
                     "[{}] Client connection terminated due to error: {}",
-                    addr, e
+                    address, e
                 );
 
                 // depending on the error, we might want to send a message to the client notifying about it
@@ -425,27 +423,39 @@ impl<H: AppHandler> Server<H> {
                 };
 
                 // we don't care if it fails here
-                let _ = tokio::time::timeout(
-                    Duration::from_secs(10),
-                    transport.send_message(
+                let _ = transport
+                    .send_message(
                         QunetMessage::ServerClose {
                             error_code,
                             error_message,
                         },
                         false,
-                    ),
-                )
-                .await;
+                    )
+                    .await;
             }
 
             // always run cleanup!
             match Self::cleanup_connection(&self, &mut transport, client).await {
                 Ok(()) => {}
-                Err(err) => warn!("[{}] Failed to clean up connection: {}", addr, err),
+                Err(err) => warn!("[{}] Failed to clean up connection: {}", address, err),
             }
         });
+    }
 
-        Ok(())
+    async fn send_handshake_error(
+        &self,
+        transport: &mut ClientTransport<H>,
+        error: QunetHandshakeError,
+    ) {
+        assert!(error != QunetHandshakeError::Custom);
+
+        if let Err(e) = transport.send_handshake_error(error, None).await {
+            debug!(
+                "[{}] Failed to send handshake error: {}",
+                transport.address(),
+                e
+            );
+        }
     }
 
     #[inline]
@@ -742,6 +752,7 @@ impl<H: AppHandler> Server<H> {
         self.app_handler.on_client_disconnect(self, &client).await;
 
         self.clients.remove(&client.connection_id);
+        self.connected_addrs.remove(&client.address);
 
         transport.run_cleanup(self).await
     }

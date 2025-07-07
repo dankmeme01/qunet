@@ -63,9 +63,7 @@ impl<H: AppHandler> TcpServerListener<H> {
                         &server,
                     );
 
-                    if let Err(err) = server.accept_connection(transport).await {
-                        warn!("Failed to accept handshake from client {addr} (TCP): {err}");
-                    }
+                    server.accept_connection(transport).await;
                 }
                 Ok(Err(err)) => {
                     warn!("Client {addr} (TCP) failed to complete handshake: {err}");

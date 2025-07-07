@@ -330,7 +330,9 @@ impl<H: AppHandler> UdpServerListener<H> {
             server,
         );
 
-        Ok(Server::accept_connection(server.clone(), transport).await?)
+        Server::accept_connection(server.clone(), transport).await;
+
+        Ok(())
     }
 }
 
