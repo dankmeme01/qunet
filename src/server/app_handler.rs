@@ -4,7 +4,7 @@ use tracing::info;
 
 use crate::{
     buffers::byte_writer::{ByteWriter, ByteWriterError},
-    server::{Server, client::ClientState},
+    server::{Server, ServerHandle, client::ClientState},
 };
 
 pub type AppError = Box<dyn std::error::Error + Send + Sync>;
@@ -27,8 +27,9 @@ pub trait AppHandler: Send + Sync + Sized + 'static {
     }
 
     /// This callback is invoked after all listeners have been successfully started up.
-    /// Returning an error from this callback shuts down the entire server with `ServerOutcome::CustomError`
-    fn on_launch(&self, server: &Server<Self>) -> impl Future<Output = AppResult<()>> + Send {
+    /// Returning an error from this callback shuts down the entire server with `ServerOutcome::CustomError`.
+    /// Unlike most of other callbacks, this callback gives you a `ServerHandle` which can be cloned and stored for later use.
+    fn on_launch(&self, server: ServerHandle<Self>) -> impl Future<Output = AppResult<()>> + Send {
         async move { Ok(()) }
     }
 

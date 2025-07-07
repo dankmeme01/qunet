@@ -3,6 +3,7 @@ use std::{io::Cursor, ops::Deref, sync::Arc, time::Duration};
 use dashmap::DashMap;
 use nohash_hasher::BuildNoHashHasher;
 use thiserror::Error;
+use tokio::task::JoinSet;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{debug, error, info, warn};
 
@@ -86,6 +87,7 @@ pub struct Server<H: AppHandler> {
     // TODO: rwlock? dashmap? arcswap?
     udp_router: DashMap<u64, RawMessageSender, BuildNoHashHasher<u64>>,
     clients: DashMap<u64, Arc<ClientState<H>>, BuildNoHashHasher<u64>>,
+    schedules: parking_lot::Mutex<JoinSet<!>>,
 
     // misc settings
     _message_size_limit: usize,
@@ -130,6 +132,7 @@ impl<H: AppHandler> Server<H> {
 
             udp_router: DashMap::default(),
             clients: DashMap::default(),
+            schedules: parking_lot::Mutex::new(JoinSet::new()),
             _message_size_limit: 0,
 
             qdb: QunetDatabase::default(),
@@ -255,7 +258,7 @@ impl<H: AppHandler> Server<H> {
         self.listener_tracker.close();
 
         // invoke launch hook
-        if let Err(o) = self.app_handler.on_launch(&self).await {
+        if let Err(o) = self.app_handler.on_launch(self.clone()).await {
             return ServerOutcome::CustomError(o);
         }
 
@@ -293,18 +296,28 @@ impl<H: AppHandler> Server<H> {
     }
 
     async fn graceful_shutdown(&self) -> Result<(), ServerOutcome> {
+        // Run pre-shutdown hook
         self.app_handler
             .pre_shutdown(self)
             .await
             .map_err(ServerOutcome::CustomError)?;
 
+        // Cancel all listeners
         self.shutdown_token.cancel();
+
+        // Cancel all schedules
+        self.schedules.lock().abort_all();
+
+        // Wait for all listeners to finish
         self.listener_tracker.wait().await;
 
+        // Run post-shutdown hook
         self.app_handler
             .post_shutdown(self)
             .await
             .map_err(ServerOutcome::CustomError)?;
+
+        // Done!
 
         Ok(())
     }
@@ -765,6 +778,24 @@ impl<H: AppHandler> Server<H> {
     }
 
     // Public API for the application (sending packets, etc.)
+
+    pub async fn schedule<F, Fut>(self: ServerHandle<H>, interval: Duration, mut f: F)
+    where
+        F: FnMut(&Server<H>) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let this = self.clone();
+
+        self.schedules.lock().spawn(async move {
+            let mut interval = tokio::time::interval(interval);
+            interval.tick().await; // avoid instant tick
+
+            loop {
+                interval.tick().await;
+                f(&this).await;
+            }
+        });
+    }
 
     pub async fn request_buffer(&self, size: usize) -> BufferKind {
         if size <= QUNET_SMALL_MESSAGE_SIZE {
