@@ -28,6 +28,13 @@ mod stream;
 pub mod tcp;
 pub mod udp;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportType {
+    Udp,
+    Tcp,
+    Quic,
+}
+
 pub(crate) enum ClientTransportKind<H: AppHandler> {
     Udp(ClientUdpTransport<H>),
     Tcp(ClientTcpTransport),
@@ -117,6 +124,15 @@ impl<H: AppHandler> ClientTransport<H> {
             ClientTransportKind::Udp(_) => "UDP",
             ClientTransportKind::Tcp(_) => "TCP",
             ClientTransportKind::Quic(_) => "QUIC",
+        }
+    }
+
+    #[inline]
+    pub fn transport_type(&self) -> TransportType {
+        match &self.kind {
+            ClientTransportKind::Udp(_) => TransportType::Udp,
+            ClientTransportKind::Tcp(_) => TransportType::Tcp,
+            ClientTransportKind::Quic(_) => TransportType::Quic,
         }
     }
 

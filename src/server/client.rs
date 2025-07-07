@@ -3,10 +3,12 @@ use std::net::SocketAddr;
 use crate::server::{
     app_handler::AppHandler,
     message::{BufferKind, channel},
+    transport::{ClientTransport, TransportType},
 };
 
 pub enum ClientNotification {
     DataMessage { buf: BufferKind, reliable: bool },
+    RetransmitHandshake,
 }
 
 pub struct ClientState<H: AppHandler> {
@@ -14,9 +16,20 @@ pub struct ClientState<H: AppHandler> {
     pub connection_id: u64,
     pub address: SocketAddr,
     pub notif_tx: channel::Sender<ClientNotification>,
+    transport_type: TransportType,
 }
 
 impl<H: AppHandler> ClientState<H> {
+    pub(crate) fn new(app_data: H::ClientData, transport: &ClientTransport<H>) -> Self {
+        Self {
+            app_data,
+            connection_id: transport.connection_id(),
+            address: transport.address(),
+            notif_tx: transport.notif_chan.0.clone(),
+            transport_type: transport.transport_type(),
+        }
+    }
+
     pub fn send_data(&self, msg: BufferKind) -> bool {
         self.notif_tx.send(ClientNotification::DataMessage {
             buf: msg,
@@ -29,5 +42,13 @@ impl<H: AppHandler> ClientState<H> {
             buf: msg,
             reliable: false,
         })
+    }
+
+    pub fn retransmit_handshake(&self) -> bool {
+        self.notif_tx.send(ClientNotification::RetransmitHandshake)
+    }
+
+    pub fn transport_type(&self) -> TransportType {
+        self.transport_type
     }
 }

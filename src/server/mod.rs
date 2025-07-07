@@ -30,7 +30,7 @@ use crate::{
         protocol::{
             DEFAULT_MESSAGE_SIZE_LIMIT, QunetConnectionError, QunetHandshakeError, UDP_PACKET_LIMIT,
         },
-        transport::{ClientTransport, TransportError},
+        transport::{ClientTransport, TransportError, TransportType},
     },
 };
 
@@ -87,7 +87,7 @@ pub struct Server<H: AppHandler> {
     // TODO: rwlock? dashmap? arcswap?
     udp_router: DashMap<u64, RawMessageSender, BuildNoHashHasher<u64>>,
     clients: DashMap<u64, Arc<ClientState<H>>, BuildNoHashHasher<u64>>,
-    connected_addrs: DashSet<SocketAddr>, // this serves to disallow duplicate connections from the same ip:port tuple
+    connected_addrs: DashMap<SocketAddr, u64>, // this serves to detect duplicate connections from the same ip:port tuple
     schedules: parking_lot::Mutex<JoinSet<!>>,
 
     // misc settings
@@ -133,7 +133,7 @@ impl<H: AppHandler> Server<H> {
 
             udp_router: DashMap::default(),
             clients: DashMap::default(),
-            connected_addrs: DashSet::default(),
+            connected_addrs: DashMap::default(),
             schedules: parking_lot::Mutex::new(JoinSet::new()),
             _message_size_limit: 0,
 
@@ -348,15 +348,34 @@ impl<H: AppHandler> Server<H> {
                 return;
             }
 
-            // early reject duplicate connections from the same IP and port
-            if !self.connected_addrs.insert(address) {
-                warn!("[{address}] Duplicate connection attempt from same address, rejecting");
+            // early reject duplicate connections from the same IP and port,
+            // unless it might be a wrongfully retransmitted UDP handshake
+            let existing_conn_id = self.connected_addrs.get(&address).map(|x| *x);
 
-                self.send_handshake_error(&mut transport, QunetHandshakeError::DuplicateConnection)
+            if let Some(id) = existing_conn_id {
+                // if this client sent a duplicate handshake packet, it might be because our initial handshake response was lost,
+                // so retransmit it to the client.
+
+                if let Some(client) = self.clients.get(&id)
+                    && client.transport_type() == TransportType::Udp
+                {
+                    debug!("[{address}] Received duplicate handshake, retransmitting response");
+                    client.retransmit_handshake();
+                } else {
+                    warn!("[{address}] Duplicate connection attempt from same address, rejecting");
+
+                    self.send_handshake_error(
+                        &mut transport,
+                        QunetHandshakeError::DuplicateConnection,
+                    )
                     .await;
+                }
 
                 return;
             }
+
+            self.connected_addrs
+                .insert(address, transport.connection_id());
 
             let client_qdb_hash = &transport.data.initial_qdb_hash[..];
             let server_qdb_hash = &self.qdb_hash[..16];
@@ -388,12 +407,7 @@ impl<H: AppHandler> Server<H> {
                 }
             };
 
-            let client = Arc::new(ClientState::<H> {
-                app_data: client_data,
-                connection_id: transport.connection_id(),
-                address,
-                notif_tx: transport.notif_chan.0.clone(),
-            });
+            let client = Arc::new(ClientState::new(client_data, &transport));
 
             self.clients.insert(client.connection_id, client.clone());
 
@@ -518,43 +532,54 @@ impl<H: AppHandler> Server<H> {
 
         let notif_chan = transport.notif_chan.1.clone();
 
-        while !transport.data.closed {
-            tokio::select! {
-                msg = transport.receive_message() => match msg {
-                    Ok(msg) => {
-                        match self.handle_client_message(transport, &client, &msg).await {
-                            Ok(()) => {},
-                            Err(e) => match self.on_client_error(transport, &e) {
-                                ErrorOutcome::Terminate => return Err(e),
-                                ErrorOutcome::GracefulClosure => break,
-                                ErrorOutcome::Ignore => {}
-                            }
-                        }
-                    },
+        let mut handshake_retx_count = 0;
 
-                    Err(e) => match self.on_client_error(transport, &e) {
-                        ErrorOutcome::Terminate => return Err(e),
-                        ErrorOutcome::GracefulClosure => break,
-                        ErrorOutcome::Ignore => {}
-                    }
+        while !transport.data.closed {
+            let res = tokio::select! {
+                msg = transport.receive_message() => match msg {
+                    Ok(msg) => self.handle_client_message(transport, &client, &msg).await,
+
+                    Err(e) => Err(e),
                 },
 
                 notif = notif_chan.recv() => match notif {
                     Some(notif) => match notif {
                         ClientNotification::DataMessage{ buf, reliable } => {
-                            match transport.send_message(QunetMessage::Data { kind: DataMessageKind::Regular { data: buf }, reliability: None, compression: None }, reliable).await {
-                                Ok(()) => {},
-                                Err(e) => match self.on_client_error(transport, &e) {
-                                    ErrorOutcome::Terminate => return Err(e),
-                                    ErrorOutcome::GracefulClosure => break,
-                                    ErrorOutcome::Ignore => {}
-                                }
+                            transport.send_message(QunetMessage::Data { kind: DataMessageKind::Regular { data: buf }, reliability: None, compression: None }, reliable).await
+                        }
+
+                        ClientNotification::RetransmitHandshake => {
+                            handshake_retx_count += 1;
+
+                            // prevent malicious clients from spamming handshake retransmits, silently drop connection
+                            if handshake_retx_count > 5 {
+                                return Ok(());
                             }
+
+                            transport
+                                .send_handshake_response(
+                                    if send_qdb {
+                                        Some(self.qdb_data.as_ref())
+                                    } else {
+                                        None
+                                    },
+                                    self.qdb_uncompressed_size,
+                                )
+                                .await
                         }
                     }
 
                     None => return Err(TransportError::MessageChannelClosed),
                 }
+            };
+
+            match res {
+                Ok(()) => continue,
+                Err(e) => match self.on_client_error(transport, &e) {
+                    ErrorOutcome::Terminate => return Err(e),
+                    ErrorOutcome::GracefulClosure => break,
+                    ErrorOutcome::Ignore => {}
+                },
             }
         }
 
@@ -599,7 +624,8 @@ impl<H: AppHandler> Server<H> {
             // Critical errors
             TransportError::MessageChannelClosed
             | TransportError::ZeroLengthMessage
-            | TransportError::MessageTooLong => ErrorOutcome::Terminate,
+            | TransportError::MessageTooLong
+            | TransportError::Timeout => ErrorOutcome::Terminate,
 
             // Errors that indicate a bug in the server
             TransportError::CompressionError(e) => {
