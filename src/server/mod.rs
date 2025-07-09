@@ -1,4 +1,11 @@
-use std::{io::Cursor, net::SocketAddr, ops::Deref, sync::Arc, time::Duration};
+use std::{
+    cell::RefCell,
+    io::Cursor,
+    net::SocketAddr,
+    ops::{Deref, DerefMut},
+    sync::Arc,
+    time::Duration,
+};
 
 use dashmap::{DashMap, DashSet};
 use nohash_hasher::BuildNoHashHasher;
@@ -6,6 +13,7 @@ use thiserror::Error;
 use tokio::task::JoinSet;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{debug, error, info, warn};
+use zstd_safe::{CCtx, DCtx};
 
 use crate::{
     buffers::{
@@ -71,6 +79,13 @@ pub enum ServerOutcome {
 pub enum AcceptError {
     #[error("Major protocol version mismatch: client using {client}, server using {server}")]
     MajorVersionMismatch { client: u16, server: u16 },
+}
+
+// Spooky scary stuff
+
+thread_local! {
+    static ZSTD_CCTX: RefCell<CCtx<'static>> = RefCell::new(CCtx::create());
+    static ZSTD_DCTX: RefCell<DCtx<'static>> = RefCell::new(DCtx::create());
 }
 
 pub struct Server<H: AppHandler> {
@@ -640,8 +655,12 @@ impl<H: AppHandler> Server<H> {
             | TransportError::Timeout => ErrorOutcome::Terminate,
 
             // Errors that indicate a bug in the server
-            TransportError::CompressionError(e) => {
-                warn!("[{}] Error compressing message: {}", transport.address(), e);
+            TransportError::CompressionLz4Error(_) | TransportError::CompressionZstdError(_) => {
+                warn!(
+                    "[{}] Error compressing message: {}",
+                    transport.address(),
+                    err
+                );
                 ErrorOutcome::Ignore
             }
 
@@ -824,6 +843,120 @@ impl<H: AppHandler> Server<H> {
         writer: &mut ByteWriter,
     ) -> Result<(), ByteWriterError> {
         self.app_handler.on_ping(self, writer)
+    }
+
+    // Compression apis
+
+    pub(crate) async fn get_new_buffer(&self, size: usize) -> BufferKind {
+        if size < self.buffer_pool.buf_size() {
+            BufferKind::Pooled {
+                buf: self.buffer_pool.get().await,
+                pos: 0,
+                size: 0,
+            }
+        } else if size < self.large_buffer_pool.buf_size() {
+            BufferKind::Pooled {
+                buf: self.large_buffer_pool.get().await,
+                pos: 0,
+                size: 0,
+            }
+        } else {
+            // fallback for very large needs
+            BufferKind::Heap(Vec::with_capacity(size))
+        }
+    }
+
+    /// Safety: this function assumes the buffer will only be used for writing.
+    unsafe fn write_buf_from_buffer_kind(buf: &mut BufferKind) -> &mut [u8] {
+        match buf {
+            BufferKind::Heap(vec) => unsafe {
+                std::slice::from_raw_parts_mut(vec.as_mut_ptr(), vec.capacity())
+            },
+
+            BufferKind::Pooled { buf, .. } => {
+                let cap = buf.len();
+                &mut buf.deref_mut()[..cap]
+            }
+
+            BufferKind::Small { buf, size } => &mut buf[..*size],
+
+            BufferKind::Reference(_) => unreachable!(),
+        }
+    }
+
+    unsafe fn set_buffer_kind_len(buf: &mut BufferKind, len: usize) {
+        match buf {
+            BufferKind::Heap(vec) => unsafe { vec.set_len(len) },
+            BufferKind::Pooled { size, .. } => *size = len,
+            BufferKind::Small { size, .. } => *size = len,
+            BufferKind::Reference(_) => unreachable!(),
+        }
+    }
+
+    pub(crate) async fn compress_zstd_data(
+        &self,
+        data: &[u8],
+    ) -> Result<BufferKind, TransportError> {
+        let needed_len = zstd_safe::compress_bound(data.len());
+
+        let mut buf = self.get_new_buffer(needed_len).await;
+
+        // safety: the buffer is only used for writing
+        let output = unsafe { Self::write_buf_from_buffer_kind(&mut buf) };
+
+        debug_assert!(
+            output.len() >= needed_len,
+            "Output buffer is too small ({} < {})",
+            output.len(),
+            needed_len
+        );
+
+        let result = ZSTD_CCTX.with(|cctx| {
+            let mut ctx = cctx.borrow_mut();
+
+            if let Some(dict) = self.qdb_zstd_cdict.as_ref() {
+                ctx.compress_using_cdict(output, data, dict)
+            } else {
+                ctx.compress(output, data, MSG_ZSTD_COMPRESSION_LEVEL)
+            }
+        });
+
+        match result {
+            Ok(size) => {
+                // safety: zstd guarantees that exactly `size` bytes are written to the output buffer
+                unsafe { Self::set_buffer_kind_len(&mut buf, size) };
+                Ok(buf)
+            }
+            Err(e) => Err(TransportError::CompressionZstdError(
+                zstd_safe::get_error_name(e),
+            )),
+        }
+    }
+
+    pub(crate) async fn compress_lz4_data(
+        &self,
+        data: &[u8],
+    ) -> Result<BufferKind, TransportError> {
+        let needed_len = lz4_flex::block::get_maximum_output_size(data.len());
+
+        let mut buf = self.get_new_buffer(needed_len).await;
+
+        // safety: the buffer is only used for writing
+        let output = unsafe { Self::write_buf_from_buffer_kind(&mut buf) };
+
+        debug_assert!(
+            output.len() >= needed_len,
+            "Output buffer is too small ({} < {})",
+            output.len(),
+            needed_len
+        );
+
+        let written = lz4_flex::compress_into(data, output)?;
+
+        // safety: lz4 guarantees that exactly `size` bytes are written to the output buffer
+        unsafe { Self::set_buffer_kind_len(&mut buf, written) };
+
+        Ok(buf)
     }
 
     // Public API for the application (sending packets, etc.)

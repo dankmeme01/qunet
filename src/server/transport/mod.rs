@@ -80,7 +80,9 @@ pub enum TransportError {
     #[error("Message channel was closed")]
     MessageChannelClosed,
     #[error("Failed to compress data with lz4: {0}")]
-    CompressionError(#[from] lz4_flex::block::CompressError),
+    CompressionLz4Error(#[from] lz4_flex::block::CompressError),
+    #[error("Failed to compress data with zstd: {0}")]
+    CompressionZstdError(&'static str),
 }
 
 impl<H: AppHandler> ClientTransportData<H> {
@@ -241,6 +243,8 @@ impl<H: AppHandler> ClientTransport<H> {
         // determine if it's worth compressing
 
         // TODO: properly benchmark these values,
+        return None;
+
         // we want to be careful especially with udp game packets
         if data_buf.len() < 512 {
             None
@@ -248,28 +252,8 @@ impl<H: AppHandler> ClientTransport<H> {
             Some(CompressionType::Lz4)
         } else {
             // Some(CompressionType::Zstd)
-            Some(CompressionType::Lz4)
+            Some(CompressionType::Zstd)
             // None
-        }
-    }
-
-    #[inline]
-    async fn get_new_buffer(&self, size: usize) -> BufferKind {
-        if size < self.data.server.buffer_pool.buf_size() {
-            BufferKind::Pooled {
-                buf: self.data.server.buffer_pool.get().await,
-                pos: 0,
-                size: 0,
-            }
-        } else if size < self.data.server.large_buffer_pool.buf_size() {
-            BufferKind::Pooled {
-                buf: self.data.server.large_buffer_pool.get().await,
-                pos: 0,
-                size: 0,
-            }
-        } else {
-            // fallback for very large needs
-            BufferKind::Heap(Vec::with_capacity(size))
         }
     }
 
@@ -290,8 +274,8 @@ impl<H: AppHandler> ClientTransport<H> {
         };
 
         let compressed_buf = match comp_type {
-            CompressionType::Lz4 => self.do_compress_lz4(data_buf).await?,
-            CompressionType::Zstd => Self::do_compress_zstd(data_buf).await?,
+            CompressionType::Lz4 => self.data.server.compress_lz4_data(data_buf).await?,
+            CompressionType::Zstd => self.data.server.compress_zstd_data(data_buf).await?,
         };
 
         let reliability = match message {
@@ -306,61 +290,6 @@ impl<H: AppHandler> ClientTransport<H> {
             reliability,
             compression: Some(compression_header),
         })
-    }
-
-    async fn do_compress_lz4(&self, data: &[u8]) -> Result<BufferKind, TransportError> {
-        let needed_len = lz4_flex::block::get_maximum_output_size(data.len());
-
-        let mut buf = self.get_new_buffer(needed_len).await;
-
-        let output = match &mut buf {
-            // safety: the buffer is only used for writing
-            BufferKind::Heap(vec) => unsafe {
-                std::slice::from_raw_parts_mut(vec.as_mut_ptr(), vec.capacity())
-            },
-
-            BufferKind::Pooled { buf, .. } => {
-                let cap = buf.len();
-                &mut buf.deref_mut()[..cap]
-            }
-
-            BufferKind::Small { buf, size } => &mut buf[..*size],
-
-            BufferKind::Reference(_) => unreachable!(),
-        };
-
-        debug_assert!(
-            output.len() >= needed_len,
-            "Output buffer is too small ({} < {})",
-            output.len(),
-            needed_len
-        );
-
-        let written = lz4_flex::compress_into(data, output)?;
-
-        match &mut buf {
-            // safety: exactly `written` bytes are guaranteed to be initialized
-            BufferKind::Heap(vec) => unsafe {
-                vec.set_len(written);
-            },
-
-            BufferKind::Pooled { size, .. } => {
-                *size = written;
-            }
-
-            BufferKind::Small { size, .. } => {
-                *size = written;
-            }
-
-            BufferKind::Reference(_) => unreachable!(),
-        }
-
-        Ok(buf)
-    }
-
-    async fn do_compress_zstd(data: &[u8]) -> Result<BufferKind, TransportError> {
-        // TODO: actually use the zstd dictionary stuff
-        todo!()
     }
 }
 
