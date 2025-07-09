@@ -28,7 +28,8 @@ use crate::{
             channel::{RawMessageReceiver, RawMessageSender},
         },
         protocol::{
-            DEFAULT_MESSAGE_SIZE_LIMIT, QunetConnectionError, QunetHandshakeError, UDP_PACKET_LIMIT,
+            DEFAULT_MESSAGE_SIZE_LIMIT, MSG_ZSTD_COMPRESSION_LEVEL, QDB_ZSTD_COMPRESSION_LEVEL,
+            QunetConnectionError, QunetHandshakeError, UDP_PACKET_LIMIT,
         },
         transport::{ClientTransport, TransportError, TransportType},
     },
@@ -57,7 +58,7 @@ pub enum ServerOutcome {
     #[error("Failed to initialize QDB: {0}")]
     QdbInitError(#[from] database::DecodeError),
     #[error("Failed to compress QDB data: {0}")]
-    QdbCompressError(std::io::Error),
+    QdbCompressError(&'static str),
     #[error("Listener unexpectedly shutdown: {0}")]
     ListenerShutdown(ListenerError),
     #[error("All listeners terminated unsuccessfully")]
@@ -98,6 +99,8 @@ pub struct Server<H: AppHandler> {
     qdb_data: Arc<[u8]>,
     qdb_hash: [u8; 32],
     qdb_uncompressed_size: usize,
+    qdb_zstd_cdict: Option<zstd_safe::CDict<'static>>,
+    qdb_zstd_ddict: Option<zstd_safe::DDict<'static>>,
 }
 
 impl Server<DefaultAppHandler> {
@@ -141,6 +144,8 @@ impl<H: AppHandler> Server<H> {
             qdb_data: Arc::new([]),
             qdb_hash: [0; 32],
             qdb_uncompressed_size: 0,
+            qdb_zstd_cdict: None,
+            qdb_zstd_ddict: None,
         }
     }
 
@@ -200,9 +205,16 @@ impl<H: AppHandler> Server<H> {
             // the actual qdb_data will be stored with zstd compression
             let mut destination = Vec::new();
 
-            // TODO: tweak this level in the future
-            zstd::stream::copy_encode(&mut &*qdb_data, &mut destination, 12)
-                .map_err(ServerOutcome::QdbCompressError)?;
+            zstd_safe::compress(&mut destination, &qdb_data, QDB_ZSTD_COMPRESSION_LEVEL)
+                .map_err(|code| ServerOutcome::QdbCompressError(zstd_safe::get_error_name(code)))?;
+
+            // create compression and decompression dictionaries
+            self.qdb_zstd_cdict = Some(zstd_safe::CDict::create(
+                &destination,
+                MSG_ZSTD_COMPRESSION_LEVEL,
+            ));
+
+            self.qdb_zstd_ddict = Some(zstd_safe::DDict::create(&qdb_data));
 
             debug!(
                 "Loaded QDB ({} bytes raw, {} compressed), hash: {}",
@@ -210,6 +222,7 @@ impl<H: AppHandler> Server<H> {
                 destination.len(),
                 hex::encode(self.qdb_hash.as_ref())
             );
+
             self.qdb_data = destination.into();
         }
 
@@ -374,16 +387,15 @@ impl<H: AppHandler> Server<H> {
                 return;
             }
 
-            self.connected_addrs
-                .insert(address, transport.connection_id());
+            let connection_id = self.generate_connection_id();
+            transport.set_connection_id(connection_id);
+
+            self.connected_addrs.insert(address, connection_id);
 
             let client_qdb_hash = &transport.data.initial_qdb_hash[..];
             let server_qdb_hash = &self.qdb_hash[..16];
 
             let send_qdb = client_qdb_hash != server_qdb_hash && !self.qdb_data.is_empty();
-            let connection_id = self.generate_connection_id();
-
-            transport.set_connection_id(connection_id);
 
             let client_data = match self
                 .app_handler
@@ -516,7 +528,7 @@ impl<H: AppHandler> Server<H> {
         send_qdb: bool,
     ) -> Result<(), TransportError> {
         // run setup (udp needs this)
-        transport.run_setup(self).await?;
+        transport.run_setup().await?;
 
         // send the handshake response
         transport
@@ -780,7 +792,7 @@ impl<H: AppHandler> Server<H> {
         self.clients.remove(&client.connection_id);
         self.connected_addrs.remove(&client.address);
 
-        transport.run_cleanup(self).await
+        transport.run_cleanup().await
     }
 
     fn print_config(&self) {

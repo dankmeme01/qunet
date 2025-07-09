@@ -45,7 +45,7 @@ pub enum QunetMessageDecodeError {
     InvalidErrorCode(u32),
 }
 
-pub enum DataMessageKind {
+pub(crate) enum DataMessageKind {
     Fragment {
         header: FragmentationHeader,
         data: BufferKind,

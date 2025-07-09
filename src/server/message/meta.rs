@@ -21,7 +21,6 @@ pub(crate) struct CompressionHeader {
 pub(crate) struct FragmentationHeader {
     message_id: u16,
     pub fragment_index: u16,
-    pub fragment_offset: u32,
     pub last_fragment: bool,
 }
 
@@ -107,7 +106,6 @@ impl<'a> QunetMessageMeta<'a> {
         let fragmentation_header = if udp && bits.get_bit(4) {
             let message_id = reader.read_u16()?;
             let mut fragment_index = reader.read_u16()?;
-            let fragment_offset = reader.read_u32()?;
 
             // Last fragment bit is the most significant bit inside fragment index
             let last_fragment = fragment_index & MSG_DATA_LAST_FRAGMENT_MASK != 0;
@@ -116,7 +114,6 @@ impl<'a> QunetMessageMeta<'a> {
             Some(FragmentationHeader {
                 message_id,
                 fragment_index,
-                fragment_offset,
                 last_fragment,
             })
         } else {

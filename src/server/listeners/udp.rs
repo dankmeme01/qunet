@@ -327,7 +327,7 @@ impl<H: AppHandler> UdpServerListener<H> {
             peer,
             major_version,
             qdb_hash,
-            server,
+            server.clone(),
         );
 
         Server::accept_connection(server.clone(), transport).await;

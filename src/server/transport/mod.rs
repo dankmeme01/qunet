@@ -5,7 +5,7 @@ use thiserror::Error;
 use crate::{
     buffers::buffer_pool::BufferPool,
     server::{
-        Server,
+        Server, ServerHandle,
         app_handler::AppHandler,
         client::ClientNotification,
         message::{
@@ -37,19 +37,18 @@ pub enum TransportType {
 
 pub(crate) enum ClientTransportKind<H: AppHandler> {
     Udp(ClientUdpTransport<H>),
-    Tcp(ClientTcpTransport),
-    Quic(ClientQuicTransport),
+    Tcp(ClientTcpTransport<H>),
+    Quic(ClientQuicTransport<H>),
 }
 
-pub(crate) struct ClientTransportData {
+pub(crate) struct ClientTransportData<H: AppHandler> {
     pub connection_id: u64,
     pub closed: bool,
     pub address: SocketAddr,
     pub qunet_major_version: u16,
     pub initial_qdb_hash: [u8; 16],
     pub message_size_limit: usize,
-    pub buffer_pool: Arc<BufferPool>,
-    pub large_buffer_pool: Arc<BufferPool>,
+    pub server: ServerHandle<H>,
 
     c_sockaddr_data: SocketAddrCRepr,
     c_sockaddr_len: libc::socklen_t,
@@ -57,7 +56,7 @@ pub(crate) struct ClientTransportData {
 
 pub(crate) struct ClientTransport<H: AppHandler> {
     pub(crate) kind: ClientTransportKind<H>,
-    pub data: ClientTransportData,
+    pub data: ClientTransportData<H>,
     pub notif_chan: (
         channel::Sender<ClientNotification>,
         channel::Receiver<ClientNotification>,
@@ -84,7 +83,7 @@ pub enum TransportError {
     CompressionError(#[from] lz4_flex::block::CompressError),
 }
 
-impl ClientTransportData {
+impl<H: AppHandler> ClientTransportData<H> {
     pub fn c_sockaddr(&self) -> (&SocketAddrCRepr, libc::socklen_t) {
         (&self.c_sockaddr_data, self.c_sockaddr_len)
     }
@@ -96,7 +95,7 @@ impl<H: AppHandler> ClientTransport<H> {
         address: SocketAddr,
         qunet_major_version: u16,
         initial_qdb_hash: [u8; 16],
-        server: &Server<H>,
+        server: ServerHandle<H>,
     ) -> Self {
         let (c_sockaddr_data, c_sockaddr_len) = socket_addr_to_c(&address);
 
@@ -109,8 +108,7 @@ impl<H: AppHandler> ClientTransport<H> {
                 qunet_major_version,
                 initial_qdb_hash,
                 message_size_limit: server.message_size_limit(),
-                buffer_pool: server.buffer_pool.clone(),
-                large_buffer_pool: server.large_buffer_pool.clone(),
+                server,
                 c_sockaddr_data,
                 c_sockaddr_len,
             },
@@ -176,18 +174,18 @@ impl<H: AppHandler> ClientTransport<H> {
     }
 
     #[inline]
-    pub async fn run_setup(&mut self, server: &Server<H>) -> Result<(), TransportError> {
+    pub async fn run_setup(&mut self) -> Result<(), TransportError> {
         match &mut self.kind {
-            ClientTransportKind::Udp(udp) => udp.run_setup(&self.data, server).await,
+            ClientTransportKind::Udp(udp) => udp.run_setup(&self.data, &self.data.server).await,
             ClientTransportKind::Tcp(tcp) => tcp.run_setup().await,
             ClientTransportKind::Quic(quic) => quic.run_setup().await,
         }
     }
 
     #[inline]
-    pub async fn run_cleanup(&mut self, server: &Server<H>) -> Result<(), TransportError> {
+    pub async fn run_cleanup(&mut self) -> Result<(), TransportError> {
         match &mut self.kind {
-            ClientTransportKind::Udp(udp) => udp.run_cleanup(&self.data, server).await,
+            ClientTransportKind::Udp(udp) => udp.run_cleanup(&self.data, &self.data.server).await,
             ClientTransportKind::Tcp(tcp) => tcp.run_cleanup().await,
             ClientTransportKind::Quic(quic) => quic.run_cleanup().await,
         }
@@ -257,15 +255,15 @@ impl<H: AppHandler> ClientTransport<H> {
 
     #[inline]
     async fn get_new_buffer(&self, size: usize) -> BufferKind {
-        if size < self.data.buffer_pool.buf_size() {
+        if size < self.data.server.buffer_pool.buf_size() {
             BufferKind::Pooled {
-                buf: self.data.buffer_pool.get().await,
+                buf: self.data.server.buffer_pool.get().await,
                 pos: 0,
                 size: 0,
             }
-        } else if size < self.data.large_buffer_pool.buf_size() {
+        } else if size < self.data.server.large_buffer_pool.buf_size() {
             BufferKind::Pooled {
-                buf: self.data.large_buffer_pool.get().await,
+                buf: self.data.server.large_buffer_pool.get().await,
                 pos: 0,
                 size: 0,
             }

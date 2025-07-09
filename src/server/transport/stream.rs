@@ -8,6 +8,7 @@ use tracing::{debug, warn};
 use crate::{
     buffers::{buffer_pool::BufferPool, byte_reader::ByteReader, byte_writer::ByteWriter},
     server::{
+        app_handler::AppHandler,
         message::QunetMessage,
         protocol::{HANDSHAKE_HEADER_SIZE_WITH_QDB, MSG_HANDSHAKE_FINISH},
         transport::{ClientTransportData, TransportError},
@@ -16,10 +17,10 @@ use crate::{
 
 /// Blocks until a full message can be read from the stream, or an error occurs.
 /// This function is cancel-safe.
-pub async fn receive_message<S: AsyncReadExt + Unpin>(
+pub async fn receive_message<S: AsyncReadExt + Unpin, H: AppHandler>(
     buffer: &mut Vec<u8>,
     buffer_pos: &mut usize,
-    transport_data: &ClientTransportData,
+    transport_data: &ClientTransportData<H>,
     stream: &mut S,
 ) -> Result<QunetMessage, TransportError> {
     // TODO: maybe refactor this to add another position variable,
@@ -44,7 +45,7 @@ pub async fn receive_message<S: AsyncReadExt + Unpin>(
                 let data = &buffer[4..total_len];
                 // TODO dont early return if parsing failed, still shift the buffer
                 let meta = QunetMessage::parse_header(data, false)?;
-                let msg = QunetMessage::decode(meta, &transport_data.buffer_pool).await?;
+                let msg = QunetMessage::decode(meta, &transport_data.server.buffer_pool).await?;
 
                 // shift leftover bytes in the buffer
                 // TODO: we could elide the memmove by adding another pos field
@@ -76,9 +77,9 @@ pub async fn receive_message<S: AsyncReadExt + Unpin>(
 }
 
 /// Sends the handshake response message to the stream.
-pub async fn send_handshake_response<S: AsyncWriteExt + Unpin>(
+pub async fn send_handshake_response<S: AsyncWriteExt + Unpin, H: AppHandler>(
     stream: &mut S,
-    transport_data: &ClientTransportData,
+    transport_data: &ClientTransportData<H>,
     qdb_data: Option<&[u8]>,
     qdb_uncompressed_size: usize,
     conn_type: &str,
@@ -119,7 +120,7 @@ pub async fn send_handshake_response<S: AsyncWriteExt + Unpin>(
             IoSlice::new(qdb_data),
         ];
 
-        send_raw_bytes_vectored(stream, &mut iovecs, &transport_data.buffer_pool).await?;
+        send_raw_bytes_vectored(stream, &mut iovecs, &transport_data.server.buffer_pool).await?;
     } else {
         debug!("Sending {conn_type} handshake response (no QDB)");
 
@@ -134,9 +135,9 @@ pub async fn send_handshake_response<S: AsyncWriteExt + Unpin>(
 }
 
 /// Sends the given message to the stream.
-pub async fn send_message<S: AsyncWriteExt + Unpin>(
+pub async fn send_message<S: AsyncWriteExt + Unpin, H: AppHandler>(
     _stream: &mut S,
-    transport_data: &ClientTransportData,
+    transport_data: &ClientTransportData<H>,
     msg: &QunetMessage,
 ) -> Result<(), TransportError> {
     let mut header_buf = [0u8; 12];
@@ -160,7 +161,7 @@ pub async fn send_message<S: AsyncWriteExt + Unpin>(
             IoSlice::new(body_writer.written()),
         ];
 
-        send_raw_bytes_vectored(_stream, &mut vecs, &transport_data.buffer_pool).await?;
+        send_raw_bytes_vectored(_stream, &mut vecs, &transport_data.server.buffer_pool).await?;
 
         return Ok(());
     }
@@ -178,7 +179,7 @@ pub async fn send_message<S: AsyncWriteExt + Unpin>(
 
     let mut vecs = [IoSlice::new(header_writer.written()), IoSlice::new(data)];
 
-    send_raw_bytes_vectored(_stream, &mut vecs, &transport_data.buffer_pool).await?;
+    send_raw_bytes_vectored(_stream, &mut vecs, &transport_data.server.buffer_pool).await?;
 
     Ok(())
 }

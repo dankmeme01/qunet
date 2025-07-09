@@ -1,14 +1,13 @@
 use std::collections::VecDeque;
-use std::num::NonZeroU16;
 use std::sync::Arc;
 use std::{io::IoSlice, marker::PhantomData};
 
 use heapless::Deque;
 use tokio::net::UdpSocket;
-use tracing::{debug, warn};
+use tracing::debug;
 
-use crate::server::message::{FragmentationHeader, ReliabilityHeader};
-use crate::server::protocol::{MSG_DATA_BIT_FRAGMENTATION, UDP_PACKET_LIMIT};
+use crate::server::message::ReliabilityHeader;
+use crate::server::protocol::MSG_DATA_BIT_FRAGMENTATION;
 use crate::{
     buffers::byte_writer::ByteWriter,
     server::{
@@ -89,7 +88,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
         acks
     }
 
-    fn add_unacked(&mut self, transport_data: &ClientTransportData, msg: QunetMessage) -> bool {
+    fn add_unacked(&mut self, transport_data: &ClientTransportData<H>, msg: QunetMessage) -> bool {
         if self.unacked_messages.len() >= 64 {
             debug!(
                 "[{}] Unacked messages queue is full, dropping oldest message",
@@ -124,7 +123,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
     #[inline]
     pub async fn run_setup(
         &mut self,
-        transport_data: &ClientTransportData,
+        transport_data: &ClientTransportData<H>,
         server: &Server<H>,
     ) -> Result<(), TransportError> {
         self.receiver = Some(server.create_udp_route(transport_data.connection_id));
@@ -134,7 +133,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
     #[inline]
     pub async fn run_cleanup(
         &mut self,
-        transport_data: &ClientTransportData,
+        transport_data: &ClientTransportData<H>,
         server: &Server<H>,
     ) -> Result<(), TransportError> {
         server.remove_udp_route(transport_data.connection_id);
@@ -143,7 +142,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
 
     pub async fn receive_message(
         &mut self,
-        transport_data: &ClientTransportData,
+        transport_data: &ClientTransportData<H>,
     ) -> Result<QunetMessage, TransportError> {
         let raw_msg = match &self.receiver {
             Some(r) => match r.recv().await {
@@ -154,12 +153,12 @@ impl<H: AppHandler> ClientUdpTransport<H> {
             None => unreachable!("run_setup was not called before receiving messages"),
         }?;
 
-        Ok(QunetMessage::from_raw_udp_message(raw_msg, &transport_data.buffer_pool).await?)
+        Ok(QunetMessage::from_raw_udp_message(raw_msg, &transport_data.server.buffer_pool).await?)
     }
 
     pub async fn send_message(
         &mut self,
-        transport_data: &ClientTransportData,
+        transport_data: &ClientTransportData<H>,
         mut msg: QunetMessage,
         reliable: bool,
     ) -> Result<(), TransportError> {
@@ -285,7 +284,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
 
     pub async fn send_handshake_response(
         &self,
-        transport_data: &ClientTransportData,
+        transport_data: &ClientTransportData<H>,
         qdb_data: Option<&[u8]>,
         qdb_uncompressed_size: usize,
     ) -> Result<(), TransportError> {
@@ -353,7 +352,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
         header_writer: &mut ByteWriter<'_>,
         data: &[u8],
         chunk_size: usize,
-        transport_data: &ClientTransportData,
+        transport_data: &ClientTransportData<H>,
     ) -> Result<(), TransportError> {
         let mut offset = 0;
         let mut remaining = data.len();
@@ -390,7 +389,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
     async fn send_packet(
         &self,
         data: &[u8],
-        transport_data: &ClientTransportData,
+        transport_data: &ClientTransportData<H>,
     ) -> Result<(), TransportError> {
         let _ = self.socket.send_to(data, transport_data.address).await?;
 
@@ -401,7 +400,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
     async fn send_packet_vectored(
         &self,
         data: &mut [IoSlice<'_>],
-        transport_data: &ClientTransportData,
+        transport_data: &ClientTransportData<H>,
     ) -> Result<(), TransportError> {
         use std::os::fd::AsRawFd;
         use tokio::io::Interest;
@@ -449,7 +448,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
     async fn send_packet_vectored(
         &self,
         data: &mut [IoSlice<'_>],
-        transport_data: &ClientTransportData,
+        transport_data: &ClientTransportData<H>,
     ) -> Result<(), TransportError> {
         let total_len: usize = data.iter().map(|slice| slice.len()).sum();
         debug_assert!(total_len <= self.mtu, "Data exceeds MTU size");

@@ -201,6 +201,7 @@ Error codes:
 * 1 - Client qunet version is too old
 * 2 - Client qunet version is too new
 * 3 - Reconnect failed, unknown connection ID
+* 4 - Duplicate connection detected from the same address
 
 ## ClientClose
 
@@ -324,13 +325,13 @@ If the **Reliability** bit is set, the following header is encoded after the qun
 
 * Reliable message ID (`u16`) - this should be unique per each reliable message. Use zero if this is not a reliable message and just used for ACKing.
 * ACK count (`u16`) - how many messages to acknowledge. This typically can be up to 8 in one message.
+* For each ACKed message:
 * * Message ID (`u16`) - message to acknowledge
 
 If the **Fragmentation** bit is set, the following header is encoded after the qunet header (or after the reliability header, if one is present):
 
 * Fragmented message ID (`u16`) - this should be unique per qunet message, exists to differentiate fragments of unrelated messages
 * Fragment index (`u16`) - only the lower 15 bits of this should be used (so maximum 32768 fragments), the top bit indicates if this is the last fragment
-* Fragment offset (`u32`)
 
 Additionally, right after the qunet header and before UDP-specific extensions, the **Connection ID** (`u64`) must be included (**only for client -> server packets**). This applies to every message type except [HandshakeStart](#handshakestart), connection ID is completely omitted during the handshake.
 

@@ -121,7 +121,7 @@ impl<H: AppHandler> QuicServerListener<H> {
                         remote_addr,
                         outcome.qunet_major,
                         outcome.qdb_hash,
-                        &server,
+                        server.clone(),
                     );
 
                     server.accept_connection(transport).await;

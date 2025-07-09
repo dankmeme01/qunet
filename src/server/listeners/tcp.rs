@@ -60,7 +60,7 @@ impl<H: AppHandler> TcpServerListener<H> {
                         conn.addr,
                         qunet_major,
                         qdb_hash,
-                        &server,
+                        server.clone(),
                     );
 
                     server.accept_connection(transport).await;

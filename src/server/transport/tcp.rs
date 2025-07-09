@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{marker::PhantomData, time::Duration};
 
 use tokio::net::{
     TcpStream,
@@ -6,20 +6,22 @@ use tokio::net::{
 };
 
 use crate::server::{
+    app_handler::AppHandler,
     message::QunetMessage,
     transport::{ClientTransportData, TransportError},
 };
 
 use super::stream;
 
-pub(crate) struct ClientTcpTransport {
+pub(crate) struct ClientTcpTransport<H: AppHandler> {
     sock_write: OwnedWriteHalf,
     sock_read: OwnedReadHalf,
     buffer: Vec<u8>,
     buffer_pos: usize,
+    _phantom: PhantomData<H>,
 }
 
-impl ClientTcpTransport {
+impl<H: AppHandler> ClientTcpTransport<H> {
     pub fn new(socket: TcpStream) -> Self {
         let (sock_read, sock_write) = socket.into_split();
 
@@ -28,6 +30,7 @@ impl ClientTcpTransport {
             sock_write,
             buffer: vec![0u8; 512], // TODO: if it's a significant performance issue, don't zero the bytes, also maybe make size configurable
             buffer_pos: 0,
+            _phantom: PhantomData,
         }
     }
 
@@ -42,7 +45,7 @@ impl ClientTcpTransport {
 
     pub async fn receive_message(
         &mut self,
-        transport_data: &ClientTransportData,
+        transport_data: &ClientTransportData<H>,
     ) -> Result<QunetMessage, TransportError> {
         stream::receive_message(
             &mut self.buffer,
@@ -55,7 +58,7 @@ impl ClientTcpTransport {
 
     pub async fn send_message(
         &mut self,
-        transport_data: &ClientTransportData,
+        transport_data: &ClientTransportData<H>,
         msg: QunetMessage,
     ) -> Result<(), TransportError> {
         match tokio::time::timeout(
@@ -71,7 +74,7 @@ impl ClientTcpTransport {
 
     pub async fn send_handshake_response(
         &mut self,
-        transport_data: &ClientTransportData,
+        transport_data: &ClientTransportData<H>,
         qdb_data: Option<&[u8]>,
         qdb_uncompressed_size: usize,
     ) -> Result<(), TransportError> {
