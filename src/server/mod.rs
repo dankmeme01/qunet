@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 use nohash_hasher::BuildNoHashHasher;
 use thiserror::Error;
 use tokio::task::JoinSet;
@@ -218,7 +218,7 @@ impl<H: AppHandler> Server<H> {
             self.qdb_uncompressed_size = qdb_data.len();
 
             // the actual qdb_data will be stored with zstd compression
-            let mut destination = Vec::new();
+            let mut destination = Vec::with_capacity(zstd_safe::compress_bound(qdb_data.len()));
 
             zstd_safe::compress(&mut destination, &qdb_data, QDB_ZSTD_COMPRESSION_LEVEL)
                 .map_err(|code| ServerOutcome::QdbCompressError(zstd_safe::get_error_name(code)))?;

@@ -1,24 +1,21 @@
-use std::{net::SocketAddr, num::NonZeroU32, ops::DerefMut as _, sync::Arc};
+use std::{net::SocketAddr, num::NonZeroU32};
 
 use thiserror::Error;
 
-use crate::{
-    buffers::buffer_pool::BufferPool,
-    server::{
-        Server, ServerHandle,
-        app_handler::AppHandler,
-        client::ClientNotification,
-        message::{
-            BufferKind, CompressionHeader, CompressionType, DataMessageKind, QunetMessage,
-            QunetMessageDecodeError, channel,
-        },
-        protocol::QunetHandshakeError,
-        transport::{
-            lowlevel::{SocketAddrCRepr, socket_addr_to_c},
-            quic::ClientQuicTransport,
-            tcp::ClientTcpTransport,
-            udp::ClientUdpTransport,
-        },
+use crate::server::{
+    ServerHandle,
+    app_handler::AppHandler,
+    client::ClientNotification,
+    message::{
+        CompressionHeader, CompressionType, DataMessageKind, QunetMessage, QunetMessageDecodeError,
+        channel,
+    },
+    protocol::QunetHandshakeError,
+    transport::{
+        lowlevel::{SocketAddrCRepr, socket_addr_to_c},
+        quic::ClientQuicTransport,
+        tcp::ClientTcpTransport,
+        udp::ClientUdpTransport,
     },
 };
 

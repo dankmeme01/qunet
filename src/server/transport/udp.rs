@@ -7,7 +7,7 @@ use tokio::net::UdpSocket;
 use tracing::debug;
 
 use crate::server::message::ReliabilityHeader;
-use crate::server::protocol::MSG_DATA_BIT_FRAGMENTATION;
+use crate::server::protocol::{MSG_DATA_BIT_FRAGMENTATION, MSG_DATA_LAST_FRAGMENT_MASK};
 use crate::{
     buffers::byte_writer::ByteWriter,
     server::{
