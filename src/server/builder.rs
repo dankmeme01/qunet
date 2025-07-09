@@ -55,6 +55,40 @@ impl Default for ListenerOptions {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct BufferPoolOpts {
+    pub buf_size: usize,
+    pub initial_buffers: usize,
+    pub max_buffers: usize,
+}
+
+impl BufferPoolOpts {
+    pub fn new(buf_size: usize, initial_buffers: usize, max_buffers: usize) -> Self {
+        Self {
+            buf_size,
+            initial_buffers,
+            max_buffers,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MemoryUsageOptions {
+    pub buffer_pools: Vec<BufferPoolOpts>,
+}
+
+impl Default for MemoryUsageOptions {
+    fn default() -> Self {
+        Self {
+            buffer_pools: vec![
+                BufferPoolOpts::new(1500, 256, 4096), // buffers around mtu size for udp
+                BufferPoolOpts::new(4096, 128, 1024), // small buffers
+                BufferPoolOpts::new(65536, 16, 256),  // large buffers
+            ],
+        }
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct ServerBuilder<H: AppHandler = DefaultAppHandler> {
     pub(crate) udp_opts: Option<UdpOptions>,
@@ -62,6 +96,7 @@ pub struct ServerBuilder<H: AppHandler = DefaultAppHandler> {
     pub(crate) quic_opts: Option<QuicOptions>,
     pub(crate) ws_opts: Option<WsOptions>,
     pub(crate) listener_opts: ListenerOptions,
+    pub(crate) mem_options: MemoryUsageOptions,
     pub(crate) app_handler: Option<H>,
 
     pub(crate) message_size_limit: Option<usize>,
@@ -146,6 +181,11 @@ impl<H: AppHandler> ServerBuilder<H> {
         self
     }
 
+    pub fn with_memory_options(mut self, options: MemoryUsageOptions) -> Self {
+        self.mem_options = options;
+        self
+    }
+
     pub fn with_app_handler<NewH: AppHandler>(self, app_handler: NewH) -> ServerBuilder<NewH> {
         ServerBuilder {
             udp_opts: self.udp_opts,
@@ -159,6 +199,7 @@ impl<H: AppHandler> ServerBuilder<H> {
             qdb_data: self.qdb_data,
             graceful_shutdown_timeout: self.graceful_shutdown_timeout,
             max_suspend_time: self.max_suspend_time,
+            mem_options: self.mem_options,
         }
     }
 

@@ -18,9 +18,10 @@ use crate::{
     buffers::{
         binary_writer::BinaryWriter,
         bits::Bits,
-        buffer_pool::{BorrowedMutBuffer, BufferPool},
+        buffer_pool::BorrowedMutBuffer,
         byte_reader::{ByteReader, ByteReaderError},
         byte_writer::{ByteWriter, ByteWriterError},
+        multi_buffer_pool::MultiBufferPool,
     },
     server::protocol::*,
 };
@@ -132,7 +133,7 @@ impl QunetMessage {
     /// Decodes a Qunet message from a `QunetMessageMeta` structure earlier obtained from `parse_header`.
     pub async fn decode(
         meta: QunetMessageMeta<'_>,
-        buffer_pool: &BufferPool,
+        buffer_pool: &MultiBufferPool,
     ) -> Result<QunetMessage, QunetMessageDecodeError> {
         let mut reader = ByteReader::new(meta.data);
         if !meta.bare.is_data {
@@ -147,12 +148,12 @@ impl QunetMessage {
                 MSG_KEEPALIVE_RESPONSE => {
                     let timestamp = reader.read_u64()?;
                     let data_len = reader.read_u16()? as usize;
-                    if data_len > buffer_pool.buf_size() {
+                    if data_len > buffer_pool.max_buf_size() {
                         return Err(QunetMessageDecodeError::AdditionalDataTooLong(data_len));
                     }
 
                     let buf = if data_len > 0 {
-                        let mut buf = buffer_pool.get().await;
+                        let mut buf = buffer_pool.get(data_len).await.unwrap();
                         let rem = reader.remaining_bytes();
                         if rem.len() != data_len {
                             return Err(QunetMessageDecodeError::InvalidHeader);
@@ -222,7 +223,7 @@ impl QunetMessage {
 
     async fn decode_data_message(
         meta: QunetMessageBareMeta,
-        buffer_pool: &BufferPool,
+        buffer_pool: &MultiBufferPool,
         raw_msg: RawOrSlice<'_>,
     ) -> Result<QunetMessage, QunetMessageDecodeError> {
         // we want to try and not copy data/request buffers if possible
@@ -264,9 +265,9 @@ impl QunetMessage {
                             buf: small_buf,
                             size: data_len,
                         }
-                    } else if data_len <= buffer_pool.buf_size() {
+                    } else if data_len <= buffer_pool.max_buf_size() {
                         // request a buffer from the pool
-                        let mut buf = buffer_pool.get().await;
+                        let mut buf = buffer_pool.get(data_len).await.unwrap();
                         buf[..data_len].copy_from_slice(data);
 
                         BufferKind::Pooled {
@@ -307,7 +308,7 @@ impl QunetMessage {
     #[inline]
     pub async fn from_raw_udp_message(
         raw_msg: QunetRawMessage,
-        buffer_pool: &BufferPool,
+        buffer_pool: &MultiBufferPool,
     ) -> Result<QunetMessage, QunetMessageDecodeError> {
         let meta = QunetMessageMeta::parse(&raw_msg, true)?;
 

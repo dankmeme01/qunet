@@ -19,6 +19,7 @@ use crate::{
     buffers::{
         buffer_pool::BufferPool,
         byte_writer::{ByteWriter, ByteWriterError},
+        multi_buffer_pool::MultiBufferPool,
     },
     database::{self, QunetDatabase},
     server::{
@@ -93,14 +94,12 @@ pub struct Server<H: AppHandler> {
     udp_listener: Option<Arc<UdpServerListener<H>>>,
     tcp_listener: Option<Arc<TcpServerListener<H>>>,
     quic_listener: Option<Arc<QuicServerListener<H>>>,
-    buffer_pool: Arc<BufferPool>,
-    large_buffer_pool: Arc<BufferPool>,
+    buffer_pool: Arc<MultiBufferPool>,
     app_handler: H,
 
     shutdown_token: CancellationToken,
     listener_tracker: TaskTracker,
 
-    // TODO: rwlock? dashmap? arcswap?
     udp_router: DashMap<u64, RawMessageSender, BuildNoHashHasher<u64>>,
     clients: DashMap<u64, Arc<ClientState<H>>, BuildNoHashHasher<u64>>,
     connected_addrs: DashMap<SocketAddr, u64>, // this serves to detect duplicate connections from the same ip:port tuple
@@ -142,8 +141,7 @@ impl<H: AppHandler> Server<H> {
             udp_listener: None,
             tcp_listener: None,
             quic_listener: None,
-            buffer_pool: Arc::new(BufferPool::new(4096, 128, 1024)), // TODO: allow configuring this too
-            large_buffer_pool: Arc::new(BufferPool::new(65536, 16, 256)), // TODO: allow configuring this too
+            buffer_pool: Arc::new(MultiBufferPool::new()),
             app_handler,
 
             shutdown_token: CancellationToken::new(),
@@ -165,12 +163,24 @@ impl<H: AppHandler> Server<H> {
     }
 
     pub(crate) async fn setup(&mut self) -> Result<(), ServerOutcome> {
-        self.print_config();
-
         self.app_handler
             .pre_setup(self)
             .await
             .map_err(ServerOutcome::CustomError)?;
+
+        self.print_config();
+
+        // Setup buffer pools
+        let pool =
+            Arc::get_mut(&mut self.buffer_pool).expect("Buffer pool must be unique at this point");
+
+        for opts in &self._builder.mem_options.buffer_pools {
+            pool.add_pool(BufferPool::new(
+                opts.buf_size,
+                opts.initial_buffers,
+                opts.max_buffers,
+            ));
+        }
 
         // Setup connection listeners
         if let Some(opts) = self._builder.udp_opts.take() {
@@ -848,21 +858,15 @@ impl<H: AppHandler> Server<H> {
     // Compression apis
 
     pub(crate) async fn get_new_buffer(&self, size: usize) -> BufferKind {
-        if size < self.buffer_pool.buf_size() {
-            BufferKind::Pooled {
-                buf: self.buffer_pool.get().await,
+        match self.buffer_pool.get(size).await {
+            Some(buf) => BufferKind::Pooled {
+                buf,
                 pos: 0,
                 size: 0,
-            }
-        } else if size < self.large_buffer_pool.buf_size() {
-            BufferKind::Pooled {
-                buf: self.large_buffer_pool.get().await,
-                pos: 0,
-                size: 0,
-            }
-        } else {
+            },
+
             // fallback for very large needs
-            BufferKind::Heap(Vec::with_capacity(size))
+            None => BufferKind::Heap(Vec::with_capacity(size)),
         }
     }
 
@@ -985,20 +989,8 @@ impl<H: AppHandler> Server<H> {
                 buf: [0; QUNET_SMALL_MESSAGE_SIZE],
                 size: 0,
             }
-        } else if size <= self.buffer_pool.buf_size() {
-            BufferKind::Pooled {
-                buf: self.buffer_pool.get().await,
-                pos: 0,
-                size: 0,
-            }
-        } else if size <= self.large_buffer_pool.buf_size() {
-            BufferKind::Pooled {
-                buf: self.large_buffer_pool.get().await,
-                pos: 0,
-                size: 0,
-            }
         } else {
-            BufferKind::Heap(Vec::with_capacity(size))
+            self.get_new_buffer(size).await
         }
     }
 }

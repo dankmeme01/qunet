@@ -6,6 +6,7 @@ pub mod byte_reader;
 pub mod byte_writer;
 pub mod circular_byte_buffer;
 pub mod heap_byte_writer;
+pub mod multi_buffer_pool;
 
 #[cfg(test)]
 mod tests {

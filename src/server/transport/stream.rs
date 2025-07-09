@@ -3,10 +3,12 @@
 use std::io::IoSlice;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::{
-    buffers::{buffer_pool::BufferPool, byte_reader::ByteReader, byte_writer::ByteWriter},
+    buffers::{
+        byte_reader::ByteReader, byte_writer::ByteWriter, multi_buffer_pool::MultiBufferPool,
+    },
     server::{
         app_handler::AppHandler,
         message::QunetMessage,
@@ -197,15 +199,15 @@ pub async fn send_raw_bytes<S: AsyncWriteExt + Unpin>(
 pub async fn send_raw_bytes_vectored<S: AsyncWriteExt + Unpin>(
     stream: &mut S,
     bufs: &mut [IoSlice<'_>],
-    buffer_pool: &BufferPool,
+    buffer_pool: &MultiBufferPool,
 ) -> Result<(), TransportError> {
     if stream.is_write_vectored() {
         do_vectored_write(stream, bufs).await
     } else {
         let total_len = bufs.iter().map(|b| b.len()).sum::<usize>();
 
-        if total_len < buffer_pool.buf_size() {
-            let mut buffer = buffer_pool.get().await;
+        if total_len < buffer_pool.max_buf_size() {
+            let mut buffer = buffer_pool.get(total_len).await.unwrap();
             let mut offset: usize = 0;
 
             for buf in bufs.iter() {

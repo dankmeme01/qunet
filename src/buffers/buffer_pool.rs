@@ -30,6 +30,9 @@ impl BufferPoolInner {
 }
 
 impl BufferPool {
+    /// Creates a new `BufferPool` with the specified buffer size, initial number of buffers, and maximum number of buffers.
+    /// The minimum memory usage of the pool will be `buf_size * initial_buffers`.
+    /// The maximum memory usage of the pool will be `buf_size * max_buffers`.
     pub fn new(buf_size: usize, initial_buffers: usize, max_buffers: usize) -> Self {
         let mut storage = Vec::with_capacity(initial_buffers);
 
@@ -76,9 +79,27 @@ impl BufferPool {
     }
 
     pub async fn get(&self) -> BorrowedMutBuffer {
+        if let Some(buffer) = self.try_get() {
+            return buffer;
+        }
+
+        // if we reached here, this means the pool is at max capacity and no permits are available right now,
+        // we must wait
+
+        let permit = self.inner.semaphore.clone().acquire_owned().await.unwrap();
+        let buffer = self.get_buffer();
+
+        BorrowedMutBuffer::new(buffer, self.inner.clone(), Some(permit))
+    }
+
+    pub fn try_get(&self) -> Option<BorrowedMutBuffer> {
         // first, try acquire a permit if there are any available
         if let Ok(permit) = self.inner.semaphore.clone().try_acquire_owned() {
-            return BorrowedMutBuffer::new(self.get_buffer(), self.inner.clone(), Some(permit));
+            return Some(BorrowedMutBuffer::new(
+                self.get_buffer(),
+                self.inner.clone(),
+                Some(permit),
+            ));
         }
 
         // if we failed to acquire a permit, see if we can grow the pool
@@ -86,7 +107,7 @@ impl BufferPool {
 
         loop {
             if num_buffers >= self.max_buffers {
-                break;
+                break None;
             }
 
             // try to grow the pool
@@ -100,7 +121,7 @@ impl BufferPool {
                     // successfully incremented the count, allocate a new buffer
                     let buffer = self.alloc_new_buffer();
 
-                    return BorrowedMutBuffer::new(buffer, self.inner.clone(), None);
+                    break Some(BorrowedMutBuffer::new(buffer, self.inner.clone(), None));
                 }
 
                 Err(num) => {
@@ -110,19 +131,35 @@ impl BufferPool {
                 }
             }
         }
+    }
 
-        // if we reached here, this means the pool is at max capacity and no permits are available right now,
-        // we must wait
+    /// Shrinks the pool to the smallest possible size, releasing the excess buffers.
+    /// This will free up memory, but subsequent calls to `get` or `try_get` may have to allocate new buffers again.
+    pub fn shrink(&self) {
+        // `forget_permits` returns how many permits actually were released, and we can free that many buffers
+        let released_bufs = self
+            .inner
+            .semaphore
+            .forget_permits(self.allocated_buffers.load(Ordering::Relaxed));
 
-        let permit = self.inner.semaphore.clone().acquire_owned().await.unwrap();
-        let buffer = self.get_buffer();
+        let mut storage = self.inner.storage.lock();
 
-        BorrowedMutBuffer::new(buffer, self.inner.clone(), Some(permit))
+        assert!(released_bufs <= storage.len());
+
+        let to_keep = storage.len() - released_bufs;
+        storage.truncate(to_keep);
     }
 
     /// Returns the size of a single buffer in this pool.
+    #[inline]
     pub fn buf_size(&self) -> usize {
         self.buf_size
+    }
+
+    /// Returns the total heap usage of this pool. (only including buffers, not the pool itself)
+    #[inline]
+    pub fn heap_usage(&self) -> usize {
+        self.buf_size * self.allocated_buffers.load(Ordering::Relaxed)
     }
 }
 
