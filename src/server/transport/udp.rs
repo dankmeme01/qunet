@@ -229,7 +229,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
         // determine the maximum size of the payload for each fragment
         // first fragment must include reliability and compression headers if they are present, rest don't have to
 
-        let frag_hdr_size = 8;
+        let frag_hdr_size = 4;
 
         let first_payload_size =
             self.mtu - header_writer.pos() - rel_hdr_size - comp_hdr_size - frag_hdr_size;
@@ -241,7 +241,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
         let mut fragment_index = 0u16;
 
         while offset < data.len() {
-            let is_first = offset == 0;
+            let is_first = fragment_index == 0;
             let payload_size = if is_first {
                 first_payload_size
             } else {
@@ -264,8 +264,14 @@ impl<H: AppHandler> ClientUdpTransport<H> {
             // this reinit is scuffed but needed
             let mut header_writer = ByteWriter::new(&mut header_buf);
             header_writer.write_u16(frag_message_id);
-            header_writer.write_u16(fragment_index);
-            header_writer.write_u32(offset as u32);
+            header_writer.write_u16(
+                fragment_index
+                    | if is_first {
+                        0
+                    } else {
+                        MSG_DATA_LAST_FRAGMENT_MASK
+                    },
+            );
 
             offset += chunk.len();
             fragment_index += 1;
