@@ -142,6 +142,10 @@ impl BufferPool {
             .semaphore
             .forget_permits(self.allocated_buffers.load(Ordering::Relaxed));
 
+        // decrease the allocated buffers count
+        self.allocated_buffers
+            .fetch_sub(released_bufs, Ordering::SeqCst);
+
         let mut storage = self.inner.storage.lock();
 
         assert!(released_bufs <= storage.len());

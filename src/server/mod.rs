@@ -182,6 +182,11 @@ impl<H: AppHandler> Server<H> {
             ));
         }
 
+        debug!(
+            "Estimate buffer pool memory usage: {} bytes",
+            pool.heap_usage()
+        );
+
         // Setup connection listeners
         if let Some(opts) = self._builder.udp_opts.take() {
             let listener = UdpServerListener::new(opts, self.shutdown_token.clone()).await?;
