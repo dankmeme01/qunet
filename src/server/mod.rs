@@ -505,8 +505,13 @@ impl<H: AppHandler> Server<H> {
 
     #[inline]
     fn generate_connection_id(&self) -> u64 {
-        // TODO: check if there already is a connection with this ID
-        rand::random()
+        loop {
+            let id = rand::random();
+
+            if !self.clients.contains_key(&id) {
+                break id;
+            }
+        }
     }
 
     #[inline]
