@@ -7,7 +7,7 @@ use tracing::{debug, error, warn};
 use crate::server::{
     ServerHandle,
     app_handler::AppHandler,
-    builder::TcpOptions,
+    builder::{ListenerOptions, TcpOptions},
     listeners::listener::{BindError, ListenerError, ServerListener},
     transport::{ClientTransport, ClientTransportKind, tcp::ClientTcpTransport},
 };
@@ -36,6 +36,7 @@ impl<H: AppHandler> TcpServerListener<H> {
     pub async fn new(
         opts: TcpOptions,
         shutdown_token: CancellationToken,
+        _listener_opts: &ListenerOptions,
     ) -> Result<Self, BindError> {
         let socket = TcpListener::bind(opts.address).await?;
 
@@ -56,7 +57,7 @@ impl<H: AppHandler> TcpServerListener<H> {
             match tokio::time::timeout(Duration::from_secs(30), conn.wait_for_handshake()).await {
                 Ok(Ok((qunet_major, qdb_hash))) => {
                     let transport = ClientTransport::new(
-                        ClientTransportKind::Tcp(ClientTcpTransport::new(conn.stream)),
+                        ClientTransportKind::Tcp(ClientTcpTransport::new(conn.stream, &server)),
                         conn.addr,
                         qunet_major,
                         qdb_hash,

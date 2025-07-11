@@ -17,7 +17,7 @@ use super::stream;
 
 pub(crate) struct QuicServerListener<H: AppHandler> {
     opts: QuicOptions,
-    opts2: ListenerOptions,
+    handshake_timeout: Duration,
     shutdown_token: CancellationToken,
     quic_server: Mutex<s2n_quic::Server>,
     _phantom: PhantomData<H>,
@@ -53,8 +53,8 @@ impl PendingQuicConnection {
 impl<H: AppHandler> QuicServerListener<H> {
     pub async fn new(
         opts: QuicOptions,
-        opts2: ListenerOptions,
         shutdown_token: CancellationToken,
+        opts2: &ListenerOptions,
     ) -> Result<Self, BindError> {
         let tls = s2n_quic::provider::tls::rustls::Server::builder()
             .with_application_protocols([&b"qunet1"[..], &b"h3"[..]].iter())
@@ -74,7 +74,7 @@ impl<H: AppHandler> QuicServerListener<H> {
             .unwrap()
             .with_max_open_remote_unidirectional_streams(0)
             .unwrap()
-            .with_max_idle_timeout(Duration::from_secs(60))
+            .with_max_idle_timeout(opts2.idle_timeout)
             .unwrap();
 
         let quic_server = s2n_quic::Server::builder()
@@ -87,7 +87,7 @@ impl<H: AppHandler> QuicServerListener<H> {
 
         Ok(Self {
             opts,
-            opts2,
+            handshake_timeout: opts2.handshake_timeout,
             shutdown_token,
             quic_server: Mutex::new(quic_server),
             _phantom: PhantomData,
@@ -154,7 +154,7 @@ impl<H: AppHandler> ServerListener<H> for QuicServerListener<H> {
         loop {
             tokio::select! {
                 conn = qsrv.accept() => match conn {
-                    Some(conn) => Self::accept_connection(server.clone(), conn, self.opts2.handshake_timeout),
+                    Some(conn) => Self::accept_connection(server.clone(), conn, self.handshake_timeout),
 
                     None => {
                         warn!("QUIC listener suddenly closed");

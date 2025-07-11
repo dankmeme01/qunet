@@ -10,7 +10,7 @@ use crate::{
     server::{
         Server, ServerHandle,
         app_handler::AppHandler,
-        builder::{BufferPoolOpts, UdpDiscoveryMode, UdpOptions},
+        builder::{ListenerOptions, MemoryUsageOptions, UdpDiscoveryMode, UdpOptions},
         listeners::listener::{BindError, ListenerError, ServerListener},
         message::{QUNET_SMALL_MESSAGE_SIZE, QunetMessage, QunetRawMessage},
         protocol::*,
@@ -65,15 +65,16 @@ impl<H: AppHandler> UdpServerListener<H> {
     pub async fn new(
         opts: UdpOptions,
         shutdown_token: CancellationToken,
-        buffer_pool_opts: BufferPoolOpts,
-        recv_buffer_size: Option<usize>,
+        _listener_opts: &ListenerOptions,
+        mem_opts: &MemoryUsageOptions,
     ) -> Result<Self, BindError> {
         let binds = opts.binds.get();
 
         let mut sockets = Vec::with_capacity(binds);
 
         for _ in 0..binds {
-            let socket = make_socket(opts.address, binds > 1, recv_buffer_size).await?;
+            let socket =
+                make_socket(opts.address, binds > 1, mem_opts.udp_recv_buffer_size).await?;
 
             sockets.push(OneListener {
                 socket: Arc::new(socket),
@@ -85,9 +86,9 @@ impl<H: AppHandler> UdpServerListener<H> {
             sockets,
             shutdown_token,
             buffer_pool: BufferPool::new(
-                buffer_pool_opts.buf_size,
-                buffer_pool_opts.initial_buffers,
-                buffer_pool_opts.max_buffers,
+                mem_opts.udp_listener_buffer_pool.buf_size,
+                mem_opts.udp_listener_buffer_pool.initial_buffers,
+                mem_opts.udp_listener_buffer_pool.max_buffers,
             ),
             _phantom: PhantomData,
         })
@@ -341,7 +342,7 @@ impl<H: AppHandler> UdpServerListener<H> {
         frag_limit = frag_limit.clamp(1000, UDP_PACKET_LIMIT as u16);
 
         let transport = ClientTransport::new(
-            ClientTransportKind::Udp(ClientUdpTransport::new(socket, frag_limit as usize)),
+            ClientTransportKind::Udp(ClientUdpTransport::new(socket, frag_limit as usize, server)),
             peer,
             major_version,
             qdb_hash,

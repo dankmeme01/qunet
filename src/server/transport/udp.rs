@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{io::IoSlice, marker::PhantomData};
 
 use tokio::net::UdpSocket;
@@ -28,18 +28,22 @@ pub(crate) struct ClientUdpTransport<H> {
     receiver: Option<RawMessageReceiver>,
     rel_store: ReliableStore,
     frag_store: FragmentStore,
+    idle_timeout: Duration,
+    last_data_exchange: Instant,
 
     _phantom: PhantomData<H>,
 }
 
 impl<H: AppHandler> ClientUdpTransport<H> {
-    pub fn new(socket: Arc<UdpSocket>, mtu: usize) -> Self {
+    pub fn new(socket: Arc<UdpSocket>, mtu: usize, server: &Server<H>) -> Self {
         Self {
             socket,
             mtu,
             receiver: None,
             rel_store: ReliableStore::new(),
             frag_store: FragmentStore::new(),
+            idle_timeout: server._builder.listener_opts.idle_timeout,
+            last_data_exchange: Instant::now(),
             _phantom: PhantomData,
         }
     }
@@ -66,7 +70,16 @@ impl<H: AppHandler> ClientUdpTransport<H> {
 
     #[inline]
     pub fn until_timer_expiry(&self) -> Duration {
-        self.rel_store.until_timer_expiry()
+        let idle_timeout = self
+            .idle_timeout
+            .saturating_sub(self.last_data_exchange.elapsed());
+
+        self.rel_store.until_timer_expiry().min(idle_timeout)
+    }
+
+    #[inline]
+    fn update_exchange_time(&mut self) {
+        self.last_data_exchange = Instant::now();
     }
 
     #[inline]
@@ -81,6 +94,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
 
         loop {
             if let Some(msg) = self.process_incoming(transport_data).await? {
+                self.update_exchange_time();
                 break Ok(msg);
             }
         }
@@ -156,6 +170,8 @@ impl<H: AppHandler> ClientUdpTransport<H> {
         mut msg: QunetMessage,
         reliable: bool,
     ) -> Result<(), TransportError> {
+        self.update_exchange_time();
+
         if !msg.is_data() {
             let mut header_buf = [0u8; MAX_HEADER_SIZE];
             let mut header_writer = ByteWriter::new(&mut header_buf);
@@ -355,8 +371,15 @@ impl<H: AppHandler> ClientUdpTransport<H> {
 
     pub async fn handle_timer_expiry(
         &mut self,
-        transport_data: &ClientTransportData<H>,
+        transport_data: &mut ClientTransportData<H>,
     ) -> Result<(), TransportError> {
+        // if there's been no activity for a while, close the connection
+        if self.last_data_exchange.elapsed() >= self.idle_timeout {
+            debug!("Idle timeout reached, closing connection");
+            transport_data.closed = true;
+            return Ok(());
+        }
+
         while self.rel_store.maybe_retransmit() {
             match self.rel_store.get_retransmit_message() {
                 Some(msg) => {

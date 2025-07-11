@@ -192,8 +192,8 @@ impl<H: AppHandler> Server<H> {
             let listener = UdpServerListener::new(
                 opts,
                 self.shutdown_token.clone(),
-                self._builder.mem_options.udp_listener_buffer_pool.clone(),
-                self._builder.mem_options.udp_recv_buffer_size,
+                &self._builder.listener_opts,
+                &self._builder.mem_options,
             )
             .await?;
 
@@ -201,15 +201,20 @@ impl<H: AppHandler> Server<H> {
         }
 
         if let Some(opts) = self._builder.tcp_opts.take() {
-            let listener = TcpServerListener::new(opts, self.shutdown_token.clone()).await?;
+            let listener = TcpServerListener::new(
+                opts,
+                self.shutdown_token.clone(),
+                &self._builder.listener_opts,
+            )
+            .await?;
             self.tcp_listener = Some(Arc::new(listener));
         }
 
         if let Some(opts) = self._builder.quic_opts.take() {
             let listener = QuicServerListener::new(
                 opts,
-                self._builder.listener_opts.clone(),
                 self.shutdown_token.clone(),
+                &self._builder.listener_opts,
             )
             .await?;
 

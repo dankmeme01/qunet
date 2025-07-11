@@ -212,6 +212,7 @@ impl<H: AppHandler> ClientTransport<H> {
     pub fn until_timer_expiry(&self) -> Option<Duration> {
         match &self.kind {
             ClientTransportKind::Udp(udp) => Some(udp.until_timer_expiry()),
+            ClientTransportKind::Tcp(tcp) => Some(tcp.until_timer_expiry()),
             _ => None,
         }
     }
@@ -219,7 +220,8 @@ impl<H: AppHandler> ClientTransport<H> {
     #[inline]
     pub async fn handle_timer_expiry(&mut self) -> Result<(), TransportError> {
         match &mut self.kind {
-            ClientTransportKind::Udp(udp) => udp.handle_timer_expiry(&self.data).await,
+            ClientTransportKind::Udp(udp) => udp.handle_timer_expiry(&mut self.data).await,
+            ClientTransportKind::Tcp(tcp) => tcp.handle_timer_expiry(&mut self.data),
             _ => Ok(()),
         }
     }

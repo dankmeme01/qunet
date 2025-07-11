@@ -45,12 +45,14 @@ pub(crate) struct WsOptions {
 #[derive(Debug, Clone)]
 pub(crate) struct ListenerOptions {
     pub handshake_timeout: Duration,
+    pub idle_timeout: Duration,
 }
 
 impl Default for ListenerOptions {
     fn default() -> Self {
         Self {
             handshake_timeout: Duration::from_secs(30),
+            idle_timeout: Duration::from_secs(60),
         }
     }
 }
@@ -162,6 +164,11 @@ impl<H: AppHandler> ServerBuilder<H> {
 
     pub fn with_handshake_timeout(mut self, timeout: Duration) -> Self {
         self.listener_opts.handshake_timeout = timeout;
+        self
+    }
+
+    pub fn with_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.listener_opts.idle_timeout = timeout;
         self
     }
 
