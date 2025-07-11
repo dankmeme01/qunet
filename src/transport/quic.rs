@@ -1,8 +1,8 @@
 use std::{marker::PhantomData, time::Duration};
 
-use crate::server::{
-    app_handler::AppHandler,
+use crate::{
     message::QunetMessage,
+    server::app_handler::AppHandler,
     transport::{ClientTransportData, TransportError},
 };
 use s2n_quic::stream::BidirectionalStream;

@@ -3,7 +3,7 @@ use std::{collections::VecDeque, time::Duration};
 use std::time::Instant;
 use tracing::debug;
 
-use crate::server::{
+use crate::{
     message::{QunetMessage, ReliabilityHeader},
     transport::{TransportError, exponential_moving_average},
 };
@@ -26,7 +26,7 @@ struct StoredOutOfOrderMessage {
     received_at: Instant,
 }
 
-pub struct ReliableStore {
+pub(crate) struct ReliableStore {
     remote_unacked: VecDeque<UnackedRemoteMessage>,
     remote_out_of_order: VecDeque<StoredOutOfOrderMessage>,
     remote_delayed_queue: VecDeque<QunetMessage>,

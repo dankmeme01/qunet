@@ -8,12 +8,8 @@ use tracing::debug;
 
 use crate::{
     buffers::multi_buffer_pool::MultiBufferPool,
-    server::{
-        message::{
-            BufferKind, CompressionHeader, DataMessageKind, QunetMessage, ReliabilityHeader,
-        },
-        transport::TransportError,
-    },
+    message::{BufferKind, CompressionHeader, DataMessageKind, QunetMessage, ReliabilityHeader},
+    transport::TransportError,
 };
 
 struct Fragment {
@@ -29,7 +25,7 @@ struct Message {
     reliability_header: Option<ReliabilityHeader>,
 }
 
-pub struct FragmentStore {
+pub(crate) struct FragmentStore {
     messages: IntMap<u16, Message>,
     next_message_id: AtomicU16,
 }

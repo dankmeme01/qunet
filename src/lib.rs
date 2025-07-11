@@ -7,5 +7,9 @@
 )]
 
 pub mod buffers;
+pub mod client;
 pub mod database;
+pub mod message;
+pub mod protocol;
 pub mod server;
+pub mod transport;

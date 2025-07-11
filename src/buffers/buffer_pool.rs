@@ -9,8 +9,6 @@ use std::{
 
 use parking_lot::Mutex;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-#[cfg(debug_assertions)]
-use tracing::debug;
 use tracing::warn;
 
 struct BufferPoolInner {

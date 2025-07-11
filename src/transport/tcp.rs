@@ -8,10 +8,9 @@ use tokio::net::{
     tcp::{OwnedReadHalf, OwnedWriteHalf},
 };
 
-use crate::server::{
-    Server,
-    app_handler::AppHandler,
+use crate::{
     message::QunetMessage,
+    server::{Server, app_handler::AppHandler},
     transport::{ClientTransportData, TransportError},
 };
 

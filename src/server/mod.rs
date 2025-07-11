@@ -22,6 +22,14 @@ use crate::{
         multi_buffer_pool::MultiBufferPool,
     },
     database::{self, QunetDatabase},
+    message::{
+        self, BufferKind, DataMessageKind, QUNET_SMALL_MESSAGE_SIZE, QunetMessage, QunetRawMessage,
+        channel::{RawMessageReceiver, RawMessageSender},
+    },
+    protocol::{
+        self, DEFAULT_MESSAGE_SIZE_LIMIT, MSG_ZSTD_COMPRESSION_LEVEL, QDB_ZSTD_COMPRESSION_LEVEL,
+        QunetConnectionError, QunetHandshakeError, UDP_PACKET_LIMIT,
+    },
     server::{
         app_handler::{AppHandler, DefaultAppHandler},
         builder::ServerBuilder,
@@ -32,25 +40,14 @@ use crate::{
             tcp::TcpServerListener,
             udp::UdpServerListener,
         },
-        message::{
-            BufferKind, DataMessageKind, QUNET_SMALL_MESSAGE_SIZE, QunetMessage, QunetRawMessage,
-            channel::{RawMessageReceiver, RawMessageSender},
-        },
-        protocol::{
-            DEFAULT_MESSAGE_SIZE_LIMIT, MSG_ZSTD_COMPRESSION_LEVEL, QDB_ZSTD_COMPRESSION_LEVEL,
-            QunetConnectionError, QunetHandshakeError, UDP_PACKET_LIMIT,
-        },
-        transport::{ClientTransport, TransportError, TransportType},
     },
+    transport::{ClientTransport, TransportError, TransportType},
 };
 
 pub mod app_handler;
 pub mod builder;
 pub mod client;
 pub(crate) mod listeners;
-pub mod message;
-pub mod protocol;
-pub(crate) mod transport;
 
 #[derive(Error, Debug)]
 pub enum ServerOutcome {
@@ -93,12 +90,12 @@ thread_local! {
 }
 
 pub struct Server<H: AppHandler> {
-    _builder: ServerBuilder<H>,
+    pub(crate) _builder: ServerBuilder<H>,
     udp_listener: Option<Arc<UdpServerListener<H>>>,
     tcp_listener: Option<Arc<TcpServerListener<H>>>,
     quic_listener: Option<Arc<QuicServerListener<H>>>,
-    buffer_pool: Arc<MultiBufferPool>,
-    app_handler: H,
+    pub(crate) buffer_pool: Arc<MultiBufferPool>,
+    pub(crate) app_handler: H,
 
     shutdown_token: CancellationToken,
     listener_tracker: TaskTracker,
@@ -515,7 +512,7 @@ impl<H: AppHandler> Server<H> {
     }
 
     #[inline]
-    fn message_size_limit(&self) -> usize {
+    pub fn message_size_limit(&self) -> usize {
         self._message_size_limit
     }
 

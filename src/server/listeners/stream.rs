@@ -4,10 +4,8 @@ use tokio::io::AsyncReadExt;
 
 use crate::{
     buffers::byte_reader::ByteReader,
-    server::{
-        listeners::listener::ListenerError,
-        protocol::{HANDSHAKE_START_SIZE, MSG_HANDSHAKE_START},
-    },
+    protocol::{HANDSHAKE_START_SIZE, MSG_HANDSHAKE_START},
+    server::listeners::listener::ListenerError,
 };
 
 pub async fn wait_for_handshake<S: AsyncReadExt + Unpin>(

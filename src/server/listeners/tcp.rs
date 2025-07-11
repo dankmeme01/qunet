@@ -4,11 +4,13 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
-use crate::server::{
-    ServerHandle,
-    app_handler::AppHandler,
-    builder::{ListenerOptions, TcpOptions},
-    listeners::listener::{BindError, ListenerError, ServerListener},
+use crate::{
+    server::{
+        ServerHandle,
+        app_handler::AppHandler,
+        builder::{ListenerOptions, TcpOptions},
+        listeners::listener::{BindError, ListenerError, ServerListener},
+    },
     transport::{ClientTransport, ClientTransportKind, tcp::ClientTcpTransport},
 };
 

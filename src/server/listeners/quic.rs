@@ -5,11 +5,13 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use crate::server::{
-    ServerHandle,
-    app_handler::AppHandler,
-    builder::{ListenerOptions, QuicOptions},
-    listeners::listener::{BindError, ListenerError, ServerListener},
+use crate::{
+    server::{
+        ServerHandle,
+        app_handler::AppHandler,
+        builder::{ListenerOptions, QuicOptions},
+        listeners::listener::{BindError, ListenerError, ServerListener},
+    },
     transport::{ClientTransport, ClientTransportKind, quic::ClientQuicTransport},
 };
 

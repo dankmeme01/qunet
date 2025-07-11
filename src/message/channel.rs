@@ -1,4 +1,4 @@
-use crate::server::message::QunetRawMessage;
+use crate::message::QunetRawMessage;
 
 pub struct Sender<T> {
     inner: flume::Sender<T>,

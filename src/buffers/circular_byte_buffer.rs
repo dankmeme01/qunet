@@ -1,4 +1,4 @@
-use crate::server::transport::lowlevel::uninit_box_bytes;
+use crate::transport::lowlevel::uninit_box_bytes;
 
 /// Circular byte buffer implementation
 /// This buffer allows efficient amortized read/write operations, which are a simple memcpy,

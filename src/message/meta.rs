@@ -2,7 +2,8 @@ use std::num::NonZeroU32;
 
 use crate::{
     buffers::{bits::Bits, byte_reader::ByteReader},
-    server::{message::QunetMessageDecodeError, protocol::*},
+    message::QunetMessageDecodeError,
+    protocol::*,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

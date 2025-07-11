@@ -1,8 +1,8 @@
 use std::net::SocketAddr;
 
-use crate::server::{
-    app_handler::AppHandler,
+use crate::{
     message::{BufferKind, channel},
+    server::app_handler::AppHandler,
     transport::{ClientTransport, TransportType},
 };
 
@@ -31,6 +31,10 @@ impl<H: AppHandler> ClientState<H> {
             notif_tx: transport.notif_chan.0.clone(),
             transport_type: transport.transport_type(),
         }
+    }
+
+    pub fn data(&self) -> &H::ClientData {
+        &self.app_data
     }
 
     pub fn send_data(&self, msg: BufferKind) -> bool {

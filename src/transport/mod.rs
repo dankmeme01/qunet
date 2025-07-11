@@ -2,29 +2,30 @@ use std::{net::SocketAddr, num::NonZeroU32, time::Duration};
 
 use thiserror::Error;
 
-use crate::server::{
-    ServerHandle,
-    app_handler::AppHandler,
-    client::ClientNotification,
+use crate::{
     message::{
         CompressionHeader, CompressionType, DataMessageKind, QunetMessage, QunetMessageDecodeError,
         channel,
     },
     protocol::QunetHandshakeError,
-    transport::{
-        lowlevel::{SocketAddrCRepr, socket_addr_to_c},
-        quic::ClientQuicTransport,
-        tcp::ClientTcpTransport,
-        udp::ClientUdpTransport,
-    },
+    server::{ServerHandle, app_handler::AppHandler, client::ClientNotification},
 };
+
+use self::{
+    lowlevel::{SocketAddrCRepr, socket_addr_to_c},
+    quic::ClientQuicTransport,
+    tcp::ClientTcpTransport,
+    udp::ClientUdpTransport,
+};
+
+pub use udp_misc::*;
 
 pub mod lowlevel;
 pub mod quic;
 mod stream;
 pub mod tcp;
 pub mod udp;
-pub mod udp_misc;
+mod udp_misc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportType {

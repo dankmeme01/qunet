@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::{buffers::buffer_pool::BorrowedMutBuffer, server::message::QUNET_SMALL_MESSAGE_SIZE};
+use crate::{buffers::buffer_pool::BorrowedMutBuffer, message::QUNET_SMALL_MESSAGE_SIZE};
 
 pub enum BufferKind {
     Heap(Vec<u8>),

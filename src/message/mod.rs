@@ -23,7 +23,7 @@ use crate::{
         byte_writer::{ByteWriter, ByteWriterError},
         multi_buffer_pool::MultiBufferPool,
     },
-    server::protocol::*,
+    protocol::*,
 };
 
 #[derive(Debug, Error)]

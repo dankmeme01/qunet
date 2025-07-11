@@ -9,12 +9,10 @@ use crate::{
     buffers::{
         byte_reader::ByteReader, byte_writer::ByteWriter, multi_buffer_pool::MultiBufferPool,
     },
-    server::{
-        app_handler::AppHandler,
-        message::QunetMessage,
-        protocol::{HANDSHAKE_HEADER_SIZE_WITH_QDB, MSG_HANDSHAKE_FINISH},
-        transport::{ClientTransportData, TransportError},
-    },
+    message::QunetMessage,
+    protocol::{HANDSHAKE_HEADER_SIZE_WITH_QDB, MSG_HANDSHAKE_FINISH},
+    server::app_handler::AppHandler,
+    transport::{ClientTransportData, TransportError},
 };
 
 /// Blocks until a full message can be read from the stream, or an error occurs.
