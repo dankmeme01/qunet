@@ -74,17 +74,13 @@ Each section **must** start on a 16-byte boundary.
 
 Section options are a `u16` bitmask. Currently, it is reserved and there are no options.
 
-## Type section (ID 1)
-
-This section is now unused.
-
-## Options section (ID 2)
-
-This section is now unused.
-
-## Dict section (ID 3)
+## Zstd dict section (ID 3)
 
 This section contains a zstd compression dictionary that will be used for messages compressed with zstd.
+
+Structure:
+* Compression level (`i32`)
+* Dict data (rest of the section)
 
 # Data encoding
 

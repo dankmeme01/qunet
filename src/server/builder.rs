@@ -75,6 +75,8 @@ impl BufferPoolOpts {
 #[derive(Debug, Clone)]
 pub struct MemoryUsageOptions {
     pub buffer_pools: Vec<BufferPoolOpts>,
+    pub udp_listener_buffer_pool: BufferPoolOpts,
+    pub udp_recv_buffer_size: Option<usize>,
 }
 
 impl Default for MemoryUsageOptions {
@@ -85,6 +87,8 @@ impl Default for MemoryUsageOptions {
                 BufferPoolOpts::new(4096, 128, 1024), // small buffers
                 BufferPoolOpts::new(65536, 16, 256),  // large buffers
             ],
+            udp_listener_buffer_pool: BufferPoolOpts::new(1500, 64, 512),
+            udp_recv_buffer_size: None,
         }
     }
 }

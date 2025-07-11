@@ -189,7 +189,14 @@ impl<H: AppHandler> Server<H> {
 
         // Setup connection listeners
         if let Some(opts) = self._builder.udp_opts.take() {
-            let listener = UdpServerListener::new(opts, self.shutdown_token.clone()).await?;
+            let listener = UdpServerListener::new(
+                opts,
+                self.shutdown_token.clone(),
+                self._builder.mem_options.udp_listener_buffer_pool.clone(),
+                self._builder.mem_options.udp_recv_buffer_size,
+            )
+            .await?;
+
             self.udp_listener = Some(Arc::new(listener));
         }
 
@@ -205,6 +212,7 @@ impl<H: AppHandler> Server<H> {
                 self.shutdown_token.clone(),
             )
             .await?;
+
             self.quic_listener = Some(Arc::new(listener));
         }
 
@@ -574,14 +582,29 @@ impl<H: AppHandler> Server<H> {
 
         let notif_chan = transport.notif_chan.1.clone();
 
-        let mut handshake_retx_count = 0;
+        let mut handshake_retx_count: u8 = 0;
 
         while !transport.data.closed {
+            let timer_expiry = transport.until_timer_expiry();
+
             let res = tokio::select! {
                 msg = transport.receive_message() => match msg {
-                    Ok(msg) => self.handle_client_message(transport, &client, &msg).await,
+                    Ok(msg) => {
+                        if msg.is_data_compressed() {
+                            match transport.decompress_message(msg).await {
+                                Ok(msg) => self.handle_client_message(transport, &client, &msg).await,
+                                Err(e) => Err(e),
+                            }
+                        } else {
+                            self.handle_client_message(transport, &client, &msg).await
+                        }
+                    },
 
                     Err(e) => Err(e),
+                },
+
+                _ = tokio::time::sleep(timer_expiry.unwrap()), if timer_expiry.is_some() => {
+                    transport.handle_timer_expiry().await
                 },
 
                 notif = notif_chan.recv() => match notif {
@@ -939,6 +962,43 @@ impl<H: AppHandler> Server<H> {
             Err(e) => Err(TransportError::CompressionZstdError(
                 zstd_safe::get_error_name(e),
             )),
+        }
+    }
+
+    pub(crate) async fn decompress_zstd_data(
+        &self,
+        data: &[u8],
+        uncompressed_size: usize,
+    ) -> Result<BufferKind, TransportError> {
+        let mut buf = self.get_new_buffer(uncompressed_size).await;
+
+        // safety: the buffer is only used for writing
+        let output = unsafe { Self::write_buf_from_buffer_kind(&mut buf) };
+
+        debug_assert!(
+            output.len() >= uncompressed_size,
+            "Output buffer is too small ({} < {})",
+            output.len(),
+            uncompressed_size
+        );
+
+        let result = ZSTD_DCTX.with(|dctx| {
+            let mut ctx = dctx.borrow_mut();
+
+            if let Some(dict) = self.qdb_zstd_ddict.as_ref() {
+                ctx.decompress_using_ddict(output, data, dict)
+            } else {
+                ctx.decompress(output, data)
+            }
+        });
+
+        match result {
+            Ok(size) => {
+                // safety: zstd guarantees that exactly `size` bytes are written to the output buffer
+                unsafe { Self::set_buffer_kind_len(&mut buf, size) };
+                Ok(buf)
+            }
+            Err(_) => Err(TransportError::DecompressionError),
         }
     }
 

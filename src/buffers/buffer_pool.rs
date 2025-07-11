@@ -9,6 +9,9 @@ use std::{
 
 use parking_lot::Mutex;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+#[cfg(debug_assertions)]
+use tracing::debug;
+use tracing::warn;
 
 struct BufferPoolInner {
     storage: Mutex<Vec<Box<[u8]>>>,
@@ -92,14 +95,23 @@ impl BufferPool {
         BorrowedMutBuffer::new(buffer, self.inner.clone(), Some(permit))
     }
 
-    pub fn try_get(&self) -> Option<BorrowedMutBuffer> {
-        // first, try acquire a permit if there are any available
+    #[inline]
+    fn try_get_no_grow(&self) -> Option<BorrowedMutBuffer> {
         if let Ok(permit) = self.inner.semaphore.clone().try_acquire_owned() {
             return Some(BorrowedMutBuffer::new(
                 self.get_buffer(),
                 self.inner.clone(),
                 Some(permit),
             ));
+        }
+
+        None
+    }
+
+    pub fn try_get(&self) -> Option<BorrowedMutBuffer> {
+        // first, try acquire a permit if there are any available
+        if let Some(buf) = self.try_get_no_grow() {
+            return Some(buf);
         }
 
         // if we failed to acquire a permit, see if we can grow the pool
@@ -128,6 +140,30 @@ impl BufferPool {
                     // another thread has beaten us, let's try again if we can
                     num_buffers = num;
                     continue;
+                }
+            }
+        }
+    }
+
+    pub fn get_busy_loop(&self) -> BorrowedMutBuffer {
+        loop {
+            let bufs = self.allocated_buffers.load(Ordering::Relaxed);
+            let buf = if bufs >= self.max_buffers {
+                self.try_get_no_grow()
+            } else {
+                self.try_get()
+            };
+
+            match buf {
+                Some(buf) => break buf,
+                None => {
+                    #[cfg(debug_assertions)]
+                    warn!(
+                        "BufferPool::get_busy_loop: no buffers available (size {}, alloocated {}/{})",
+                        self.buf_size, bufs, self.max_buffers
+                    );
+
+                    std::thread::yield_now()
                 }
             }
         }

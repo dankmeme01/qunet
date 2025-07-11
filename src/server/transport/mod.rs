@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, num::NonZeroU32};
+use std::{net::SocketAddr, num::NonZeroU32, time::Duration};
 
 use thiserror::Error;
 
@@ -24,6 +24,7 @@ pub mod quic;
 mod stream;
 pub mod tcp;
 pub mod udp;
+pub mod udp_misc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportType {
@@ -80,6 +81,14 @@ pub enum TransportError {
     CompressionLz4Error(#[from] lz4_flex::block::CompressError),
     #[error("Failed to compress data with zstd: {0}")]
     CompressionZstdError(&'static str),
+    #[error("Failed to decompress data")]
+    DecompressionError,
+    #[error("Remote is too unreliable, way too many lost messages")]
+    TooUnreliable,
+    #[error("Too many pending fragmented messages")]
+    TooManyPendingFragments,
+    #[error("Error defragmenting message")]
+    DefragmentationError,
 }
 
 impl<H: AppHandler> ClientTransportData<H> {
@@ -200,6 +209,29 @@ impl<H: AppHandler> ClientTransport<H> {
     }
 
     #[inline]
+    pub fn until_timer_expiry(&self) -> Option<Duration> {
+        match &self.kind {
+            ClientTransportKind::Udp(udp) => Some(udp.until_timer_expiry()),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub async fn handle_timer_expiry(&mut self) -> Result<(), TransportError> {
+        match &mut self.kind {
+            ClientTransportKind::Udp(udp) => udp.handle_timer_expiry(&self.data).await,
+            _ => Ok(()),
+        }
+    }
+
+    pub async fn decompress_message(
+        &mut self,
+        msg: QunetMessage,
+    ) -> Result<QunetMessage, TransportError> {
+        self.do_decompress_data_message(msg).await
+    }
+
+    #[inline]
     pub async fn send_message(
         &mut self,
         mut message: QunetMessage,
@@ -288,6 +320,47 @@ impl<H: AppHandler> ClientTransport<H> {
             compression: Some(compression_header),
         })
     }
+
+    async fn do_decompress_data_message(
+        &mut self,
+        message: QunetMessage,
+    ) -> Result<QunetMessage, TransportError> {
+        let compression_header = match &message {
+            QunetMessage::Data { compression, .. } => compression
+                .as_ref()
+                .expect("Data message without compression header"),
+            _ => unreachable!("Non data message passed to decompression check"),
+        };
+
+        let data = message.data_bytes().unwrap();
+
+        let buf = match compression_header.compression_type {
+            CompressionType::Zstd => {
+                self.data
+                    .server
+                    .decompress_zstd_data(data, compression_header.uncompressed_size.get() as usize)
+                    .await?
+            }
+
+            _ => todo!("lz4"),
+        };
+
+        Ok(QunetMessage::Data {
+            kind: DataMessageKind::Regular { data: buf },
+            reliability: None,
+            compression: None,
+        })
+    }
 }
 
 impl<H: AppHandler> ClientTransportKind<H> {}
+
+// just a helper function
+
+#[inline]
+pub fn exponential_moving_average<T: Into<f64>>(current: T, previous: T, alpha: f64) -> f64 {
+    let current = current.into();
+    let previous = previous.into();
+
+    alpha * current + (1.0 - alpha) * previous
+}

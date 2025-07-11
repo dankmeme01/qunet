@@ -10,7 +10,7 @@ use crate::{
     server::{
         Server, ServerHandle,
         app_handler::AppHandler,
-        builder::{UdpDiscoveryMode, UdpOptions},
+        builder::{BufferPoolOpts, UdpDiscoveryMode, UdpOptions},
         listeners::listener::{BindError, ListenerError, ServerListener},
         message::{QUNET_SMALL_MESSAGE_SIZE, QunetMessage, QunetRawMessage},
         protocol::*,
@@ -26,10 +26,15 @@ pub(crate) struct UdpServerListener<H: AppHandler> {
     opts: UdpOptions,
     sockets: Vec<OneListener>,
     shutdown_token: CancellationToken,
+    buffer_pool: BufferPool,
     _phantom: PhantomData<H>,
 }
 
-pub(crate) async fn make_socket(address: SocketAddr, multi: bool) -> std::io::Result<UdpSocket> {
+pub(crate) async fn make_socket(
+    address: SocketAddr,
+    multi: bool,
+    recv_buffer_size: Option<usize>,
+) -> std::io::Result<UdpSocket> {
     let domain = if address.is_ipv6() {
         Domain::IPV6
     } else {
@@ -44,6 +49,10 @@ pub(crate) async fn make_socket(address: SocketAddr, multi: bool) -> std::io::Re
         socket.set_reuse_port(true)?;
     }
 
+    if let Some(size) = recv_buffer_size {
+        socket.set_recv_buffer_size(size)?;
+    }
+
     socket.set_nonblocking(true)?;
     socket.bind(&address.into())?;
 
@@ -56,13 +65,15 @@ impl<H: AppHandler> UdpServerListener<H> {
     pub async fn new(
         opts: UdpOptions,
         shutdown_token: CancellationToken,
+        buffer_pool_opts: BufferPoolOpts,
+        recv_buffer_size: Option<usize>,
     ) -> Result<Self, BindError> {
         let binds = opts.binds.get();
 
         let mut sockets = Vec::with_capacity(binds);
 
         for _ in 0..binds {
-            let socket = make_socket(opts.address, binds > 1).await?;
+            let socket = make_socket(opts.address, binds > 1, recv_buffer_size).await?;
 
             sockets.push(OneListener {
                 socket: Arc::new(socket),
@@ -73,6 +84,11 @@ impl<H: AppHandler> UdpServerListener<H> {
             opts,
             sockets,
             shutdown_token,
+            buffer_pool: BufferPool::new(
+                buffer_pool_opts.buf_size,
+                buffer_pool_opts.initial_buffers,
+                buffer_pool_opts.max_buffers,
+            ),
             _phantom: PhantomData,
         })
     }
@@ -106,14 +122,12 @@ impl<H: AppHandler> UdpServerListener<H> {
         let socket_arc = &self.sockets[index].socket;
         let socket = &*self.sockets[index].socket;
 
-        // TODO: !!! allow the user to configure buffer count
-        let bufpool = BufferPool::new(1500, 128, 4096);
-
         // we try to reuse the same buffer when accepting packets,
         // only getting a new one when we give away this buffer to another task
-        let mut buf = bufpool.get().await;
+        let mut buf = self.buffer_pool.get().await;
 
         loop {
+            // TODO: dabble into recvmmsg for better performance, linux only
             let (len, peer) = socket
                 .recv_from(&mut buf)
                 .await
@@ -168,7 +182,11 @@ impl<H: AppHandler> UdpServerListener<H> {
                 } else {
                     let msg = QunetRawMessage::Large { buffer: buf, len };
 
-                    buf = bufpool.get().await; // get a new buffer for the next message
+                    // get a new buffer for the next message
+                    buf = match self.buffer_pool.try_get() {
+                        Some(x) => x,
+                        None => self.buffer_pool.get().await,
+                    };
 
                     msg
                 };

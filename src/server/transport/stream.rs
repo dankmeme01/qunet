@@ -47,7 +47,7 @@ pub async fn receive_message<S: AsyncReadExt + Unpin, H: AppHandler>(
                 let data = &buffer[4..total_len];
                 // TODO dont early return if parsing failed, still shift the buffer
                 let meta = QunetMessage::parse_header(data, false)?;
-                let msg = QunetMessage::decode(meta, &transport_data.server.buffer_pool).await?;
+                let msg = QunetMessage::decode(meta, &transport_data.server.buffer_pool)?;
 
                 // shift leftover bytes in the buffer
                 // TODO: we could elide the memmove by adding another pos field

@@ -57,6 +57,18 @@ pub(crate) enum DataMessageKind {
     },
 }
 
+impl DataMessageKind {
+    #[inline]
+    pub fn is_fragment(&self) -> bool {
+        matches!(self, DataMessageKind::Fragment { .. })
+    }
+
+    #[inline]
+    pub fn is_regular(&self) -> bool {
+        matches!(self, DataMessageKind::Regular { .. })
+    }
+}
+
 pub(crate) enum QunetMessage {
     Keepalive {
         timestamp: u64,
@@ -131,7 +143,7 @@ impl QunetMessage {
     }
 
     /// Decodes a Qunet message from a `QunetMessageMeta` structure earlier obtained from `parse_header`.
-    pub async fn decode(
+    pub fn decode(
         meta: QunetMessageMeta<'_>,
         buffer_pool: &MultiBufferPool,
     ) -> Result<QunetMessage, QunetMessageDecodeError> {
@@ -153,7 +165,7 @@ impl QunetMessage {
                     }
 
                     let buf = if data_len > 0 {
-                        let mut buf = buffer_pool.get(data_len).await.unwrap();
+                        let mut buf = buffer_pool.get_busy_loop(data_len).unwrap();
                         let rem = reader.remaining_bytes();
                         if rem.len() != data_len {
                             return Err(QunetMessageDecodeError::InvalidHeader);
@@ -217,11 +229,11 @@ impl QunetMessage {
             }
         } else {
             // data message
-            Self::decode_data_message(meta.bare, buffer_pool, RawOrSlice::Slice(meta.data)).await
+            Self::decode_data_message(meta.bare, buffer_pool, RawOrSlice::Slice(meta.data))
         }
     }
 
-    async fn decode_data_message(
+    fn decode_data_message(
         meta: QunetMessageBareMeta,
         buffer_pool: &MultiBufferPool,
         raw_msg: RawOrSlice<'_>,
@@ -267,7 +279,7 @@ impl QunetMessage {
                         }
                     } else if data_len <= buffer_pool.max_buf_size() {
                         // request a buffer from the pool
-                        let mut buf = buffer_pool.get(data_len).await.unwrap();
+                        let mut buf = buffer_pool.get_busy_loop(data_len).unwrap();
                         buf[..data_len].copy_from_slice(data);
 
                         BufferKind::Pooled {
@@ -306,7 +318,7 @@ impl QunetMessage {
 
     /// Decodes a `QunetRawMessage` into a `QunetMessage`. UDP is assumed.
     #[inline]
-    pub async fn from_raw_udp_message(
+    pub fn from_raw_udp_message(
         raw_msg: QunetRawMessage,
         buffer_pool: &MultiBufferPool,
     ) -> Result<QunetMessage, QunetMessageDecodeError> {
@@ -314,10 +326,10 @@ impl QunetMessage {
 
         if !meta.bare.is_data {
             // control message, no need to read the data
-            return Self::decode(meta, buffer_pool).await;
+            return Self::decode(meta, buffer_pool);
         }
 
-        Self::decode_data_message(meta.bare, buffer_pool, RawOrSlice::Raw(raw_msg)).await
+        Self::decode_data_message(meta.bare, buffer_pool, RawOrSlice::Raw(raw_msg))
     }
 
     /// This function must only be used for UDP messages.
@@ -372,6 +384,48 @@ impl QunetMessage {
     pub fn is_data_compressed(&self) -> bool {
         if let QunetMessage::Data { compression, .. } = self {
             compression.is_some()
+        } else {
+            false
+        }
+    }
+
+    /// Calculates the header size of the message.
+    pub fn calc_header_size(&self) -> usize {
+        match self {
+            Self::Data {
+                kind,
+                reliability,
+                compression,
+            } => {
+                let mut size = 1; // header byte
+
+                if let Some(CompressionHeader { .. }) = compression {
+                    size += 4; // compression header size
+                }
+
+                if let Some(ReliabilityHeader { acks, .. }) = reliability {
+                    size += 4 + acks.len() * 2; // reliability header size
+                }
+
+                if kind.is_fragment() {
+                    size += 4; // fragmentation header size
+                }
+
+                size
+            }
+
+            _ => 1,
+        }
+    }
+
+    /// Convenience method that checks if this is a reliable message with a nonzero message ID.
+    pub fn is_reliable_message(&self) -> bool {
+        if let QunetMessage::Data {
+            reliability: Some(reliability),
+            ..
+        } = self
+        {
+            reliability.message_id != 0
         } else {
             false
         }

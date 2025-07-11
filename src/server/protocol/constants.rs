@@ -27,7 +27,9 @@ pub const MSG_DATA_MASK: u8 = MSG_DATA;
 pub const MSG_DATA_BIT_COMPRESSION_1: usize = 0; // least significant bit
 pub const MSG_DATA_BIT_COMPRESSION_2: usize = 1; // second least significant bit
 pub const MSG_DATA_BIT_RELIABILITY: usize = 4;
+pub const MSG_DATA_RELIABILITY_MASK: u8 = 1 << MSG_DATA_BIT_RELIABILITY;
 pub const MSG_DATA_BIT_FRAGMENTATION: usize = 5;
+pub const MSG_DATA_FRAGMENTATION_MASK: u8 = 1 << MSG_DATA_BIT_FRAGMENTATION;
 
 pub const MSG_DATA_LAST_FRAGMENT_MASK: u16 = 0x8000; // most significant bit of fragment index
 
@@ -38,7 +40,7 @@ pub const PROTO_WEBSOCKET: u8 = 0x04;
 
 // TODO: tweak these in the future
 pub const MSG_ZSTD_COMPRESSION_LEVEL: i32 = 3;
-pub const QDB_ZSTD_COMPRESSION_LEVEL: i32 = 12;
+pub const QDB_ZSTD_COMPRESSION_LEVEL: i32 = 22;
 
 pub const UDP_PACKET_LIMIT: usize = 1400;
 pub const DEFAULT_MESSAGE_SIZE_LIMIT: usize = 1024 * 1024; // 1 MiB limit for incoming messages

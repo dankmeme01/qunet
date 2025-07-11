@@ -83,4 +83,10 @@ impl MultiBufferPool {
     pub async fn get(&self, size: usize) -> Option<BorrowedMutBuffer> {
         Some(self.get_pool_for_size(size)?.get().await)
     }
+
+    /// Same as `get`, but is synchronous. Not recommended to use in async code.
+    #[inline]
+    pub fn get_busy_loop(&self, size: usize) -> Option<BorrowedMutBuffer> {
+        Some(self.get_pool_for_size(size)?.get_busy_loop())
+    }
 }

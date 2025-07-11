@@ -1,38 +1,33 @@
-use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 use std::{io::IoSlice, marker::PhantomData};
 
-use heapless::Deque;
 use tokio::net::UdpSocket;
 use tracing::debug;
 
-use crate::server::message::ReliabilityHeader;
-use crate::server::protocol::{MSG_DATA_BIT_FRAGMENTATION, MSG_DATA_LAST_FRAGMENT_MASK};
+use crate::server::message::{BufferKind, DataMessageKind};
+use crate::server::transport::udp_misc::FragmentStore;
 use crate::{
     buffers::byte_writer::ByteWriter,
     server::{
         Server,
         app_handler::AppHandler,
-        message::{QunetMessage, channel::RawMessageReceiver},
-        protocol::{HANDSHAKE_HEADER_SIZE_WITH_QDB, MSG_HANDSHAKE_FINISH},
+        message::{QunetMessage, ReliabilityHeader, channel::RawMessageReceiver},
+        protocol::*,
         transport::{ClientTransportData, TransportError},
     },
 };
 
-struct UnackedMessage {
-    message_id: u16,
-    msg: QunetMessage,
-}
+use super::udp_misc::ReliableStore;
+
+const MAX_HEADER_SIZE: usize = 1 + 4 + 20 + 8; // qunet, compression, reliability, fragmentation headers
 
 pub(crate) struct ClientUdpTransport<H> {
     socket: Arc<UdpSocket>,
     mtu: usize,
     receiver: Option<RawMessageReceiver>,
-    next_tx_rid: u16,
-    next_tx_fragid: u16,
-
-    ack_queue: Deque<u16, 64>,
-    unacked_messages: VecDeque<UnackedMessage>,
+    rel_store: ReliableStore,
+    frag_store: FragmentStore,
 
     _phantom: PhantomData<H>,
 }
@@ -43,81 +38,10 @@ impl<H: AppHandler> ClientUdpTransport<H> {
             socket,
             mtu,
             receiver: None,
-            next_tx_rid: 1,
-            next_tx_fragid: 1,
-            ack_queue: Deque::new(),
-            unacked_messages: VecDeque::with_capacity(32),
+            rel_store: ReliableStore::new(),
+            frag_store: FragmentStore::new(),
             _phantom: PhantomData,
         }
-    }
-
-    #[inline]
-    fn next_reliable_id(&mut self) -> u16 {
-        let id = self.next_tx_rid;
-
-        self.next_tx_rid = self.next_tx_rid.wrapping_add(1);
-        if self.next_tx_rid == 0 {
-            self.next_tx_rid = 1; // avoid zero
-        }
-
-        id
-    }
-
-    #[inline]
-    fn next_fragment_id(&mut self) -> u16 {
-        let id = self.next_tx_fragid;
-
-        self.next_tx_fragid = self.next_tx_fragid.wrapping_add(1);
-
-        id
-    }
-
-    #[inline]
-    fn get_acks<const LIM: usize>(&mut self) -> heapless::Vec<u16, LIM> {
-        let mut acks = heapless::Vec::new();
-
-        // drain the queue into the acks vector
-        for _ in 0..LIM {
-            if let Some(ack) = self.ack_queue.pop_front() {
-                let _ = acks.push(ack);
-            } else {
-                break; // no more acks to process
-            }
-        }
-
-        acks
-    }
-
-    fn add_unacked(&mut self, transport_data: &ClientTransportData<H>, msg: QunetMessage) -> bool {
-        if self.unacked_messages.len() >= 64 {
-            debug!(
-                "[{}] Unacked messages queue is full, dropping oldest message",
-                transport_data.address
-            );
-
-            self.unacked_messages.pop_front();
-        }
-
-        let QunetMessage::Data { reliability, .. } = &msg else {
-            unreachable!("add_unacked called with a non-data message");
-        };
-
-        let Some(ReliabilityHeader { message_id, .. }) = reliability else {
-            panic!("add_unacked called with an unreliable message");
-        };
-
-        #[cfg(debug_assertions)]
-        debug!(
-            "[{}] Adding unacked message with ID {}",
-            transport_data.address, message_id
-        );
-
-        self.unacked_messages.push_back(UnackedMessage {
-            message_id: *message_id,
-            msg,
-        });
-
-        true
     }
 
     #[inline]
@@ -140,10 +64,32 @@ impl<H: AppHandler> ClientUdpTransport<H> {
         Ok(())
     }
 
+    #[inline]
+    pub fn until_timer_expiry(&self) -> Duration {
+        self.rel_store.until_timer_expiry()
+    }
+
+    #[inline]
     pub async fn receive_message(
         &mut self,
         transport_data: &ClientTransportData<H>,
     ) -> Result<QunetMessage, TransportError> {
+        if let Some(msg) = self.rel_store.pop_delayed_message() {
+            // we have a delayed message, return it
+            return Ok(msg);
+        }
+
+        loop {
+            if let Some(msg) = self.process_incoming(transport_data).await? {
+                break Ok(msg);
+            }
+        }
+    }
+
+    async fn process_incoming(
+        &mut self,
+        transport_data: &ClientTransportData<H>,
+    ) -> Result<Option<QunetMessage>, TransportError> {
         let raw_msg = match &self.receiver {
             Some(r) => match r.recv().await {
                 Some(msg) => Ok(msg),
@@ -153,7 +99,55 @@ impl<H: AppHandler> ClientUdpTransport<H> {
             None => unreachable!("run_setup was not called before receiving messages"),
         }?;
 
-        Ok(QunetMessage::from_raw_udp_message(raw_msg, &transport_data.server.buffer_pool).await?)
+        let mut message =
+            QunetMessage::from_raw_udp_message(raw_msg, &transport_data.server.buffer_pool)?;
+
+        if !message.is_data() {
+            // control messages don't need special handling
+            return Ok(Some(message));
+        }
+
+        // handle fragmented / reliable messages
+        let QunetMessage::Data { kind, .. } = &message else {
+            unreachable!();
+        };
+
+        if kind.is_fragment() {
+            match self
+                .frag_store
+                .process_fragment(message, &transport_data.server.buffer_pool)?
+            {
+                None => {
+                    // not enough fragments yet, return None
+                    return Ok(None);
+                }
+
+                // otherwise, we have a complete message and we can keep processing it
+                Some(msg) => message = msg,
+            }
+        }
+
+        let QunetMessage::Data { reliability, .. } = &message else {
+            unreachable!();
+        };
+
+        if reliability.is_some() {
+            match self.rel_store.handle_incoming(message)? {
+                None => {
+                    // duplicate or otherwise invalid message, return None
+                    return Ok(None);
+                }
+
+                Some(msg) => message = msg,
+            }
+        }
+
+        // if this is a data message with no data, don't return it
+        if message.data_bytes().expect("non-data message").is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(message))
     }
 
     pub async fn send_message(
@@ -162,12 +156,10 @@ impl<H: AppHandler> ClientUdpTransport<H> {
         mut msg: QunetMessage,
         reliable: bool,
     ) -> Result<(), TransportError> {
-        const MAX_HEADER_SIZE: usize = 1 + 4 + 20 + 8; // qunet, compression, reliability, fragmentation headers
-
-        let mut header_buf = [0u8; MAX_HEADER_SIZE];
-        let mut header_writer = ByteWriter::new(&mut header_buf);
-
         if !msg.is_data() {
+            let mut header_buf = [0u8; MAX_HEADER_SIZE];
+            let mut header_writer = ByteWriter::new(&mut header_buf);
+
             let mut body_buf = [0u8; 256];
             let mut body_writer = ByteWriter::new(&mut body_buf);
 
@@ -185,57 +177,125 @@ impl<H: AppHandler> ClientUdpTransport<H> {
 
         // handle data messages
 
-        let mut rel_hdr_size = 0;
-        let comp_hdr_size = if msg.is_data_compressed() { 4usize } else { 0 };
+        let mut rel_header = ReliabilityHeader::default();
+        self.rel_store.set_outgoing_acks(&mut rel_header);
 
         if reliable {
+            rel_header.message_id = self.rel_store.next_message_id();
+        }
+
+        // only assign the reliability header if the message is reliable or if there's any acks to send
+        if reliable || !rel_header.acks.is_empty() {
             let QunetMessage::Data { reliability, .. } = &mut msg else {
                 unreachable!();
             };
 
-            let message_id = self.next_reliable_id();
-            let acks = self.get_acks();
-
-            rel_hdr_size = 4 + acks.len() * 2;
-
-            *reliability = Some(ReliabilityHeader { message_id, acks });
+            *reliability = Some(rel_header);
         }
 
-        let Some(data) = msg.data_bytes() else {
-            unreachable!()
-        };
+        self.do_send_prefrag_data(msg, transport_data).await?;
+
+        Ok(())
+    }
+
+    async fn do_send_prefrag_data(
+        &mut self,
+        message: QunetMessage,
+        transport_data: &ClientTransportData<H>,
+    ) -> Result<Option<QunetMessage>, TransportError> {
+        let is_reliable = message.is_reliable_message();
+        let data = message.data_bytes().expect("non-data message");
 
         // decide if the message needs to be fragmented.
 
-        let unfrag_total_size = header_writer.pos() + rel_hdr_size + comp_hdr_size + data.len();
+        let unfrag_total_size = message.calc_header_size() + data.len();
 
         if unfrag_total_size <= self.mtu {
             // no fragmentation :)
+            self.do_send_unfrag_data(&message, transport_data).await?;
 
-            msg.encode_data_header(&mut header_writer, false).unwrap();
-
-            let mut vecs = [IoSlice::new(header_writer.written()), IoSlice::new(data)];
-            self.send_packet_vectored(&mut vecs, transport_data).await?;
-
-            if reliable {
-                self.add_unacked(transport_data, msg);
+            if is_reliable {
+                self.rel_store.push_local_unacked(message)?;
+                return Ok(None);
+            } else {
+                return Ok(Some(message));
             }
+        }
+
+        // fragmentation is needed :(
+        self.do_fragment_and_send(&message, transport_data).await?;
+
+        if is_reliable {
+            self.rel_store.push_local_unacked(message)?;
+            Ok(None)
+        } else {
+            Ok(Some(message))
+        }
+    }
+
+    async fn do_send_prefrag_retrans_data(
+        &self,
+        message: &QunetMessage,
+        transport_data: &ClientTransportData<H>,
+    ) -> Result<(), TransportError> {
+        let data = message.data_bytes().expect("non-data message");
+
+        // decide if the message needs to be fragmented.
+
+        let unfrag_total_size = message.calc_header_size() + data.len();
+
+        if unfrag_total_size <= self.mtu {
+            // no fragmentation :)
+            self.do_send_unfrag_data(message, transport_data).await?;
 
             return Ok(());
         }
 
         // fragmentation is needed :(
+        self.do_fragment_and_send(message, transport_data).await?;
+
+        Ok(())
+    }
+
+    async fn do_send_unfrag_data(
+        &self,
+        message: &QunetMessage,
+        transport_data: &ClientTransportData<H>,
+    ) -> Result<(), TransportError> {
+        let mut header_buf = [0u8; MAX_HEADER_SIZE];
+        let mut header_writer = ByteWriter::new(&mut header_buf);
+
+        message
+            .encode_data_header(&mut header_writer, false)
+            .unwrap();
+
+        let mut vecs = [
+            IoSlice::new(header_writer.written()),
+            IoSlice::new(message.data_bytes().expect("non-data message")),
+        ];
+
+        self.send_packet_vectored(&mut vecs, transport_data).await?;
+
+        Ok(())
+    }
+
+    async fn do_fragment_and_send(
+        &self,
+        message: &QunetMessage,
+        transport_data: &ClientTransportData<H>,
+    ) -> Result<(), TransportError> {
+        // TODO: rewrite a linux-only version of this function that uses sendmmsg, potentially use some static vec for that in Server?
+
+        let data = message.data_bytes().expect("non-data message");
 
         // determine the maximum size of the payload for each fragment
         // first fragment must include reliability and compression headers if they are present, rest don't have to
 
         let frag_hdr_size = 4;
+        let first_payload_size = self.mtu - message.calc_header_size() - frag_hdr_size;
+        let rest_payload_size = self.mtu - 1 - frag_hdr_size;
 
-        let first_payload_size =
-            self.mtu - header_writer.pos() - rel_hdr_size - comp_hdr_size - frag_hdr_size;
-        let rest_payload_size = self.mtu - header_writer.pos() - frag_hdr_size;
-
-        let frag_message_id = self.next_fragment_id();
+        let frag_message_id = self.frag_store.next_message_id();
 
         let mut offset = 0usize;
         let mut fragment_index = 0u16;
@@ -248,28 +308,32 @@ impl<H: AppHandler> ClientUdpTransport<H> {
                 rest_payload_size
             };
 
+            let is_last = offset + payload_size >= data.len();
+
             let chunk = &data[offset..(offset + payload_size).min(data.len())];
 
-            // write the header
+            // write the header, omit headers for all but the first fragment
             let mut header_buf = [0u8; MAX_HEADER_SIZE];
             let mut header_writer = ByteWriter::new(&mut header_buf);
-
-            // omit headers for all but the first fragment
-            msg.encode_data_header(&mut header_writer, !is_first)
+            message
+                .encode_data_header(&mut header_writer, !is_first)
                 .unwrap();
 
+            let prev_pos = header_writer.pos();
+
             // ... but add the fragmentation header!
-            header_buf[0] &= 1u8 << MSG_DATA_BIT_FRAGMENTATION;
+            header_buf[0] |= MSG_DATA_FRAGMENTATION_MASK;
 
             // this reinit is scuffed but needed
             let mut header_writer = ByteWriter::new(&mut header_buf);
+            header_writer.set_pos(prev_pos);
             header_writer.write_u16(frag_message_id);
             header_writer.write_u16(
                 fragment_index
-                    | if is_first {
-                        0
-                    } else {
+                    | if is_last {
                         MSG_DATA_LAST_FRAGMENT_MASK
+                    } else {
+                        0
                     },
             );
 
@@ -281,8 +345,49 @@ impl<H: AppHandler> ClientUdpTransport<H> {
             self.send_packet_vectored(&mut vecs, transport_data).await?;
         }
 
-        if reliable {
-            self.add_unacked(transport_data, msg);
+        debug!(
+            "Sent fragmented message (ID: {}, fragments: {})",
+            frag_message_id, fragment_index
+        );
+
+        Ok(())
+    }
+
+    pub async fn handle_timer_expiry(
+        &mut self,
+        transport_data: &ClientTransportData<H>,
+    ) -> Result<(), TransportError> {
+        while self.rel_store.maybe_retransmit() {
+            match self.rel_store.get_retransmit_message() {
+                Some(msg) => {
+                    self.do_send_prefrag_retrans_data(msg, transport_data)
+                        .await?
+                }
+                None => break,
+            };
+        }
+
+        // if we have not sent any data messages recently that we could tag acks onto,
+        // we might need to send an explicit ack message with no data
+
+        if self.rel_store.has_urgent_outgoing_acks() {
+            let mut header = ReliabilityHeader::default();
+            self.rel_store.set_outgoing_acks(&mut header);
+
+            debug_assert!(
+                !header.acks.is_empty(),
+                "Urgent outgoing acks should not be empty"
+            );
+
+            let msg = QunetMessage::Data {
+                kind: DataMessageKind::Regular {
+                    data: BufferKind::Heap(Vec::new()),
+                },
+                reliability: Some(header),
+                compression: None,
+            };
+
+            self.do_send_prefrag_data(msg, transport_data).await?;
         }
 
         Ok(())
@@ -360,6 +465,8 @@ impl<H: AppHandler> ClientUdpTransport<H> {
         chunk_size: usize,
         transport_data: &ClientTransportData<H>,
     ) -> Result<(), TransportError> {
+        // TODO: rewrite a linux-only version of this function that uses sendmmsg, potentially use some static vec for that in Server?
+
         let mut offset = 0;
         let mut remaining = data.len();
 

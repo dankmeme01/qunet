@@ -103,6 +103,7 @@ pub struct QunetDatabase {
     pub type_count: u32,
     pub types: Vec<QunetType>,
     pub zstd_dict: Option<Vec<u8>>,
+    pub zstd_level: i32,
 }
 
 #[derive(Debug, Error)]
@@ -214,12 +215,7 @@ impl QunetDatabase {
         // read all sections into the data buffer
         reader.read_bytes(&mut data_buffer)?;
 
-        let mut db = QunetDatabase {
-            tag_count: 0,
-            type_count: 0,
-            types: Vec::new(),
-            zstd_dict: None,
-        };
+        let mut db = QunetDatabase::default();
 
         for section in &section_headers {
             let begin = section.offset as usize - sections_begin;
@@ -514,7 +510,9 @@ impl QunetDatabase {
             return Err(DecodeError::ZstdDictTooLarge(section_size));
         }
 
-        let mut buf = vec![0; section_size];
+        self.zstd_level = reader.read_i32()?;
+
+        let mut buf = vec![0; section_size - 4];
         reader.read_bytes(&mut buf)?;
 
         self.zstd_dict = Some(buf);
@@ -852,6 +850,7 @@ impl QunetDatabase {
         &self,
         wr: &mut BinaryWriter<W>,
     ) -> io::Result<usize> {
+        wr.write_i32(self.zstd_level)?;
         let data = self.zstd_dict.as_deref().unwrap_or(&[]);
         wr.write_bytes(data)?;
         Ok(data.len())

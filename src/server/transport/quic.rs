@@ -10,7 +10,6 @@ use s2n_quic::stream::BidirectionalStream;
 use super::stream;
 
 pub(crate) struct ClientQuicTransport<H: AppHandler> {
-    conn: s2n_quic::Connection,
     stream: BidirectionalStream,
     buffer: Vec<u8>,
     buffer_pos: usize,
@@ -18,9 +17,8 @@ pub(crate) struct ClientQuicTransport<H: AppHandler> {
 }
 
 impl<H: AppHandler> ClientQuicTransport<H> {
-    pub fn new(conn: s2n_quic::Connection, stream: BidirectionalStream) -> Self {
+    pub fn new(_conn: s2n_quic::Connection, stream: BidirectionalStream) -> Self {
         Self {
-            conn,
             stream,
             buffer: vec![0u8; 512], // TODO: see comment in ClientTcpTransport
             buffer_pos: 0,

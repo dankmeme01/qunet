@@ -19,12 +19,12 @@ pub(crate) struct CompressionHeader {
 
 #[derive(Debug, Clone)]
 pub(crate) struct FragmentationHeader {
-    message_id: u16,
+    pub message_id: u16,
     pub fragment_index: u16,
     pub last_fragment: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ReliabilityHeader {
     pub message_id: u16,
     pub acks: heapless::Vec<u16, 8>,
@@ -103,7 +103,7 @@ impl<'a> QunetMessageMeta<'a> {
             reader.skip_bytes(8)?;
         }
 
-        let fragmentation_header = if udp && bits.get_bit(4) {
+        let fragmentation_header = if udp && bits.get_bit(MSG_DATA_BIT_FRAGMENTATION) {
             let message_id = reader.read_u16()?;
             let mut fragment_index = reader.read_u16()?;
 
@@ -120,7 +120,7 @@ impl<'a> QunetMessageMeta<'a> {
             None
         };
 
-        let reliability_header = if udp && bits.get_bit(5) {
+        let reliability_header = if udp && bits.get_bit(MSG_DATA_BIT_RELIABILITY) {
             let message_id = reader.read_u16()?;
             let ack_count = reader.read_u16()?.min(8);
 
