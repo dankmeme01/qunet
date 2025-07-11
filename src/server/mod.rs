@@ -646,7 +646,9 @@ impl<H: AppHandler> Server<H> {
             TransportError::MessageChannelClosed
             | TransportError::ZeroLengthMessage
             | TransportError::MessageTooLong
-            | TransportError::Timeout => ErrorOutcome::Terminate,
+            | TransportError::Timeout
+            | TransportError::TooUnreliable
+            | TransportError::TooManyPendingFragments => ErrorOutcome::Terminate,
 
             // Errors that indicate a bug in the server
             TransportError::CompressionLz4Error(_) | TransportError::CompressionZstdError(_) => {

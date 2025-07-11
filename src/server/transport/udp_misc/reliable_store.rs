@@ -282,7 +282,7 @@ impl ReliableStore {
     /// Checks if any messages need to be retransmitted. If this function returns `true`,
     /// it updates the sent time of the message to be resent, and that message can then be obtained
     /// via `get_retransmit_message()`.
-    pub fn maybe_retransmit(&mut self) -> bool {
+    pub fn maybe_retransmit(&mut self) -> Result<bool, TransportError> {
         // the messages are sorted by sent time, so we can just check the first one
         if let Some(mut msg) = self.local_unacked.pop_front() {
             let lim = self.calc_retransmission_deadline(msg.retransmit_attempts as usize);
@@ -290,21 +290,30 @@ impl ReliableStore {
             let elapsed = msg.sent_at.elapsed();
 
             if elapsed >= lim {
-                debug!("Retransmitting message with ID {} after {:?}", msg.message_id, elapsed);
+                if msg.retransmit_attempts >= 10 {
+                    debug!(
+                        "Message with ID {} has been retransmitted too many times, bailing out",
+                        msg.message_id
+                    );
+
+                    return Err(TransportError::TooUnreliable);
+                } else {
+                    debug!("Retransmitting message with ID {} after {:?}", msg.message_id, elapsed);
+                }
 
                 // update the sent time
                 msg.sent_at = Instant::now();
                 msg.retransmit_attempts += 1;
                 self.local_unacked.push_back(msg); // put it back at the end
 
-                return true;
+                return Ok(true);
             } else {
                 // not yet time to retransmit, put it back
                 self.local_unacked.push_front(msg);
             }
         }
 
-        false
+        Ok(false)
     }
 
     /// Only call this function if `maybe_retransmit()` returned `true`.

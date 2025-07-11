@@ -68,7 +68,7 @@ impl FragmentStore {
         let already_messages = self.messages.len();
 
         let ent = self.messages.entry(message_id);
-        if matches!(ent, std::collections::hash_map::Entry::Vacant(_)) && already_messages == 8 {
+        if matches!(ent, std::collections::hash_map::Entry::Vacant(_)) && already_messages == 16 {
             return Err(TransportError::TooManyPendingFragments);
         }
 
@@ -107,10 +107,11 @@ impl FragmentStore {
 
         // if this message is complete, reassemble it
         if ent.total_fragments == ent.fragments.len() {
-            let reassembled = Self::reassemble(ent, buffer_pool)?;
-            self.messages.remove(&message_id); // remove the message from the store
+            let reassembled = Self::reassemble(ent, buffer_pool);
+            self.messages.remove(&message_id); // remove the message from the store, even if reassembly failed
             self.cleanup();
-            Ok(Some(reassembled))
+
+            Ok(Some(reassembled?))
         } else {
             // not enough fragments yet, run cleanup and return None
             self.cleanup();

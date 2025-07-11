@@ -356,7 +356,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
             return Ok(());
         }
 
-        while self.rel_store.maybe_retransmit() {
+        while self.rel_store.maybe_retransmit()? {
             match self.rel_store.get_retransmit_message() {
                 Some(msg) => self.do_send_prefrag_retrans_data(msg, transport_data).await?,
                 None => break,
