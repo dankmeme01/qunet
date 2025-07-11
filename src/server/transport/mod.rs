@@ -55,10 +55,7 @@ pub(crate) struct ClientTransportData<H: AppHandler> {
 pub(crate) struct ClientTransport<H: AppHandler> {
     pub(crate) kind: ClientTransportKind<H>,
     pub data: ClientTransportData<H>,
-    pub notif_chan: (
-        channel::Sender<ClientNotification>,
-        channel::Receiver<ClientNotification>,
-    ),
+    pub notif_chan: (channel::Sender<ClientNotification>, channel::Receiver<ClientNotification>),
 }
 
 #[derive(Debug, Error)]
@@ -165,18 +162,15 @@ impl<H: AppHandler> ClientTransport<H> {
     ) -> Result<(), TransportError> {
         match &mut self.kind {
             ClientTransportKind::Udp(udp) => {
-                udp.send_handshake_response(&self.data, qdb_data, qdb_uncompressed_size)
-                    .await
+                udp.send_handshake_response(&self.data, qdb_data, qdb_uncompressed_size).await
             }
 
             ClientTransportKind::Tcp(tcp) => {
-                tcp.send_handshake_response(&self.data, qdb_data, qdb_uncompressed_size)
-                    .await
+                tcp.send_handshake_response(&self.data, qdb_data, qdb_uncompressed_size).await
             }
 
             ClientTransportKind::Quic(quic) => {
-                quic.send_handshake_response(&self.data, qdb_data, qdb_uncompressed_size)
-                    .await
+                quic.send_handshake_response(&self.data, qdb_data, qdb_uncompressed_size).await
             }
         }
     }
@@ -267,9 +261,7 @@ impl<H: AppHandler> ClientTransport<H> {
 
     #[inline]
     fn should_compress_data_message(&self, message: &QunetMessage) -> Option<CompressionType> {
-        let data_buf = message
-            .data_bytes()
-            .expect("Non data message passed to compression check");
+        let data_buf = message.data_bytes().expect("Non data message passed to compression check");
 
         // determine if it's worth compressing
 
@@ -293,9 +285,7 @@ impl<H: AppHandler> ClientTransport<H> {
         message: QunetMessage,
         comp_type: CompressionType,
     ) -> Result<QunetMessage, TransportError> {
-        let data_buf = message
-            .data_bytes()
-            .expect("Non data message passed to compression check");
+        let data_buf = message.data_bytes().expect("Non data message passed to compression check");
 
         assert!(!data_buf.is_empty(), "Data buffer must not be empty");
 
@@ -315,9 +305,7 @@ impl<H: AppHandler> ClientTransport<H> {
         };
 
         Ok(QunetMessage::Data {
-            kind: DataMessageKind::Regular {
-                data: compressed_buf,
-            },
+            kind: DataMessageKind::Regular { data: compressed_buf },
             reliability,
             compression: Some(compression_header),
         })
@@ -328,9 +316,9 @@ impl<H: AppHandler> ClientTransport<H> {
         message: QunetMessage,
     ) -> Result<QunetMessage, TransportError> {
         let compression_header = match &message {
-            QunetMessage::Data { compression, .. } => compression
-                .as_ref()
-                .expect("Data message without compression header"),
+            QunetMessage::Data { compression, .. } => {
+                compression.as_ref().expect("Data message without compression header")
+            }
             _ => unreachable!("Non data message passed to decompression check"),
         };
 

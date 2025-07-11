@@ -10,7 +10,10 @@ pub struct ByteWriter<'a> {
 #[derive(Debug, Clone, Error)]
 pub enum ByteWriterError {
     #[error("Out of bounds write ({pos} >= {len})")]
-    OutOfBounds { pos: usize, len: usize },
+    OutOfBounds {
+        pos: usize,
+        len: usize,
+    },
     #[error("Varint overflow")]
     VarintOverflow,
     #[error("String is longer than the maximum allowed length")]
@@ -42,10 +45,7 @@ impl<'a> ByteWriter<'a> {
     #[inline]
     pub fn try_set_pos(&mut self, pos: usize) -> Result<()> {
         if pos > self.buffer.len() {
-            return Err(ByteWriterError::OutOfBounds {
-                pos,
-                len: self.buffer.len(),
-            });
+            return Err(ByteWriterError::OutOfBounds { pos, len: self.buffer.len() });
         }
         self.pos = pos;
         Ok(())
@@ -54,11 +54,7 @@ impl<'a> ByteWriter<'a> {
     #[inline]
     pub fn set_pos(&mut self, pos: usize) {
         if pos > self.buffer.len() {
-            panic!(
-                "Out of bounds set position (pos: {}, buffer len: {})",
-                pos,
-                self.buffer.len()
-            );
+            panic!("Out of bounds set position (pos: {}, buffer len: {})", pos, self.buffer.len());
         }
 
         self.pos = pos;
@@ -260,9 +256,7 @@ impl<'a> ByteWriter<'a> {
 
 impl<'a> Write for ByteWriter<'a> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.try_write_bytes(buf)
-            .map(|_| buf.len())
-            .map_err(std::io::Error::other)
+        self.try_write_bytes(buf).map(|_| buf.len()).map_err(std::io::Error::other)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {

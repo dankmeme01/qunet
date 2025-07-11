@@ -54,11 +54,7 @@ impl FragmentStore {
         buffer_pool: &MultiBufferPool,
     ) -> Result<Option<QunetMessage>, TransportError> {
         let (data, frag_header, rel_header, comp_header) = match message {
-            QunetMessage::Data {
-                kind,
-                reliability,
-                compression,
-            } => match kind {
+            QunetMessage::Data { kind, reliability, compression } => match kind {
                 DataMessageKind::Fragment { header, data } => {
                     (data, header, reliability, compression)
                 }
@@ -85,11 +81,7 @@ impl FragmentStore {
         });
 
         // check if this is a duplicate fragment
-        if ent
-            .fragments
-            .iter()
-            .any(|f| f.index == frag_header.fragment_index)
-        {
+        if ent.fragments.iter().any(|f| f.index == frag_header.fragment_index) {
             return Ok(None); // duplicate fragment, ignore it
         }
 
@@ -161,11 +153,7 @@ impl FragmentStore {
         }
 
         let mut data = match buffer_pool.get_busy_loop(total_size) {
-            Some(buf) => BufferKind::Pooled {
-                buf,
-                pos: 0,
-                size: 0,
-            },
+            Some(buf) => BufferKind::Pooled { buf, pos: 0, size: 0 },
 
             None => BufferKind::Heap(Vec::with_capacity(total_size)),
         };

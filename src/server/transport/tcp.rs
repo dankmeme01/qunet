@@ -58,8 +58,7 @@ impl<H: AppHandler> ClientTcpTransport<H> {
 
     #[inline]
     pub fn until_timer_expiry(&self) -> Duration {
-        self.idle_timeout
-            .saturating_sub(self.last_data_exchange.elapsed())
+        self.idle_timeout.saturating_sub(self.last_data_exchange.elapsed())
     }
 
     #[inline]

@@ -122,9 +122,7 @@ impl ReliableStore {
         // we want to maintain a sorted (ascending) order of out of order messages by their IDs,
         // so use binary search to find the right position.
         // this also serves as a way to check if the message is already in the queue
-        let pos = match self
-            .remote_out_of_order
-            .binary_search_by_key(&message_id, |m| m.message_id)
+        let pos = match self.remote_out_of_order.binary_search_by_key(&message_id, |m| m.message_id)
         {
             Ok(_) => {
                 debug!("Message is already in the out of order queue, ignoring");
@@ -168,12 +166,7 @@ impl ReliableStore {
         dupe: bool,
     ) -> Result<(), TransportError> {
         // if this is a duplicate message, check if it's already in the unacked queue
-        if dupe
-            && self
-                .remote_unacked
-                .iter()
-                .any(|m| m.message_id == message_id)
-        {
+        if dupe && self.remote_unacked.iter().any(|m| m.message_id == message_id) {
             return Ok(());
         }
 
@@ -213,10 +206,7 @@ impl ReliableStore {
                 self.push_remote_unacked()?;
             } else {
                 // this message is too old, we can just drop it
-                debug!(
-                    "Dropping out of order message with ID {} because it's too old",
-                    msg_id
-                );
+                debug!("Dropping out of order message with ID {} because it's too old", msg_id);
                 self.remote_out_of_order.pop_front();
 
                 // maybe restore another message
@@ -300,10 +290,7 @@ impl ReliableStore {
             let elapsed = msg.sent_at.elapsed();
 
             if elapsed >= lim {
-                debug!(
-                    "Retransmitting message with ID {} after {:?}",
-                    msg.message_id, elapsed
-                );
+                debug!("Retransmitting message with ID {} after {:?}", msg.message_id, elapsed);
 
                 // update the sent time
                 msg.sent_at = Instant::now();
@@ -329,9 +316,7 @@ impl ReliableStore {
     pub fn has_urgent_outgoing_acks(&self) -> bool {
         let lim = self.calc_ack_deadline();
 
-        self.remote_unacked
-            .iter()
-            .any(|msg| msg.received_at.elapsed() > lim)
+        self.remote_unacked.iter().any(|msg| msg.received_at.elapsed() > lim)
     }
 
     #[inline]

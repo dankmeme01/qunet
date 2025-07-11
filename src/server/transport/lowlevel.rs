@@ -12,9 +12,7 @@ fn ip_v4_addr_to_c(addr: &Ipv4Addr) -> libc::in_addr {
 }
 
 fn ip_v6_addr_to_c(addr: &Ipv6Addr) -> libc::in6_addr {
-    libc::in6_addr {
-        s6_addr: addr.octets(),
-    }
+    libc::in6_addr { s6_addr: addr.octets() }
 }
 
 fn socket_addr_v4_to_c(addr: &SocketAddrV4) -> libc::sockaddr_in {
@@ -45,15 +43,11 @@ pub union SocketAddrCRepr {
 pub fn socket_addr_to_c(addr: &SocketAddr) -> (SocketAddrCRepr, libc::socklen_t) {
     match addr {
         SocketAddr::V4(a) => {
-            let sockaddr = SocketAddrCRepr {
-                v4: socket_addr_v4_to_c(a),
-            };
+            let sockaddr = SocketAddrCRepr { v4: socket_addr_v4_to_c(a) };
             (sockaddr, size_of::<libc::sockaddr_in>() as libc::socklen_t)
         }
         SocketAddr::V6(a) => {
-            let sockaddr = SocketAddrCRepr {
-                v6: socket_addr_v6_to_c(a),
-            };
+            let sockaddr = SocketAddrCRepr { v6: socket_addr_v6_to_c(a) };
             (sockaddr, size_of::<libc::sockaddr_in6>() as libc::socklen_t)
         }
     }

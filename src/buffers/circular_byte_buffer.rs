@@ -165,16 +165,10 @@ impl CircularByteBuffer {
         let remaining = len - first.len();
 
         if remaining == 0 {
-            Ok(WrappedRead {
-                first,
-                second: None,
-            })
+            Ok(WrappedRead { first, second: None })
         } else {
             let second = &bytes[0..remaining];
-            Ok(WrappedRead {
-                first,
-                second: Some(second),
-            })
+            Ok(WrappedRead { first, second: Some(second) })
         }
     }
 

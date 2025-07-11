@@ -10,7 +10,10 @@ pub struct ByteReader<'a> {
 #[derive(Debug, Clone, Error)]
 pub enum ByteReaderError {
     #[error("Out of bounds read ({pos} >= {len})")]
-    OutOfBounds { pos: usize, len: usize },
+    OutOfBounds {
+        pos: usize,
+        len: usize,
+    },
     #[error("Varint overflow")]
     VarintOverflow,
     #[error("String is longer than the maximum allowed length")]
@@ -30,10 +33,7 @@ impl<'a> ByteReader<'a> {
     #[inline]
     pub fn set_pos(&mut self, pos: usize) -> Result<()> {
         if pos > self.buffer.len() {
-            return Err(ByteReaderError::OutOfBounds {
-                pos,
-                len: self.buffer.len(),
-            });
+            return Err(ByteReaderError::OutOfBounds { pos, len: self.buffer.len() });
         }
         self.pos = pos;
         Ok(())

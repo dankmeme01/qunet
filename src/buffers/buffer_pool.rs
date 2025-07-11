@@ -173,14 +173,11 @@ impl BufferPool {
     /// This will free up memory, but subsequent calls to `get` or `try_get` may have to allocate new buffers again.
     pub fn shrink(&self) {
         // `forget_permits` returns how many permits actually were released, and we can free that many buffers
-        let released_bufs = self
-            .inner
-            .semaphore
-            .forget_permits(self.allocated_buffers.load(Ordering::Relaxed));
+        let released_bufs =
+            self.inner.semaphore.forget_permits(self.allocated_buffers.load(Ordering::Relaxed));
 
         // decrease the allocated buffers count
-        self.allocated_buffers
-            .fetch_sub(released_bufs, Ordering::SeqCst);
+        self.allocated_buffers.fetch_sub(released_bufs, Ordering::SeqCst);
 
         let mut storage = self.inner.storage.lock();
 

@@ -70,9 +70,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
 
     #[inline]
     pub fn until_timer_expiry(&self) -> Duration {
-        let idle_timeout = self
-            .idle_timeout
-            .saturating_sub(self.last_data_exchange.elapsed());
+        let idle_timeout = self.idle_timeout.saturating_sub(self.last_data_exchange.elapsed());
 
         self.rel_store.until_timer_expiry().min(idle_timeout)
     }
@@ -127,10 +125,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
         };
 
         if kind.is_fragment() {
-            match self
-                .frag_store
-                .process_fragment(message, &transport_data.server.buffer_pool)?
-            {
+            match self.frag_store.process_fragment(message, &transport_data.server.buffer_pool)? {
                 None => {
                     // not enough fragments yet, return None
                     return Ok(None);
@@ -181,10 +176,8 @@ impl<H: AppHandler> ClientUdpTransport<H> {
 
             msg.encode_control_msg(&mut header_writer, &mut body_writer)?;
 
-            let mut vecs = [
-                IoSlice::new(header_writer.written()),
-                IoSlice::new(body_writer.written()),
-            ];
+            let mut vecs =
+                [IoSlice::new(header_writer.written()), IoSlice::new(body_writer.written())];
 
             self.send_packet_vectored(&mut vecs, transport_data).await?;
 
@@ -281,9 +274,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
         let mut header_buf = [0u8; MAX_HEADER_SIZE];
         let mut header_writer = ByteWriter::new(&mut header_buf);
 
-        message
-            .encode_data_header(&mut header_writer, false)
-            .unwrap();
+        message.encode_data_header(&mut header_writer, false).unwrap();
 
         let mut vecs = [
             IoSlice::new(header_writer.written()),
@@ -318,11 +309,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
 
         while offset < data.len() {
             let is_first = fragment_index == 0;
-            let payload_size = if is_first {
-                first_payload_size
-            } else {
-                rest_payload_size
-            };
+            let payload_size = if is_first { first_payload_size } else { rest_payload_size };
 
             let is_last = offset + payload_size >= data.len();
 
@@ -331,9 +318,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
             // write the header, omit headers for all but the first fragment
             let mut header_buf = [0u8; MAX_HEADER_SIZE];
             let mut header_writer = ByteWriter::new(&mut header_buf);
-            message
-                .encode_data_header(&mut header_writer, !is_first)
-                .unwrap();
+            message.encode_data_header(&mut header_writer, !is_first).unwrap();
 
             let prev_pos = header_writer.pos();
 
@@ -344,14 +329,8 @@ impl<H: AppHandler> ClientUdpTransport<H> {
             let mut header_writer = ByteWriter::new(&mut header_buf);
             header_writer.set_pos(prev_pos);
             header_writer.write_u16(frag_message_id);
-            header_writer.write_u16(
-                fragment_index
-                    | if is_last {
-                        MSG_DATA_LAST_FRAGMENT_MASK
-                    } else {
-                        0
-                    },
-            );
+            header_writer
+                .write_u16(fragment_index | if is_last { MSG_DATA_LAST_FRAGMENT_MASK } else { 0 });
 
             offset += chunk.len();
             fragment_index += 1;
@@ -361,10 +340,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
             self.send_packet_vectored(&mut vecs, transport_data).await?;
         }
 
-        debug!(
-            "Sent fragmented message (ID: {}, fragments: {})",
-            frag_message_id, fragment_index
-        );
+        debug!("Sent fragmented message (ID: {}, fragments: {})", frag_message_id, fragment_index);
 
         Ok(())
     }
@@ -382,10 +358,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
 
         while self.rel_store.maybe_retransmit() {
             match self.rel_store.get_retransmit_message() {
-                Some(msg) => {
-                    self.do_send_prefrag_retrans_data(msg, transport_data)
-                        .await?
-                }
+                Some(msg) => self.do_send_prefrag_retrans_data(msg, transport_data).await?,
                 None => break,
             };
         }
@@ -397,10 +370,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
             let mut header = ReliabilityHeader::default();
             self.rel_store.set_outgoing_acks(&mut header);
 
-            debug_assert!(
-                !header.acks.is_empty(),
-                "Urgent outgoing acks should not be empty"
-            );
+            debug_assert!(!header.acks.is_empty(), "Urgent outgoing acks should not be empty");
 
             let msg = QunetMessage::Data {
                 kind: DataMessageKind::Regular {
@@ -446,13 +416,9 @@ impl<H: AppHandler> ClientUdpTransport<H> {
                 header_writer.write_u32(0);
                 header_writer.write_u32(qdb_data.len() as u32);
 
-                let mut iovecs = [
-                    IoSlice::new(header_writer.written()),
-                    IoSlice::new(qdb_data),
-                ];
+                let mut iovecs = [IoSlice::new(header_writer.written()), IoSlice::new(qdb_data)];
 
-                self.send_packet_vectored(&mut iovecs, transport_data)
-                    .await?;
+                self.send_packet_vectored(&mut iovecs, transport_data).await?;
             } else {
                 debug!(
                     "Sending UDP handshake response (fragmented QDB, {} bytes, chunk size {})",
@@ -472,8 +438,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
             debug!("Sending UDP handshake response (no QDB)");
 
             // no qdb
-            self.send_packet(header_writer.written(), transport_data)
-                .await?;
+            self.send_packet(header_writer.written(), transport_data).await?;
         }
 
         Ok(())
@@ -508,8 +473,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
                 IoSlice::new(&data[offset..offset + chunk_len]),
             ];
 
-            self.send_packet_vectored(&mut iovecs, transport_data)
-                .await?;
+            self.send_packet_vectored(&mut iovecs, transport_data).await?;
 
             // update offset and remaining
             offset += chunk_len;
@@ -544,12 +508,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
         #[cfg(debug_assertions)]
         {
             let total_len = data.iter().map(|x| x.len()).sum::<usize>();
-            assert!(
-                total_len <= self.mtu,
-                "Data exceeds MTU size: {} > {}",
-                total_len,
-                self.mtu
-            );
+            assert!(total_len <= self.mtu, "Data exceeds MTU size: {} > {}", total_len, self.mtu);
         }
 
         let (sockaddr, socklen) = transport_data.c_sockaddr();

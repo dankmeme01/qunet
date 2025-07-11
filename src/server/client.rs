@@ -7,7 +7,10 @@ use crate::server::{
 };
 
 pub enum ClientNotification {
-    DataMessage { buf: BufferKind, reliable: bool },
+    DataMessage {
+        buf: BufferKind,
+        reliable: bool,
+    },
     RetransmitHandshake,
 }
 
@@ -31,17 +34,11 @@ impl<H: AppHandler> ClientState<H> {
     }
 
     pub fn send_data(&self, msg: BufferKind) -> bool {
-        self.notif_tx.send(ClientNotification::DataMessage {
-            buf: msg,
-            reliable: true,
-        })
+        self.notif_tx.send(ClientNotification::DataMessage { buf: msg, reliable: true })
     }
 
     pub fn send_unreliable_data(&self, msg: BufferKind) -> bool {
-        self.notif_tx.send(ClientNotification::DataMessage {
-            buf: msg,
-            reliable: false,
-        })
+        self.notif_tx.send(ClientNotification::DataMessage { buf: msg, reliable: false })
     }
 
     pub fn retransmit_handshake(&self) -> bool {

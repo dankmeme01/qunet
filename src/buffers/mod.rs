@@ -31,20 +31,14 @@ mod tests {
 
         // assert that taking the next buffer will time out
         let result = tokio::time::timeout(std::time::Duration::from_millis(100), pool.get()).await;
-        assert!(
-            result.is_err(),
-            "Expected timeout when trying to get more buffers than available"
-        );
+        assert!(result.is_err(), "Expected timeout when trying to get more buffers than available");
 
         // drop one
         drop(vec.pop());
 
         // assert that we can get a new buffer now
         let result = tokio::time::timeout(std::time::Duration::from_millis(100), pool.get()).await;
-        assert!(
-            result.is_ok(),
-            "Expected to get a new buffer after dropping one"
-        );
+        assert!(result.is_ok(), "Expected to get a new buffer after dropping one");
     }
 
     #[tokio::test]

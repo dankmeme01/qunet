@@ -141,10 +141,7 @@ impl AppHandler for DefaultAppHandler {
         address: SocketAddr,
         kind: &str,
     ) -> AppResult<Self::ClientData> {
-        info!(
-            "[{}] Accepted {} connection (ID: {})",
-            address, kind, connection_id
-        );
+        info!("[{}] Accepted {} connection (ID: {})", address, kind, connection_id);
 
         Ok(())
     }

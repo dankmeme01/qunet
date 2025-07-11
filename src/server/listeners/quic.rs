@@ -42,11 +42,7 @@ impl PendingQuicConnection {
 
         let (qunet_major, qdb_hash) = stream::wait_for_handshake(&mut stream).await?;
 
-        Ok(HandshakeOutcome {
-            stream,
-            qunet_major,
-            qdb_hash,
-        })
+        Ok(HandshakeOutcome { stream, qunet_major, qdb_hash })
     }
 }
 
@@ -100,14 +96,10 @@ impl<H: AppHandler> QuicServerListener<H> {
         timeout: Duration,
     ) {
         tokio::spawn(async move {
-            let remote_addr = conn
-                .remote_addr()
-                .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
+            let remote_addr =
+                conn.remote_addr().unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
 
-            debug!(
-                "Accepted QUIC connection from {}, waiting for the handshake",
-                remote_addr
-            );
+            debug!("Accepted QUIC connection from {}, waiting for the handshake", remote_addr);
 
             let mut conn = PendingQuicConnection { conn };
 
@@ -128,10 +120,7 @@ impl<H: AppHandler> QuicServerListener<H> {
                 }
 
                 Ok(Err(err)) => {
-                    warn!(
-                        "Client {} (QUIC) failed to complete handshake: {err}",
-                        remote_addr
-                    );
+                    warn!("Client {} (QUIC) failed to complete handshake: {err}", remote_addr);
                 }
 
                 Err(_) => {

@@ -101,10 +101,7 @@ impl<'a, R: io::Read> BinaryReader<'a, R> {
             byte = self.read_u8()?;
 
             if shift == 63 && byte != 0 && byte != 1 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Varint overflow",
-                ));
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "Varint overflow"));
             }
 
             value |= i64::from(byte & 0x7f) << shift;
@@ -130,10 +127,7 @@ impl<'a, R: io::Read> BinaryReader<'a, R> {
             let byte = self.read_u8()?;
 
             if shift == 63 && byte > 1 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Varuint overflow",
-                ));
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "Varuint overflow"));
             }
 
             value |= u64::from(byte & 0x7f) << shift;
@@ -158,10 +152,7 @@ impl<'a, R: io::Read> BinaryReader<'a, R> {
 
         // arbitrary limit tbh
         if length > 1024 * 1024 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "String too long",
-            ));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "String too long"));
         }
 
         self.read_string_fixed(length)

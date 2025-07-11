@@ -257,12 +257,7 @@ impl QunetDatabase {
             let name = reader.read_string_var()?;
             let kind = self._decode_type(reader)?;
 
-            self.types.push(QunetType {
-                id,
-                tag,
-                name,
-                kind,
-            });
+            self.types.push(QunetType { id, tag, name, kind });
         }
 
         Ok(())
@@ -784,11 +779,7 @@ impl QunetDatabase {
         let mut written = 4;
 
         for ty in &self.types {
-            if let QunetTypeKind::Struct {
-                priority,
-                reliability,
-                ..
-            } = ty.kind
+            if let QunetTypeKind::Struct { priority, reliability, .. } = ty.kind
                 && (priority != QunetEventPriority::None
                     || reliability != QunetReliability::Unreliable)
             {
@@ -831,12 +822,7 @@ impl QunetDatabase {
         self.types
             .iter()
             .filter(|ty| {
-                if let QunetTypeKind::Struct {
-                    priority,
-                    reliability,
-                    ..
-                } = ty.kind
-                {
+                if let QunetTypeKind::Struct { priority, reliability, .. } = ty.kind {
                     priority != QunetEventPriority::None
                         || reliability != QunetReliability::Unreliable
                 } else {

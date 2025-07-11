@@ -79,7 +79,10 @@ pub enum ServerOutcome {
 #[derive(Debug, Error)]
 pub enum AcceptError {
     #[error("Major protocol version mismatch: client using {client}, server using {server}")]
-    MajorVersionMismatch { client: u16, server: u16 },
+    MajorVersionMismatch {
+        client: u16,
+        server: u16,
+    },
 }
 
 // Spooky scary stuff
@@ -131,10 +134,8 @@ enum ErrorOutcome {
 
 impl<H: AppHandler> Server<H> {
     pub(crate) fn from_builder(mut builder: ServerBuilder<H>) -> Self {
-        let app_handler = builder
-            .app_handler
-            .take()
-            .expect("App handler must be set in the builder");
+        let app_handler =
+            builder.app_handler.take().expect("App handler must be set in the builder");
 
         Server {
             _builder: builder,
@@ -163,10 +164,7 @@ impl<H: AppHandler> Server<H> {
     }
 
     pub(crate) async fn setup(&mut self) -> Result<(), ServerOutcome> {
-        self.app_handler
-            .pre_setup(self)
-            .await
-            .map_err(ServerOutcome::CustomError)?;
+        self.app_handler.pre_setup(self).await.map_err(ServerOutcome::CustomError)?;
 
         self.print_config();
 
@@ -175,17 +173,10 @@ impl<H: AppHandler> Server<H> {
             Arc::get_mut(&mut self.buffer_pool).expect("Buffer pool must be unique at this point");
 
         for opts in &self._builder.mem_options.buffer_pools {
-            pool.add_pool(BufferPool::new(
-                opts.buf_size,
-                opts.initial_buffers,
-                opts.max_buffers,
-            ));
+            pool.add_pool(BufferPool::new(opts.buf_size, opts.initial_buffers, opts.max_buffers));
         }
 
-        debug!(
-            "Estimate buffer pool memory usage: {} bytes",
-            pool.heap_usage()
-        );
+        debug!("Estimate buffer pool memory usage: {} bytes", pool.heap_usage());
 
         // Setup connection listeners
         if let Some(opts) = self._builder.udp_opts.take() {
@@ -222,18 +213,14 @@ impl<H: AppHandler> Server<H> {
         }
 
         // Setup misc settings
-        self._message_size_limit = self
-            ._builder
-            .message_size_limit
-            .unwrap_or(DEFAULT_MESSAGE_SIZE_LIMIT);
+        self._message_size_limit =
+            self._builder.message_size_limit.unwrap_or(DEFAULT_MESSAGE_SIZE_LIMIT);
 
         // Setup qdb stuff
         let qdb_data = if let Some(data) = self._builder.qdb_data.take() {
             data.into_boxed_slice()
         } else if let Some(path) = self._builder.qdb_path.take() {
-            std::fs::read(path)
-                .map_err(ServerOutcome::QdbReadError)?
-                .into_boxed_slice()
+            std::fs::read(path).map_err(ServerOutcome::QdbReadError)?.into_boxed_slice()
         } else {
             Box::new([])
         };
@@ -252,10 +239,8 @@ impl<H: AppHandler> Server<H> {
                 .map_err(|code| ServerOutcome::QdbCompressError(zstd_safe::get_error_name(code)))?;
 
             // create compression and decompression dictionaries
-            self.qdb_zstd_cdict = Some(zstd_safe::CDict::create(
-                &destination,
-                MSG_ZSTD_COMPRESSION_LEVEL,
-            ));
+            self.qdb_zstd_cdict =
+                Some(zstd_safe::CDict::create(&destination, MSG_ZSTD_COMPRESSION_LEVEL));
 
             self.qdb_zstd_ddict = Some(zstd_safe::DDict::create(&qdb_data));
 
@@ -269,27 +254,17 @@ impl<H: AppHandler> Server<H> {
             self.qdb_data = destination.into();
         }
 
-        self.app_handler
-            .post_setup(self)
-            .await
-            .map_err(ServerOutcome::CustomError)?;
+        self.app_handler.post_setup(self).await.map_err(ServerOutcome::CustomError)?;
 
         Ok(())
     }
 
     async fn run_listener<L: ServerListener<H>>(self: ServerHandle<H>, listener: Arc<L>) {
         match listener.clone().run(self).await {
-            Ok(()) => info!(
-                "Listener {} terminated with no errors",
-                listener.identifier()
-            ),
+            Ok(()) => info!("Listener {} terminated with no errors", listener.identifier()),
 
             Err(e) => {
-                error!(
-                    "Listener {} terminated with error: {}",
-                    listener.identifier(),
-                    e
-                );
+                error!("Listener {} terminated with error: {}", listener.identifier(), e);
             }
         }
     }
@@ -297,20 +272,17 @@ impl<H: AppHandler> Server<H> {
     pub async fn run_server(self: ServerHandle<H>) -> ServerOutcome {
         if let Some(udp) = self.udp_listener.clone() {
             let srv = self.clone();
-            self.listener_tracker
-                .spawn(async move { srv.run_listener(udp).await });
+            self.listener_tracker.spawn(async move { srv.run_listener(udp).await });
         }
 
         if let Some(tcp) = self.tcp_listener.clone() {
             let srv = self.clone();
-            self.listener_tracker
-                .spawn(async move { srv.run_listener(tcp).await });
+            self.listener_tracker.spawn(async move { srv.run_listener(tcp).await });
         }
 
         if let Some(quic) = self.quic_listener.clone() {
             let srv = self.clone();
-            self.listener_tracker
-                .spawn(async move { srv.run_listener(quic).await });
+            self.listener_tracker.spawn(async move { srv.run_listener(quic).await });
         }
 
         self.listener_tracker.close();
@@ -331,10 +303,7 @@ impl<H: AppHandler> Server<H> {
             }
         };
 
-        let timeout = self
-            ._builder
-            .graceful_shutdown_timeout
-            .unwrap_or(Duration::from_secs(5));
+        let timeout = self._builder.graceful_shutdown_timeout.unwrap_or(Duration::from_secs(5));
 
         match tokio::time::timeout(timeout, self.graceful_shutdown()).await {
             Ok(Ok(())) => info!("Shutdown successful"),
@@ -355,10 +324,7 @@ impl<H: AppHandler> Server<H> {
 
     async fn graceful_shutdown(&self) -> Result<(), ServerOutcome> {
         // Run pre-shutdown hook
-        self.app_handler
-            .pre_shutdown(self)
-            .await
-            .map_err(ServerOutcome::CustomError)?;
+        self.app_handler.pre_shutdown(self).await.map_err(ServerOutcome::CustomError)?;
 
         // Cancel all listeners
         self.shutdown_token.cancel();
@@ -370,10 +336,7 @@ impl<H: AppHandler> Server<H> {
         self.listener_tracker.wait().await;
 
         // Run post-shutdown hook
-        self.app_handler
-            .post_shutdown(self)
-            .await
-            .map_err(ServerOutcome::CustomError)?;
+        self.app_handler.post_shutdown(self).await.map_err(ServerOutcome::CustomError)?;
 
         // Done!
 
@@ -469,10 +432,7 @@ impl<H: AppHandler> Server<H> {
             if let Err(e) =
                 Self::client_handler(&self, &mut transport, client.clone(), send_qdb).await
             {
-                warn!(
-                    "[{}] Client connection terminated due to error: {}",
-                    address, e
-                );
+                warn!("[{}] Client connection terminated due to error: {}", address, e);
 
                 // depending on the error, we might want to send a message to the client notifying about it
                 let (error_code, error_message) = match e {
@@ -493,13 +453,7 @@ impl<H: AppHandler> Server<H> {
 
                 // we don't care if it fails here
                 let _ = transport
-                    .send_message(
-                        QunetMessage::ServerClose {
-                            error_code,
-                            error_message,
-                        },
-                        false,
-                    )
+                    .send_message(QunetMessage::ServerClose { error_code, error_message }, false)
                     .await;
             }
 
@@ -519,11 +473,7 @@ impl<H: AppHandler> Server<H> {
         assert!(error != QunetHandshakeError::Custom);
 
         if let Err(e) = transport.send_handshake_error(error, None).await {
-            debug!(
-                "[{}] Failed to send handshake error: {}",
-                transport.address(),
-                e
-            );
+            debug!("[{}] Failed to send handshake error: {}", transport.address(), e);
         }
     }
 
@@ -576,11 +526,7 @@ impl<H: AppHandler> Server<H> {
         // send the handshake response
         transport
             .send_handshake_response(
-                if send_qdb {
-                    Some(self.qdb_data.as_ref())
-                } else {
-                    None
-                },
+                if send_qdb { Some(self.qdb_data.as_ref()) } else { None },
                 self.qdb_uncompressed_size,
             )
             .await?;
@@ -699,11 +645,7 @@ impl<H: AppHandler> Server<H> {
 
             // Errors that indicate a bug in the server
             TransportError::CompressionLz4Error(_) | TransportError::CompressionZstdError(_) => {
-                warn!(
-                    "[{}] Error compressing message: {}",
-                    transport.address(),
-                    err
-                );
+                warn!("[{}] Error compressing message: {}", transport.address(), err);
                 ErrorOutcome::Ignore
             }
 
@@ -723,11 +665,7 @@ impl<H: AppHandler> Server<H> {
         msg: &QunetMessage,
     ) -> Result<(), TransportError> {
         #[cfg(debug_assertions)]
-        debug!(
-            "[{}] Received message: {:?}",
-            transport.address(),
-            msg.type_str()
-        );
+        debug!("[{}] Received message: {:?}", transport.address(), msg.type_str());
 
         match msg {
             QunetMessage::Keepalive { timestamp } => {
@@ -892,11 +830,7 @@ impl<H: AppHandler> Server<H> {
 
     pub(crate) async fn get_new_buffer(&self, size: usize) -> BufferKind {
         match self.buffer_pool.get(size).await {
-            Some(buf) => BufferKind::Pooled {
-                buf,
-                pos: 0,
-                size: 0,
-            },
+            Some(buf) => BufferKind::Pooled { buf, pos: 0, size: 0 },
 
             // fallback for very large needs
             None => BufferKind::Heap(Vec::with_capacity(size)),
@@ -964,9 +898,7 @@ impl<H: AppHandler> Server<H> {
                 unsafe { Self::set_buffer_kind_len(&mut buf, size) };
                 Ok(buf)
             }
-            Err(e) => Err(TransportError::CompressionZstdError(
-                zstd_safe::get_error_name(e),
-            )),
+            Err(e) => Err(TransportError::CompressionZstdError(zstd_safe::get_error_name(e))),
         }
     }
 

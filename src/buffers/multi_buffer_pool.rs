@@ -53,10 +53,7 @@ impl MultiBufferPool {
     fn get_pool_for_size(&self, size: usize) -> Option<&BufferPool> {
         // we know pools are sorted so we can use binary search
 
-        match self
-            .pools
-            .binary_search_by_key(&size, |pool| pool.buf_size())
-        {
+        match self.pools.binary_search_by_key(&size, |pool| pool.buf_size()) {
             Ok(index) => Some(&self.pools[index]),
             // the bin search function will return the index of the next pool that is larger than the requested size,
             // or it will return `pools.len()`, which means no pool is large enough

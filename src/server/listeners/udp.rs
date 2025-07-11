@@ -35,11 +35,7 @@ pub(crate) async fn make_socket(
     multi: bool,
     recv_buffer_size: Option<usize>,
 ) -> std::io::Result<UdpSocket> {
-    let domain = if address.is_ipv6() {
-        Domain::IPV6
-    } else {
-        Domain::IPV4
-    };
+    let domain = if address.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
 
     debug!("Binding UDP socket to {address} (multi: {multi})");
 
@@ -76,9 +72,7 @@ impl<H: AppHandler> UdpServerListener<H> {
             let socket =
                 make_socket(opts.address, binds > 1, mem_opts.udp_recv_buffer_size).await?;
 
-            sockets.push(OneListener {
-                socket: Arc::new(socket),
-            });
+            sockets.push(OneListener { socket: Arc::new(socket) });
         }
 
         Ok(UdpServerListener {
@@ -129,10 +123,7 @@ impl<H: AppHandler> UdpServerListener<H> {
 
         loop {
             // TODO: dabble into recvmmsg for better performance, linux only
-            let (len, peer) = socket
-                .recv_from(&mut buf)
-                .await
-                .map_err(ListenerError::IoError)?;
+            let (len, peer) = socket.recv_from(&mut buf).await.map_err(ListenerError::IoError)?;
 
             if len == 0 {
                 continue;
@@ -150,8 +141,7 @@ impl<H: AppHandler> UdpServerListener<H> {
 
                 Self::wrap_error(
                     peer,
-                    self.handle_ping_message(reader, socket, peer, &server)
-                        .await,
+                    self.handle_ping_message(reader, socket, peer, &server).await,
                 );
 
                 continue;
@@ -176,10 +166,7 @@ impl<H: AppHandler> UdpServerListener<H> {
                     let mut msg_data = [0u8; QUNET_SMALL_MESSAGE_SIZE];
                     msg_data[..len].copy_from_slice(data);
 
-                    QunetRawMessage::Small {
-                        data: msg_data,
-                        len,
-                    }
+                    QunetRawMessage::Small { data: msg_data, len }
                 } else {
                     let msg = QunetRawMessage::Large { buffer: buf, len };
 
@@ -210,10 +197,7 @@ impl<H: AppHandler> UdpServerListener<H> {
         let mut buf = [0u8; 1500];
 
         loop {
-            let (len, peer) = socket
-                .recv_from(&mut buf)
-                .await
-                .map_err(ListenerError::IoError)?;
+            let (len, peer) = socket.recv_from(&mut buf).await.map_err(ListenerError::IoError)?;
 
             if len == 0 || buf[0] != MSG_PING {
                 // ignore empty packets or packets that are not ping messages
@@ -222,10 +206,7 @@ impl<H: AppHandler> UdpServerListener<H> {
 
             let reader = ByteReader::new(&buf[..len]);
 
-            if let Err(err) = self
-                .handle_ping_message(reader, socket, peer, &server)
-                .await
-            {
+            if let Err(err) = self.handle_ping_message(reader, socket, peer, &server).await {
                 match err {
                     ListenerError::DecodeError(_) => {
                         debug!("[UDP {peer}] {err}");
@@ -259,10 +240,7 @@ impl<H: AppHandler> UdpServerListener<H> {
             writer.write_u32(ping_id);
             writer.write_u8(0); // no protocols
 
-            socket
-                .send_to(writer.written(), peer)
-                .await
-                .map_err(ListenerError::IoError)?;
+            socket.send_to(writer.written(), peer).await.map_err(ListenerError::IoError)?;
 
             return Ok(());
         }
@@ -313,10 +291,7 @@ impl<H: AppHandler> UdpServerListener<H> {
         writer.set_pos(end_pos);
 
         // send the response
-        socket
-            .send_to(writer.written(), peer)
-            .await
-            .map_err(ListenerError::IoError)?;
+        socket.send_to(writer.written(), peer).await.map_err(ListenerError::IoError)?;
 
         // done!
 
@@ -360,11 +335,7 @@ impl<H: AppHandler> ServerListener<H> for UdpServerListener<H> {
         self: Arc<UdpServerListener<H>>,
         server: ServerHandle<H>,
     ) -> Result<(), ListenerError> {
-        debug!(
-            "Starting UDP listener on {} (sockets: {})",
-            self.opts.address,
-            self.sockets.len(),
-        );
+        debug!("Starting UDP listener on {} (sockets: {})", self.opts.address, self.sockets.len(),);
 
         let mut set = JoinSet::new();
 

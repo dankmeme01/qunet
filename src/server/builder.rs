@@ -225,9 +225,7 @@ impl<H: AppHandler> ServerBuilder<H> {
             return o;
         }
 
-        let handle = ServerHandle {
-            server: Arc::new(server),
-        };
+        let handle = ServerHandle { server: Arc::new(server) };
 
         handle.run().await
     }

@@ -177,10 +177,7 @@ impl QunetMessage {
                         None
                     };
 
-                    Ok(QunetMessage::KeepaliveResponse {
-                        timestamp,
-                        data: buf,
-                    })
+                    Ok(QunetMessage::KeepaliveResponse { timestamp, data: buf })
                 }
 
                 MSG_HANDSHAKE_START => {
@@ -261,10 +258,7 @@ impl QunetMessage {
                     small_buf[..data_len]
                         .copy_from_slice(&data[meta.data_offset..meta.data_offset + data_len]);
 
-                    BufferKind::Small {
-                        buf: small_buf,
-                        size: data_len,
-                    }
+                    BufferKind::Small { buf: small_buf, size: data_len }
                 }
 
                 RawOrSlice::Slice(data) => {
@@ -273,20 +267,13 @@ impl QunetMessage {
                         let mut small_buf = [0u8; QUNET_SMALL_MESSAGE_SIZE];
                         small_buf[..data_len].copy_from_slice(data);
 
-                        BufferKind::Small {
-                            buf: small_buf,
-                            size: data_len,
-                        }
+                        BufferKind::Small { buf: small_buf, size: data_len }
                     } else if data_len <= buffer_pool.max_buf_size() {
                         // request a buffer from the pool
                         let mut buf = buffer_pool.get_busy_loop(data_len).unwrap();
                         buf[..data_len].copy_from_slice(data);
 
-                        BufferKind::Pooled {
-                            buf,
-                            pos: 0,
-                            size: data_len,
-                        }
+                        BufferKind::Pooled { buf, pos: 0, size: data_len }
                     } else {
                         // heap allocate
                         let mut heap_buf = Vec::with_capacity(data_len);
@@ -301,10 +288,7 @@ impl QunetMessage {
         };
 
         let data_kind = if let Some(header) = meta.fragmentation_header {
-            DataMessageKind::Fragment {
-                header,
-                data: buf_kind,
-            }
+            DataMessageKind::Fragment { header, data: buf_kind }
         } else {
             DataMessageKind::Regular { data: buf_kind }
         };
@@ -392,11 +376,7 @@ impl QunetMessage {
     /// Calculates the header size of the message.
     pub fn calc_header_size(&self) -> usize {
         match self {
-            Self::Data {
-                kind,
-                reliability,
-                compression,
-            } => {
+            Self::Data { kind, reliability, compression } => {
                 let mut size = 1; // header byte
 
                 if let Some(CompressionHeader { .. }) = compression {
@@ -421,8 +401,7 @@ impl QunetMessage {
     /// Convenience method that checks if this is a reliable message with a nonzero message ID.
     pub fn is_reliable_message(&self) -> bool {
         if let QunetMessage::Data {
-            reliability: Some(reliability),
-            ..
+            reliability: Some(reliability), ..
         } = self
         {
             reliability.message_id != 0
@@ -474,10 +453,7 @@ impl QunetMessage {
                 }
             }
 
-            Self::ServerClose {
-                error_code,
-                error_message,
-            } => {
+            Self::ServerClose { error_code, error_message } => {
                 header_writer.write_u8(MSG_SERVER_CLOSE)?;
                 body_writer.write_u32(*error_code as u32)?;
 
@@ -497,11 +473,7 @@ impl QunetMessage {
                 body_writer.write_u32(*error_code as u32)?;
             }
 
-            Self::QdbChunkResponse {
-                offset,
-                size,
-                qdb_data,
-            } => {
+            Self::QdbChunkResponse { offset, size, qdb_data } => {
                 header_writer.write_u8(MSG_QDB_CHUNK_RESPONSE)?;
                 body_writer.write_u32(*offset)?;
                 body_writer.write_u32(*size)?;
@@ -527,16 +499,8 @@ impl QunetMessage {
         writer: &mut ByteWriter,
         omit_headers: bool,
     ) -> Result<(), ByteWriterError> {
-        let Self::Data {
-            reliability,
-            compression,
-            ..
-        } = self
-        else {
-            unreachable!(
-                "encode_data_header called on non-data message: {}",
-                self.type_str()
-            );
+        let Self::Data { reliability, compression, .. } = self else {
+            unreachable!("encode_data_header called on non-data message: {}", self.type_str());
         };
 
         let mut hb = Bits::new(0u8);
@@ -550,9 +514,7 @@ impl QunetMessage {
                 MSG_DATA_BIT_COMPRESSION_1,
                 MSG_DATA_BIT_COMPRESSION_2,
                 match compression {
-                    Some(CompressionHeader {
-                        compression_type, ..
-                    }) => match compression_type {
+                    Some(CompressionHeader { compression_type, .. }) => match compression_type {
                         CompressionType::Zstd => 0b01,
                         CompressionType::Lz4 => 0b10,
                     },
@@ -572,10 +534,7 @@ impl QunetMessage {
 
         if !omit_headers {
             // write compression header
-            if let Some(CompressionHeader {
-                uncompressed_size, ..
-            }) = compression
-            {
+            if let Some(CompressionHeader { uncompressed_size, .. }) = compression {
                 writer.write_u32(uncompressed_size.get());
             }
 

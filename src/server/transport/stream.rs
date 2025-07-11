@@ -99,10 +99,7 @@ pub async fn send_handshake_response<S: AsyncWriteExt + Unpin, H: AppHandler>(
     header_writer.write_bool(qdb_data.is_some());
 
     if let Some(qdb_data) = qdb_data {
-        debug!(
-            "Sending {conn_type} handshake response (QDB {} bytes)",
-            qdb_data.len()
-        );
+        debug!("Sending {conn_type} handshake response (QDB {} bytes)", qdb_data.len());
 
         header_writer.write_u32(qdb_uncompressed_size as u32);
         header_writer.write_u32(qdb_data.len() as u32);
@@ -117,10 +114,7 @@ pub async fn send_handshake_response<S: AsyncWriteExt + Unpin, H: AppHandler>(
         let full_len = header_len + qdb_data.len();
         header_writer.perform_at(msg_start - 4, |w| w.write_u32(full_len as u32));
 
-        let mut iovecs = [
-            IoSlice::new(header_writer.written()),
-            IoSlice::new(qdb_data),
-        ];
+        let mut iovecs = [IoSlice::new(header_writer.written()), IoSlice::new(qdb_data)];
 
         send_raw_bytes_vectored(stream, &mut iovecs, &transport_data.server.buffer_pool).await?;
     } else {
@@ -158,10 +152,7 @@ pub async fn send_message<S: AsyncWriteExt + Unpin, H: AppHandler>(
 
         header_writer.perform_at(0, |wr| wr.write_u32(msg_len as u32));
 
-        let mut vecs = [
-            IoSlice::new(header_writer.written()),
-            IoSlice::new(body_writer.written()),
-        ];
+        let mut vecs = [IoSlice::new(header_writer.written()), IoSlice::new(body_writer.written())];
 
         send_raw_bytes_vectored(_stream, &mut vecs, &transport_data.server.buffer_pool).await?;
 
@@ -169,9 +160,7 @@ pub async fn send_message<S: AsyncWriteExt + Unpin, H: AppHandler>(
     }
 
     // handle data messages
-    let Some(data) = msg.data_bytes() else {
-        unreachable!()
-    };
+    let Some(data) = msg.data_bytes() else { unreachable!() };
 
     msg.encode_data_header(&mut header_writer, false).unwrap();
 
