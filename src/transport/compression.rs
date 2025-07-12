@@ -1,9 +1,12 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, ops::DerefMut, sync::Arc};
 
 use thiserror::Error;
 use zstd_safe::{CCtx, CDict, DCtx, DDict};
 
-use crate::protocol::MSG_ZSTD_COMPRESSION_LEVEL;
+use crate::{
+    buffers::multi_buffer_pool::MultiBufferPool, message::BufferKind,
+    protocol::MSG_ZSTD_COMPRESSION_LEVEL,
+};
 
 thread_local! {
     static ZSTD_CCTX: RefCell<CCtx<'static>> = RefCell::new(CCtx::create());
@@ -89,4 +92,173 @@ pub fn zstd_decompress(
 
 pub fn lz4_compress(data: &[u8], output: &mut [u8]) -> Result<usize, CompressError> {
     Ok(lz4_flex::compress_into(data, output)?)
+}
+
+// Trait for servers / clients that hold a compression dictionary/context
+
+pub trait CompressionHandler {
+    fn compress_zstd(
+        &self,
+        data: &[u8],
+    ) -> impl Future<Output = Result<BufferKind, CompressError>> + Send;
+
+    fn decompress_zstd(
+        &self,
+        data: &[u8],
+        uncompressed_size: usize,
+    ) -> impl Future<Output = Result<BufferKind, DecompressError>> + Send;
+
+    fn compress_lz4(
+        &self,
+        data: &[u8],
+    ) -> impl Future<Output = Result<BufferKind, CompressError>> + Send;
+
+    fn decompress_lz4(
+        &self,
+        data: &[u8],
+        uncompressed_size: usize,
+    ) -> impl Future<Output = Result<BufferKind, DecompressError>> + Send;
+}
+
+// A compression handler that works with a buffer pool and optional dictionaries
+
+pub struct CompressionHandlerImpl {
+    zstd_cdict: Option<CDict<'static>>,
+    zstd_ddict: Option<DDict<'static>>,
+    buffer_pool: Arc<MultiBufferPool>,
+}
+
+impl CompressionHandlerImpl {
+    pub fn new(buffer_pool: Arc<MultiBufferPool>) -> Self {
+        Self {
+            zstd_cdict: None,
+            zstd_ddict: None,
+            buffer_pool,
+        }
+    }
+
+    pub fn init_zstd_cdict(&mut self, data: &[u8], level: i32) {
+        self.zstd_cdict = Some(CDict::create(data, level));
+    }
+
+    pub fn init_zstd_ddict(&mut self, data: &[u8]) {
+        self.zstd_ddict = Some(DDict::create(data));
+    }
+}
+
+impl CompressionHandlerImpl {
+    async fn get_new_buffer(&self, size: usize) -> BufferKind {
+        match self.buffer_pool.get(size).await {
+            Some(buf) => BufferKind::new_pooled(buf),
+
+            // fallback for very large needs
+            None => BufferKind::new_heap(size),
+        }
+    }
+
+    /// Safety: this function assumes the buffer will only be used for writing.
+    unsafe fn write_buf_from_buffer_kind(buf: &mut BufferKind) -> &mut [u8] {
+        match buf {
+            BufferKind::Heap(vec) => unsafe {
+                std::slice::from_raw_parts_mut(vec.as_mut_ptr(), vec.capacity())
+            },
+
+            BufferKind::Pooled { buf, .. } => {
+                let cap = buf.len();
+                &mut buf.deref_mut()[..cap]
+            }
+
+            BufferKind::Small { buf, size } => &mut buf[..*size],
+
+            BufferKind::Reference(_) => unreachable!(),
+        }
+    }
+
+    unsafe fn set_buffer_kind_len(buf: &mut BufferKind, len: usize) {
+        match buf {
+            BufferKind::Heap(vec) => unsafe { vec.set_len(len) },
+            BufferKind::Pooled { size, .. } => *size = len,
+            BufferKind::Small { size, .. } => *size = len,
+            BufferKind::Reference(_) => unreachable!(),
+        }
+    }
+}
+
+impl CompressionHandler for CompressionHandlerImpl {
+    async fn compress_zstd(&self, data: &[u8]) -> Result<BufferKind, CompressError> {
+        let needed_len = zstd_compress_bound(data.len());
+
+        let mut buf = self.get_new_buffer(needed_len).await;
+
+        // safety: the buffer is only used for writing
+        let output = unsafe { Self::write_buf_from_buffer_kind(&mut buf) };
+
+        debug_assert!(
+            output.len() >= needed_len,
+            "Output buffer is too small ({} < {})",
+            output.len(),
+            needed_len
+        );
+
+        let written = zstd_compress(data, output, self.zstd_cdict.as_ref())?;
+
+        // safety: zstd guarantees that exactly `size` bytes are written to the output buffer
+        unsafe { Self::set_buffer_kind_len(&mut buf, written) };
+        Ok(buf)
+    }
+
+    async fn decompress_zstd(
+        &self,
+        data: &[u8],
+        uncompressed_size: usize,
+    ) -> Result<BufferKind, DecompressError> {
+        let mut buf = self.get_new_buffer(uncompressed_size).await;
+
+        // safety: the buffer is only used for writing
+        let output = unsafe { Self::write_buf_from_buffer_kind(&mut buf) };
+
+        debug_assert!(
+            output.len() >= uncompressed_size,
+            "Output buffer is too small ({} < {})",
+            output.len(),
+            uncompressed_size
+        );
+
+        let written = zstd_decompress(data, output, self.zstd_ddict.as_ref())?;
+
+        // safety: zstd guarantees that exactly `size` bytes are written to the output buffer
+        unsafe { Self::set_buffer_kind_len(&mut buf, written) };
+        Ok(buf)
+    }
+
+    async fn compress_lz4(&self, data: &[u8]) -> Result<BufferKind, CompressError> {
+        let needed_len = lz4_flex::block::get_maximum_output_size(data.len());
+
+        let mut buf = self.get_new_buffer(needed_len).await;
+
+        // safety: the buffer is only used for writing
+        let output = unsafe { Self::write_buf_from_buffer_kind(&mut buf) };
+
+        debug_assert!(
+            output.len() >= needed_len,
+            "Output buffer is too small ({} < {})",
+            output.len(),
+            needed_len
+        );
+
+        let written = lz4_compress(data, output)?;
+
+        // safety: lz4 guarantees that exactly `size` bytes are written to the output buffer
+        unsafe { Self::set_buffer_kind_len(&mut buf, written) };
+
+        Ok(buf)
+    }
+
+    async fn decompress_lz4(
+        &self,
+        _data: &[u8],
+        _uncompressed_size: usize,
+    ) -> Result<BufferKind, DecompressError> {
+        todo!();
+    }
 }

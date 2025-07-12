@@ -1,5 +1,4 @@
 use std::{
-    cell::RefCell,
     io::Cursor,
     net::SocketAddr,
     ops::{Deref, DerefMut},
@@ -13,7 +12,6 @@ use thiserror::Error;
 use tokio::task::JoinSet;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{debug, error, info, warn};
-use zstd_safe::{CCtx, DCtx};
 
 use crate::{
     buffers::{
@@ -38,7 +36,12 @@ use crate::{
             udp::UdpServerListener,
         },
     },
-    transport::{QunetTransport, TransportError, TransportType, compression},
+    transport::{
+        QunetTransport, TransportError, TransportType,
+        compression::{
+            self, CompressError, CompressionHandler, CompressionHandlerImpl, DecompressError,
+        },
+    },
 };
 
 pub mod app_handler;
@@ -94,17 +97,16 @@ pub struct Server<H: AppHandler> {
     clients: DashMap<u64, Arc<ClientState<H>>, BuildNoHashHasher<u64>>,
     connected_addrs: DashMap<SocketAddr, u64>, // this serves to detect duplicate connections from the same ip:port tuple
     schedules: parking_lot::Mutex<JoinSet<!>>,
+    compressor: CompressionHandlerImpl,
 
     // misc settings
-    _message_size_limit: usize,
+    message_size_limit: usize,
 
     // Qdb stuff
     qdb: QunetDatabase,
     qdb_data: Arc<[u8]>,
     qdb_hash: [u8; 32],
     qdb_uncompressed_size: usize,
-    qdb_zstd_cdict: Option<zstd_safe::CDict<'static>>,
-    qdb_zstd_ddict: Option<zstd_safe::DDict<'static>>,
 }
 
 impl Server<DefaultAppHandler> {
@@ -124,12 +126,26 @@ impl<H: AppHandler> Server<H> {
         let app_handler =
             builder.app_handler.take().expect("App handler must be set in the builder");
 
+        // setup buffer pool, while it's unique
+        let mut buffer_pool = MultiBufferPool::new();
+
+        for opts in &builder.mem_options.buffer_pools {
+            buffer_pool.add_pool(BufferPool::new(
+                opts.buf_size,
+                opts.initial_buffers,
+                opts.max_buffers,
+            ));
+        }
+
+        let buffer_pool = Arc::new(buffer_pool);
+        let compressor = CompressionHandlerImpl::new(buffer_pool.clone());
+
         Server {
             _builder: builder,
             udp_listener: None,
             tcp_listener: None,
             quic_listener: None,
-            buffer_pool: Arc::new(MultiBufferPool::new()),
+            buffer_pool,
             app_handler,
 
             shutdown_token: CancellationToken::new(),
@@ -139,14 +155,13 @@ impl<H: AppHandler> Server<H> {
             clients: DashMap::default(),
             connected_addrs: DashMap::default(),
             schedules: parking_lot::Mutex::new(JoinSet::new()),
-            _message_size_limit: 0,
+            compressor,
+            message_size_limit: 0,
 
             qdb: QunetDatabase::default(),
             qdb_data: Arc::new([]),
             qdb_hash: [0; 32],
             qdb_uncompressed_size: 0,
-            qdb_zstd_cdict: None,
-            qdb_zstd_ddict: None,
         }
     }
 
@@ -154,16 +169,6 @@ impl<H: AppHandler> Server<H> {
         self.app_handler.pre_setup(self).await.map_err(ServerOutcome::CustomError)?;
 
         self.print_config();
-
-        // Setup buffer pools
-        let pool =
-            Arc::get_mut(&mut self.buffer_pool).expect("Buffer pool must be unique at this point");
-
-        for opts in &self._builder.mem_options.buffer_pools {
-            pool.add_pool(BufferPool::new(opts.buf_size, opts.initial_buffers, opts.max_buffers));
-        }
-
-        debug!("Estimate buffer pool memory usage: {} bytes", pool.heap_usage());
 
         // Setup connection listeners
         if let Some(opts) = self._builder.udp_opts.take() {
@@ -200,7 +205,7 @@ impl<H: AppHandler> Server<H> {
         }
 
         // Setup misc settings
-        self._message_size_limit =
+        self.message_size_limit =
             self._builder.message_size_limit.unwrap_or(DEFAULT_MESSAGE_SIZE_LIMIT);
 
         // Setup qdb stuff
@@ -226,10 +231,10 @@ impl<H: AppHandler> Server<H> {
                 .map_err(|code| ServerOutcome::QdbCompressError(zstd_safe::get_error_name(code)))?;
 
             // create compression and decompression dictionaries
-            self.qdb_zstd_cdict =
-                Some(zstd_safe::CDict::create(&destination, MSG_ZSTD_COMPRESSION_LEVEL));
-
-            self.qdb_zstd_ddict = Some(zstd_safe::DDict::create(&qdb_data));
+            if let Some(dict) = self.qdb.zstd_dict.as_ref() {
+                self.compressor.init_zstd_cdict(dict, self.qdb.zstd_level);
+                self.compressor.init_zstd_ddict(dict);
+            }
 
             debug!(
                 "Loaded QDB ({} bytes raw, {} compressed), hash: {}",
@@ -330,10 +335,7 @@ impl<H: AppHandler> Server<H> {
         Ok(())
     }
 
-    pub(crate) async fn accept_connection(
-        self: ServerHandle<H>,
-        mut transport: QunetTransport<H>,
-    ) {
+    pub(crate) async fn accept_connection(self: ServerHandle<H>, mut transport: QunetTransport) {
         // spawn a new task for the connection
         tokio::spawn(async move {
             let client_ver = transport.data.qunet_major_version;
@@ -440,7 +442,11 @@ impl<H: AppHandler> Server<H> {
 
                 // we don't care if it fails here
                 let _ = transport
-                    .send_message(QunetMessage::ServerClose { error_code, error_message }, false)
+                    .send_message(
+                        QunetMessage::ServerClose { error_code, error_message },
+                        false,
+                        &*self,
+                    )
                     .await;
             }
 
@@ -454,12 +460,12 @@ impl<H: AppHandler> Server<H> {
 
     async fn send_handshake_error(
         &self,
-        transport: &mut QunetTransport<H>,
+        transport: &mut QunetTransport,
         error: QunetHandshakeError,
     ) {
         assert!(error != QunetHandshakeError::Custom);
 
-        if let Err(e) = transport.send_handshake_error(error, None).await {
+        if let Err(e) = transport.send_handshake_error(error, None, self).await {
             debug!("[{}] Failed to send handshake error: {}", transport.address(), e);
         }
     }
@@ -503,17 +509,17 @@ impl<H: AppHandler> Server<H> {
 
     #[inline]
     pub fn message_size_limit(&self) -> usize {
-        self._message_size_limit
+        self.message_size_limit
     }
 
     async fn client_handler(
         &self,
-        transport: &mut QunetTransport<H>,
+        transport: &mut QunetTransport,
         client: Arc<ClientState<H>>,
         send_qdb: bool,
     ) -> Result<(), TransportError> {
         // run setup (udp needs this)
-        transport.run_setup().await?;
+        transport.run_server_setup(self).await?;
 
         // send the handshake response
         transport
@@ -534,7 +540,7 @@ impl<H: AppHandler> Server<H> {
                 msg = transport.receive_message() => match msg {
                     Ok(msg) => {
                         if msg.is_data_compressed() {
-                            match transport.decompress_message(msg).await {
+                            match transport.decompress_message(msg, self).await {
                                 Ok(msg) => self.handle_client_message(transport, &client, &msg).await,
                                 Err(e) => Err(e),
                             }
@@ -553,7 +559,7 @@ impl<H: AppHandler> Server<H> {
                 notif = notif_chan.recv() => match notif {
                     Some(notif) => match notif {
                         ClientNotification::DataMessage{ buf, reliable } => {
-                            transport.send_message(QunetMessage::Data { kind: DataMessageKind::Regular { data: buf }, reliability: None, compression: None }, reliable).await
+                            transport.send_message(QunetMessage::Data { kind: DataMessageKind::Regular { data: buf }, reliability: None, compression: None }, reliable, self).await
                         }
 
                         ClientNotification::RetransmitHandshake => {
@@ -596,11 +602,7 @@ impl<H: AppHandler> Server<H> {
         Ok(())
     }
 
-    fn on_client_error(
-        &self,
-        transport: &QunetTransport<H>,
-        err: &TransportError,
-    ) -> ErrorOutcome {
+    fn on_client_error(&self, transport: &QunetTransport, err: &TransportError) -> ErrorOutcome {
         match err {
             TransportError::ConnectionClosed => ErrorOutcome::GracefulClosure,
             TransportError::IoError(e) => {
@@ -635,11 +637,14 @@ impl<H: AppHandler> Server<H> {
             | TransportError::MessageTooLong
             | TransportError::Timeout
             | TransportError::TooUnreliable
-            | TransportError::TooManyPendingFragments => ErrorOutcome::Terminate,
+            | TransportError::TooManyPendingFragments
+            | TransportError::QuicError(_) => ErrorOutcome::Terminate,
 
             // Errors that indicate a bug in the server
-            TransportError::CompressionError(e) => {
-                warn!("[{}] Error compressing message: {e}", transport.address());
+            TransportError::CompressionError(_)
+            | TransportError::NotImplemented(_)
+            | TransportError::Other(_) => {
+                warn!("[{}] Unexpected error: {err}", transport.address());
                 ErrorOutcome::Ignore
             }
 
@@ -654,7 +659,7 @@ impl<H: AppHandler> Server<H> {
     #[inline]
     async fn handle_client_message(
         &self,
-        transport: &mut QunetTransport<H>,
+        transport: &mut QunetTransport,
         client: &ClientState<H>,
         msg: &QunetMessage,
     ) -> Result<(), TransportError> {
@@ -671,6 +676,7 @@ impl<H: AppHandler> Server<H> {
                             data: None,
                         },
                         false,
+                        self,
                     )
                     .await?;
             }
@@ -699,6 +705,7 @@ impl<H: AppHandler> Server<H> {
                                 error_code: QunetConnectionError::QdbUnavailable,
                             },
                             false,
+                            self,
                         )
                         .await?;
 
@@ -710,6 +717,7 @@ impl<H: AppHandler> Server<H> {
                                 error_code: QunetConnectionError::QdbChunkTooLong,
                             },
                             false,
+                            self,
                         )
                         .await?;
 
@@ -724,6 +732,7 @@ impl<H: AppHandler> Server<H> {
                                 error_code: QunetConnectionError::QdbInvalidChunk,
                             },
                             false,
+                            self,
                         )
                         .await?;
 
@@ -740,6 +749,7 @@ impl<H: AppHandler> Server<H> {
                             qdb_data: self.qdb_data.clone(),
                         },
                         false,
+                        self,
                     )
                     .await?;
             }
@@ -778,7 +788,7 @@ impl<H: AppHandler> Server<H> {
     #[inline]
     async fn cleanup_connection(
         &self,
-        transport: &mut QunetTransport<H>,
+        transport: &mut QunetTransport,
         client: Arc<ClientState<H>>,
     ) -> Result<(), TransportError> {
         self.app_handler.on_client_disconnect(self, &client).await;
@@ -786,7 +796,7 @@ impl<H: AppHandler> Server<H> {
         self.clients.remove(&client.connection_id);
         self.connected_addrs.remove(&client.address);
 
-        transport.run_cleanup().await
+        transport.run_server_cleanup(self).await
     }
 
     fn print_config(&self) {
@@ -810,6 +820,8 @@ impl<H: AppHandler> Server<H> {
         if let Some(ws) = &self._builder.ws_opts {
             info!("- {} (WebSocket)", ws.address);
         }
+
+        debug!("- Estimate buffer pool memory usage: {} bytes", self.buffer_pool.heap_usage());
     }
 
     #[inline]
@@ -829,108 +841,6 @@ impl<H: AppHandler> Server<H> {
             // fallback for very large needs
             None => BufferKind::new_heap(size),
         }
-    }
-
-    /// Safety: this function assumes the buffer will only be used for writing.
-    unsafe fn write_buf_from_buffer_kind(buf: &mut BufferKind) -> &mut [u8] {
-        match buf {
-            BufferKind::Heap(vec) => unsafe {
-                std::slice::from_raw_parts_mut(vec.as_mut_ptr(), vec.capacity())
-            },
-
-            BufferKind::Pooled { buf, .. } => {
-                let cap = buf.len();
-                &mut buf.deref_mut()[..cap]
-            }
-
-            BufferKind::Small { buf, size } => &mut buf[..*size],
-
-            BufferKind::Reference(_) => unreachable!(),
-        }
-    }
-
-    unsafe fn set_buffer_kind_len(buf: &mut BufferKind, len: usize) {
-        match buf {
-            BufferKind::Heap(vec) => unsafe { vec.set_len(len) },
-            BufferKind::Pooled { size, .. } => *size = len,
-            BufferKind::Small { size, .. } => *size = len,
-            BufferKind::Reference(_) => unreachable!(),
-        }
-    }
-
-    pub(crate) async fn compress_zstd_data(
-        &self,
-        data: &[u8],
-    ) -> Result<BufferKind, TransportError> {
-        let needed_len = compression::zstd_compress_bound(data.len());
-
-        let mut buf = self.get_new_buffer(needed_len).await;
-
-        // safety: the buffer is only used for writing
-        let output = unsafe { Self::write_buf_from_buffer_kind(&mut buf) };
-
-        debug_assert!(
-            output.len() >= needed_len,
-            "Output buffer is too small ({} < {})",
-            output.len(),
-            needed_len
-        );
-
-        let written = compression::zstd_compress(data, output, self.qdb_zstd_cdict.as_ref())?;
-
-        // safety: zstd guarantees that exactly `size` bytes are written to the output buffer
-        unsafe { Self::set_buffer_kind_len(&mut buf, written) };
-        Ok(buf)
-    }
-
-    pub(crate) async fn decompress_zstd_data(
-        &self,
-        data: &[u8],
-        uncompressed_size: usize,
-    ) -> Result<BufferKind, TransportError> {
-        let mut buf = self.get_new_buffer(uncompressed_size).await;
-
-        // safety: the buffer is only used for writing
-        let output = unsafe { Self::write_buf_from_buffer_kind(&mut buf) };
-
-        debug_assert!(
-            output.len() >= uncompressed_size,
-            "Output buffer is too small ({} < {})",
-            output.len(),
-            uncompressed_size
-        );
-
-        let written = compression::zstd_decompress(data, output, self.qdb_zstd_ddict.as_ref())?;
-
-        // safety: zstd guarantees that exactly `size` bytes are written to the output buffer
-        unsafe { Self::set_buffer_kind_len(&mut buf, written) };
-        Ok(buf)
-    }
-
-    pub(crate) async fn compress_lz4_data(
-        &self,
-        data: &[u8],
-    ) -> Result<BufferKind, TransportError> {
-        let needed_len = lz4_flex::block::get_maximum_output_size(data.len());
-
-        let mut buf = self.get_new_buffer(needed_len).await;
-
-        // safety: the buffer is only used for writing
-        let output = unsafe { Self::write_buf_from_buffer_kind(&mut buf) };
-
-        debug_assert!(
-            output.len() >= needed_len,
-            "Output buffer is too small ({} < {})",
-            output.len(),
-            needed_len
-        );
-
-        let written = compression::lz4_compress(data, output)?;
-
-        // safety: lz4 guarantees that exactly `size` bytes are written to the output buffer
-        unsafe { Self::set_buffer_kind_len(&mut buf, written) };
-
-        Ok(buf)
     }
 
     // Public API for the application (sending packets, etc.)
@@ -959,6 +869,32 @@ impl<H: AppHandler> Server<H> {
         } else {
             self.get_new_buffer(size).await
         }
+    }
+}
+
+impl<H: AppHandler> CompressionHandler for Server<H> {
+    async fn compress_zstd(&self, data: &[u8]) -> Result<BufferKind, CompressError> {
+        self.compressor.compress_zstd(data).await
+    }
+
+    async fn decompress_zstd(
+        &self,
+        data: &[u8],
+        uncompressed_size: usize,
+    ) -> Result<BufferKind, DecompressError> {
+        self.compressor.decompress_zstd(data, uncompressed_size).await
+    }
+
+    async fn compress_lz4(&self, data: &[u8]) -> Result<BufferKind, CompressError> {
+        self.compressor.compress_lz4(data).await
+    }
+
+    async fn decompress_lz4(
+        &self,
+        data: &[u8],
+        uncompressed_size: usize,
+    ) -> Result<BufferKind, DecompressError> {
+        self.compressor.decompress_lz4(data, uncompressed_size).await
     }
 }
 

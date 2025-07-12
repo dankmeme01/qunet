@@ -3,8 +3,7 @@
     associated_type_defaults,
     generic_const_exprs,
     sync_unsafe_cell,
-    never_type,
-    inherent_associated_types
+    never_type
 )]
 
 pub mod buffers;

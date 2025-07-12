@@ -11,16 +11,15 @@ use crate::{
     },
     message::QunetMessage,
     protocol::{HANDSHAKE_HEADER_SIZE_WITH_QDB, MSG_HANDSHAKE_FINISH},
-    server::app_handler::AppHandler,
     transport::{QunetTransportData, TransportError},
 };
 
 /// Blocks until a full message can be read from the stream, or an error occurs.
 /// This function is cancel-safe.
-pub async fn receive_message<S: AsyncReadExt + Unpin, H: AppHandler>(
+pub async fn receive_message<S: AsyncReadExt + Unpin>(
     buffer: &mut Vec<u8>,
     buffer_pos: &mut usize,
-    transport_data: &QunetTransportData<H>,
+    transport_data: &QunetTransportData,
     stream: &mut S,
 ) -> Result<QunetMessage, TransportError> {
     // TODO: maybe refactor this to add another position variable,
@@ -45,7 +44,7 @@ pub async fn receive_message<S: AsyncReadExt + Unpin, H: AppHandler>(
                 let data = &buffer[4..total_len];
                 // TODO dont early return if parsing failed, still shift the buffer
                 let meta = QunetMessage::parse_header(data, false)?;
-                let msg = QunetMessage::decode(meta, &transport_data.server.buffer_pool)?;
+                let msg = QunetMessage::decode(meta, &transport_data.buffer_pool)?;
 
                 // shift leftover bytes in the buffer
                 // TODO: we could elide the memmove by adding another pos field
@@ -77,9 +76,9 @@ pub async fn receive_message<S: AsyncReadExt + Unpin, H: AppHandler>(
 }
 
 /// Sends the handshake response message to the stream.
-pub async fn send_handshake_response<S: AsyncWriteExt + Unpin, H: AppHandler>(
+pub async fn send_handshake_response<S: AsyncWriteExt + Unpin>(
     stream: &mut S,
-    transport_data: &QunetTransportData<H>,
+    transport_data: &QunetTransportData,
     qdb_data: Option<&[u8]>,
     qdb_uncompressed_size: usize,
     conn_type: &str,
@@ -114,7 +113,7 @@ pub async fn send_handshake_response<S: AsyncWriteExt + Unpin, H: AppHandler>(
 
         let mut iovecs = [IoSlice::new(header_writer.written()), IoSlice::new(qdb_data)];
 
-        send_raw_bytes_vectored(stream, &mut iovecs, &transport_data.server.buffer_pool).await?;
+        send_raw_bytes_vectored(stream, &mut iovecs, &transport_data.buffer_pool).await?;
     } else {
         debug!("Sending {conn_type} handshake response (no QDB)");
 
@@ -129,16 +128,20 @@ pub async fn send_handshake_response<S: AsyncWriteExt + Unpin, H: AppHandler>(
 }
 
 /// Sends the given message to the stream.
-pub async fn send_message<S: AsyncWriteExt + Unpin, H: AppHandler>(
+pub async fn send_message<S: AsyncWriteExt + Unpin>(
     _stream: &mut S,
-    transport_data: &QunetTransportData<H>,
+    transport_data: &QunetTransportData,
     msg: &QunetMessage,
 ) -> Result<(), TransportError> {
     let mut header_buf = [0u8; 12];
     let mut header_writer = ByteWriter::new(&mut header_buf);
 
+    let write_len = !msg.is_handshake_start();
+
     // reserve space for the message length
-    header_writer.write_u32(0);
+    if write_len {
+        header_writer.write_u32(0);
+    }
 
     if !msg.is_data() {
         let mut body_buf = [0u8; 256];
@@ -146,13 +149,13 @@ pub async fn send_message<S: AsyncWriteExt + Unpin, H: AppHandler>(
 
         msg.encode_control_msg(&mut header_writer, &mut body_writer)?;
 
-        let msg_len = header_writer.pos() + body_writer.pos() - 4; // -4 for the reserved length field
-
-        header_writer.perform_at(0, |wr| wr.write_u32(msg_len as u32));
+        if write_len {
+            let msg_len = header_writer.pos() + body_writer.pos() - 4; // -4 for the reserved length field
+            header_writer.perform_at(0, |wr| wr.write_u32(msg_len as u32));
+        }
 
         let mut vecs = [IoSlice::new(header_writer.written()), IoSlice::new(body_writer.written())];
-
-        send_raw_bytes_vectored(_stream, &mut vecs, &transport_data.server.buffer_pool).await?;
+        send_raw_bytes_vectored(_stream, &mut vecs, &transport_data.buffer_pool).await?;
 
         return Ok(());
     }
@@ -162,13 +165,13 @@ pub async fn send_message<S: AsyncWriteExt + Unpin, H: AppHandler>(
 
     msg.encode_data_header(&mut header_writer, false).unwrap();
 
-    let msg_len = header_writer.pos() + data.len() - 4; // -4 for the reserved length field
-
-    header_writer.perform_at(0, |wr| wr.write_u32(msg_len as u32));
+    if write_len {
+        let msg_len = header_writer.pos() + data.len() - 4; // -4 for the reserved length field
+        header_writer.perform_at(0, |wr| wr.write_u32(msg_len as u32));
+    }
 
     let mut vecs = [IoSlice::new(header_writer.written()), IoSlice::new(data)];
-
-    send_raw_bytes_vectored(_stream, &mut vecs, &transport_data.server.buffer_pool).await?;
+    send_raw_bytes_vectored(_stream, &mut vecs, &transport_data.buffer_pool).await?;
 
     Ok(())
 }

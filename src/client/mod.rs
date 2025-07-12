@@ -1,6 +1,7 @@
 use std::{
     net::{IpAddr, SocketAddr},
     ops::Deref,
+    str::FromStr,
     sync::{Arc, atomic::Ordering},
     time::{Duration, Instant},
 };
@@ -10,15 +11,21 @@ use hickory_resolver::{Resolver, config::*, name_server::TokioConnectionProvider
 use nohash_hasher::IntMap;
 use socket2::Domain;
 use thiserror::Error;
-use tokio::{net::UdpSocket, task::JoinSet};
+use tokio::{net::UdpSocket, sync::Mutex};
 use tracing::{debug, warn};
 
 use crate::{
-    buffers::{byte_writer::ByteWriter, multi_buffer_pool::MultiBufferPool},
+    buffers::{
+        buffer_pool::BufferPool, byte_writer::ByteWriter, multi_buffer_pool::MultiBufferPool,
+    },
     client::builder::ClientBuilder,
-    message::{Protocol, QunetMessage},
-    protocol::DEFAULT_PORT,
-    transport::tcp::ClientTcpTransport,
+    database::QunetDatabase,
+    message::QunetMessage,
+    protocol::{DEFAULT_PORT, MAJOR_VERSION, UDP_PACKET_LIMIT},
+    transport::{
+        QunetTransport, QunetTransportKind, TransportError, compression::CompressionHandlerImpl,
+        quic::ClientQuicTransport, tcp::ClientTcpTransport, udp::ClientUdpTransport,
+    },
 };
 
 mod builder;
@@ -35,8 +42,10 @@ pub enum ConnectionType {
     Quic,
 }
 
-impl ConnectionType {
-    pub fn from_str(proto: &str) -> Result<ConnectionType, ConnectionError> {
+impl FromStr for ConnectionType {
+    type Err = ConnectionError;
+
+    fn from_str(proto: &str) -> Result<ConnectionType, ConnectionError> {
         match proto {
             "qunet" => Ok(ConnectionType::Qunet),
             "udp" => Ok(ConnectionType::Udp),
@@ -69,6 +78,12 @@ pub enum ConnectionError {
     DnsNoResults,
     #[error("All connection attempts failed")]
     AllAttemptsFailed,
+    #[error("Transport connection failed: {0}")]
+    TransportError(#[from] TransportError),
+    #[error("Timeout while trying to connect")]
+    Timeout,
+    #[error("Server sent an invalid QDB")]
+    InvalidQdb,
 }
 
 #[atomic_enum]
@@ -87,6 +102,7 @@ pub struct Client<H: EventHandler> {
     pub(crate) buffer_pool: Arc<MultiBufferPool>,
     conn_state: AtomicConnectionState,
     resolver: Option<Resolver<TokioConnectionProvider>>,
+    compressor: Mutex<CompressionHandlerImpl>,
 }
 
 impl Client<DefaultEventHandler> {
@@ -96,18 +112,25 @@ impl Client<DefaultEventHandler> {
 }
 
 impl<H: EventHandler> Client<H> {
-    type Handle = ClientHandle<H>;
-
     pub fn from_builder(mut builder: ClientBuilder<H>) -> Self {
         let event_handler =
             builder.event_handler.take().expect("Event handler must be set in the builder");
 
+        // init buffer pool
+        let mut buffer_pool = MultiBufferPool::new();
+        buffer_pool.add_pool(BufferPool::new(1024, 8, 256));
+        buffer_pool.add_pool(BufferPool::new(16384, 2, 64));
+
+        let buffer_pool = Arc::new(buffer_pool);
+        let compressor = CompressionHandlerImpl::new(buffer_pool.clone());
+
         Self {
             _builder: builder,
             event_handler,
-            buffer_pool: Arc::new(MultiBufferPool::new()),
+            buffer_pool,
             conn_state: ConnectionState::Disconnected.into(),
             resolver: None,
+            compressor: Mutex::new(compressor),
         }
     }
 
@@ -144,22 +167,26 @@ impl<H: EventHandler> Client<H> {
     /// Attempt to asynchronously connect to the server at the given URL.
     /// See qunet-cpp Connection class for the URL format.
     pub fn connect(self: ClientHandle<H>, url: &str) -> Result<(), ConnectionError> {
-        let proto = url.split("://").next().unwrap_or("qunet");
-        let proto = ConnectionType::from_str(proto)?;
+        let (proto, addr) = match url.split_once("://") {
+            Some((proto, addr)) => (proto, addr),
+            None => ("qunet", url), // default to qunet protocol if no protocol is specified
+        };
+
+        let proto = proto.parse()?;
 
         // remove trailing slashes
-        let url = url.trim_end_matches('/');
+        let addr = addr.trim_end_matches('/');
 
         // check if it's an IP+port / IP / domain+port / domain
-        if let Ok(addr) = url.parse::<SocketAddr>() {
+        if let Ok(addr) = addr.parse::<SocketAddr>() {
             self.connect_ip(addr, proto)
-        } else if let Ok(ip) = url.parse::<IpAddr>() {
+        } else if let Ok(ip) = addr.parse::<IpAddr>() {
             self.connect_ip(SocketAddr::new(ip, DEFAULT_PORT), proto)
-        } else if let Some((domain, port)) = url.split_once(':') {
+        } else if let Some((domain, port)) = addr.split_once(':') {
             let port = port.parse::<u16>().map_err(|_| ConnectionError::InvalidProtocol)?;
             self.connect_domain(domain, Some(port), proto)
         } else {
-            self.connect_domain(url, None, proto)
+            self.connect_domain(addr, None, proto)
         }
     }
 
@@ -171,10 +198,6 @@ impl<H: EventHandler> Client<H> {
         self.conn_state.store(state, Ordering::SeqCst);
     }
 
-    pub async fn run_main_loop(self: ClientHandle<H>) -> ClientOutcome {
-        ClientOutcome::GracefulShutdown
-    }
-
     pub fn connect_ip(
         self: ClientHandle<H>,
         addr: SocketAddr,
@@ -183,6 +206,18 @@ impl<H: EventHandler> Client<H> {
         if !self._swap_state(ConnectionState::Disconnected, ConnectionState::DnsResolving) {
             return Err(ConnectionError::InProgress);
         }
+
+        tokio::spawn(async move {
+            match self._dns_post_query(vec![addr], ty).await {
+                Ok(transport) => {
+                    self.main_loop_wrap(transport).await;
+                }
+
+                Err(e) => {
+                    warn!("Failed to connect to {addr}: {e}");
+                }
+            }
+        });
 
         Ok(())
     }
@@ -210,7 +245,7 @@ impl<H: EventHandler> Client<H> {
                 self._dns_fetch_ip_and_connect(&hostname, port, ty).await
             } else {
                 match self._dns_fetch_srv_and_connect(&hostname, ty).await {
-                    Ok(()) => Ok(()),
+                    Ok(transport) => Ok(transport),
                     Err(ConnectionError::DnsNoResults) => {
                         debug!("no results for {hostname} (SRV), trying A/AAAA records");
                         // fallback to A/AAAA records if SRV query fails
@@ -220,13 +255,48 @@ impl<H: EventHandler> Client<H> {
                 }
             };
 
-            if let Err(e) = res {
-                warn!("Failed to connect to {hostname}: {e}");
-                // TODO: post event handler stuff idk
-                self._set_state(ConnectionState::Disconnected);
+            match res {
+                Ok(transport) => {
+                    self.main_loop_wrap(transport).await;
+                }
+
+                Err(e) => {
+                    warn!("Failed to connect to {hostname}: {e}");
+                    // TODO: post event handler stuff idk
+                    self._set_state(ConnectionState::Disconnected);
+                }
             }
         });
 
+        Ok(())
+    }
+
+    async fn main_loop_wrap(self: ClientHandle<H>, transport: QunetTransport) {
+        assert_eq!(self.conn_state.load(Ordering::SeqCst), ConnectionState::Connected);
+
+        self.event_handler.on_connected(&*self).await;
+
+        match self.clone().main_loop(transport).await {
+            Ok(()) => {}
+
+            Err(ClientOutcome::GracefulShutdown) => {
+                debug!("Client main loop exited gracefully");
+            }
+
+            Err(e) => {
+                warn!("Client main loop exited with error: {e}");
+            }
+        }
+
+        self._set_state(ConnectionState::Disconnected);
+        self.event_handler.on_disconnected(&*self).await;
+    }
+
+    async fn main_loop(
+        self: ClientHandle<H>,
+        mut transport: QunetTransport,
+    ) -> Result<(), ClientOutcome> {
+        debug!("Entered main loop!");
         Ok(())
     }
 
@@ -235,7 +305,7 @@ impl<H: EventHandler> Client<H> {
         hostname: &str,
         port: u16,
         ty: ConnectionType,
-    ) -> Result<(), ConnectionError> {
+    ) -> Result<QunetTransport, ConnectionError> {
         let resolver = self.resolver.as_ref().unwrap();
 
         let res = resolver.lookup_ip(hostname).await?;
@@ -252,7 +322,7 @@ impl<H: EventHandler> Client<H> {
         &self,
         hostname: &str,
         ty: ConnectionType,
-    ) -> Result<(), ConnectionError> {
+    ) -> Result<QunetTransport, ConnectionError> {
         let resolver = self.resolver.as_ref().unwrap();
 
         let res = resolver.srv_lookup(hostname).await?;
@@ -280,7 +350,7 @@ impl<H: EventHandler> Client<H> {
         &self,
         addrs: Vec<SocketAddr>,
         ty: ConnectionType,
-    ) -> Result<(), ConnectionError> {
+    ) -> Result<QunetTransport, ConnectionError> {
         // if connection type is Qunet, we need to try and ping the addresses, otherwise connect directly
         if ty == ConnectionType::Qunet {
             self._ping_addrs(addrs).await
@@ -289,7 +359,10 @@ impl<H: EventHandler> Client<H> {
         }
     }
 
-    async fn _ping_addrs(&self, mut addrs: Vec<SocketAddr>) -> Result<(), ConnectionError> {
+    async fn _ping_addrs(
+        &self,
+        mut addrs: Vec<SocketAddr>,
+    ) -> Result<QunetTransport, ConnectionError> {
         // sort addresses by IP version, prefer IPv6 over IPv4
         addrs.sort_unstable_by_key(|addr| match addr.ip() {
             IpAddr::V6(_) => 0,
@@ -451,12 +524,14 @@ impl<H: EventHandler> Client<H> {
     async fn _try_connect_all(
         &self,
         conns: &[(SocketAddr, ConnectionType)],
-    ) -> Result<(), ConnectionError> {
+    ) -> Result<QunetTransport, ConnectionError> {
         self._set_state(ConnectionState::Connecting);
 
         for (addr, ty) in conns {
             match self._try_connect(*addr, *ty).await {
-                Ok(()) => {}
+                Ok(transport) => {
+                    return self._on_success_connect(transport);
+                }
 
                 Err(e) => {
                     warn!("Failed to connect to {addr} with protocol {ty:?}: {e}");
@@ -471,18 +546,109 @@ impl<H: EventHandler> Client<H> {
         &self,
         addr: SocketAddr,
         ty: ConnectionType,
-    ) -> Result<(), ConnectionError> {
+    ) -> Result<QunetTransport, ConnectionError> {
         let idle_timeout = Duration::from_secs(60);
 
         let fut = async move {
-            // match ty {
-            //     ConnectionType::Tcp => {
-            //         ClientTcpTransport::connect(addr, idle_timeout).await;
-            //     }
-            // }
+            let cert_dir = std::env::current_dir().unwrap().join("quic");
+
+            let kind = match ty {
+                ConnectionType::Tcp => {
+                    QunetTransportKind::Tcp(ClientTcpTransport::connect(addr, idle_timeout).await?)
+                }
+
+                ConnectionType::Quic => QunetTransportKind::Quic(
+                    ClientQuicTransport::connect(
+                        addr,
+                        "localhost",
+                        // TODO: allow configuring!!
+                        &cert_dir.join("ca.crt"),
+                        idle_timeout,
+                    )
+                    .await?,
+                ),
+
+                ConnectionType::Udp => {
+                    QunetTransportKind::Udp(ClientUdpTransport::connect(addr, idle_timeout).await?)
+                }
+
+                _ => unreachable!(),
+            };
+
+            let mut transport =
+                QunetTransport::new_client(kind, addr, MAJOR_VERSION, [0u8; 16], self);
+
+            transport
+                .send_message(
+                    QunetMessage::HandshakeStart {
+                        qunet_major: MAJOR_VERSION,
+                        frag_limit: UDP_PACKET_LIMIT as u16,
+                        qdb_hash: [0u8; 16],
+                    },
+                    false,
+                    &*self.compressor.lock().await,
+                )
+                .await?;
+
+            let msg = transport.receive_message().await?;
+
+            let (connection_id, qdb) = match msg {
+                QunetMessage::HandshakeFinishPartial { connection_id, qdb } => (connection_id, qdb),
+                _ => {
+                    return Err(TransportError::Other(format!(
+                        "Expected HandshakeFinishPartial message during handshake, got {}",
+                        msg.type_str()
+                    )));
+                }
+            };
+
+            transport.set_connection_id(connection_id);
+
+            Ok::<_, TransportError>((transport, qdb))
         };
 
-        Ok(())
+        // connect with a timeout
+        let (transport, qdb) = match tokio::time::timeout(Duration::from_secs(10), fut).await {
+            Ok(Ok((transport, qdb))) => (transport, qdb),
+            Ok(Err(e)) => return Err(ConnectionError::TransportError(e)),
+            Err(_) => return Err(ConnectionError::Timeout),
+        };
+
+        // parse and initialize qdb stuff
+        if let Some(qdb) = qdb {
+            // remember that the data is zstd compressed!
+            let mut data = Vec::with_capacity(qdb.uncompressed_size as usize);
+            if let Err(e) = zstd_safe::decompress(&mut data, &qdb.data) {
+                warn!("Failed to decompress QDB data: {}", zstd_safe::get_error_name(e));
+                return Err(ConnectionError::InvalidQdb);
+            }
+
+            let qdb = match QunetDatabase::decode(&mut &*data) {
+                Ok(qdb) => qdb,
+                Err(e) => {
+                    warn!("Failed to decode QDB data: {}", e);
+                    return Err(ConnectionError::InvalidQdb);
+                }
+            };
+
+            if let Some(dict) = qdb.zstd_dict {
+                let mut comp = self.compressor.lock().await;
+                comp.init_zstd_cdict(&dict, qdb.zstd_level);
+                comp.init_zstd_ddict(&dict);
+            }
+        };
+
+        // and it's done!
+
+        Ok(transport)
+    }
+
+    fn _on_success_connect(
+        &self,
+        transport: QunetTransport,
+    ) -> Result<QunetTransport, ConnectionError> {
+        self._set_state(ConnectionState::Connected);
+        Ok(transport)
     }
 }
 
@@ -493,12 +659,6 @@ pub struct ClientHandle<H: EventHandler> {
 impl<H: EventHandler> Clone for ClientHandle<H> {
     fn clone(&self) -> Self {
         Self { inner: Arc::clone(&self.inner) }
-    }
-}
-
-impl<H: EventHandler> ClientHandle<H> {
-    pub async fn run(self) -> ClientOutcome {
-        Client::run_main_loop(self.clone()).await
     }
 }
 

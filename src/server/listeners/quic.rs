@@ -107,7 +107,7 @@ impl<H: AppHandler> QuicServerListener<H> {
 
             match tokio::time::timeout(timeout, conn.wait_for_handshake()).await {
                 Ok(Ok(outcome)) => {
-                    let transport = QunetTransport::new(
+                    let transport = QunetTransport::new_server(
                         QunetTransportKind::Quic(ClientQuicTransport::new(
                             conn.conn,
                             outcome.stream,

@@ -23,7 +23,7 @@ pub struct ClientState<H: AppHandler> {
 }
 
 impl<H: AppHandler> ClientState<H> {
-    pub(crate) fn new(app_data: H::ClientData, transport: &QunetTransport<H>) -> Self {
+    pub(crate) fn new(app_data: H::ClientData, transport: &QunetTransport) -> Self {
         Self {
             app_data,
             connection_id: transport.connection_id(),

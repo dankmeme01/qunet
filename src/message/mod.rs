@@ -19,7 +19,6 @@ use crate::{
     buffers::{
         binary_writer::BinaryWriter,
         bits::Bits,
-        buffer_pool::BorrowedMutBuffer,
         byte_reader::{ByteReader, ByteReaderError},
         byte_writer::{ByteWriter, ByteWriterError},
         multi_buffer_pool::MultiBufferPool,
@@ -51,6 +50,8 @@ pub enum QunetMessageDecodeError {
     InvalidProtocol,
     #[error("Invalid error code in an error message: {0}")]
     InvalidErrorCode(u32),
+    #[error("QDB chunk is zero bytes")]
+    QdbChunkZeroBytes,
 }
 
 pub(crate) enum DataMessageKind {
@@ -103,6 +104,14 @@ impl PongProtocol {
     }
 }
 
+pub(crate) struct HandshakeQdbData {
+    pub uncompressed_size: u32,
+    pub full_size: u32,
+    pub chunk_offset: u32,
+    pub chunk_size: u32,
+    pub data: BufferKind,
+}
+
 pub(crate) enum QunetMessage {
     Ping {
         ping_id: u32,
@@ -128,6 +137,11 @@ pub(crate) enum QunetMessage {
         qunet_major: u16,
         frag_limit: u16,
         qdb_hash: [u8; 16],
+    },
+
+    HandshakeFinishPartial {
+        connection_id: u64,
+        qdb: Option<HandshakeQdbData>,
     },
 
     HandshakeFailure {
@@ -283,6 +297,35 @@ impl QunetMessage {
                         frag_limit,
                         qdb_hash,
                     })
+                }
+
+                MSG_HANDSHAKE_FINISH => {
+                    let connection_id = reader.read_u64()?;
+
+                    let qdb = if reader.read_bool()? {
+                        let uncompressed_size = reader.read_u32()?;
+                        let full_size = reader.read_u32()?;
+                        let chunk_offset = reader.read_u32()?;
+                        let chunk_size = reader.read_u32()? as usize;
+                        let data =
+                            Self::_fill_additional_data(chunk_size, buffer_pool, &mut reader)?;
+
+                        if let Some(data) = data {
+                            Some(HandshakeQdbData {
+                                uncompressed_size,
+                                full_size,
+                                chunk_offset,
+                                chunk_size: chunk_size as u32,
+                                data,
+                            })
+                        } else {
+                            return Err(QunetMessageDecodeError::QdbChunkZeroBytes);
+                        }
+                    } else {
+                        None
+                    };
+
+                    Ok(QunetMessage::HandshakeFinishPartial { connection_id, qdb })
                 }
 
                 MSG_CLIENT_CLOSE => {
@@ -502,6 +545,11 @@ impl QunetMessage {
         }
     }
 
+    #[inline]
+    pub fn is_handshake_start(&self) -> bool {
+        matches!(self, QunetMessage::HandshakeStart { .. })
+    }
+
     // Encodes a control message into the given writers. Panics if this is a `QunetMessage::Data` message.
     // The header writer must fit at least 8 bytes, and the body writer does not have a strict size limit.
     pub fn encode_control_msg<W: std::io::Write, W2: std::io::Write>(
@@ -540,6 +588,17 @@ impl QunetMessage {
                 } else {
                     body_writer.write_u16(0)?;
                 }
+            }
+
+            Self::HandshakeStart {
+                qunet_major,
+                frag_limit,
+                qdb_hash,
+            } => {
+                header_writer.write_u8(MSG_HANDSHAKE_START)?;
+                body_writer.write_u16(*qunet_major)?;
+                body_writer.write_u16(*frag_limit)?;
+                body_writer.write_bytes(qdb_hash)?;
             }
 
             Self::HandshakeFailure { error_code, reason } => {
@@ -663,6 +722,7 @@ impl QunetMessage {
             QunetMessage::Keepalive { .. } => "Keepalive",
             QunetMessage::KeepaliveResponse { .. } => "KeepaliveResponse",
             QunetMessage::HandshakeStart { .. } => "HandshakeStart",
+            QunetMessage::HandshakeFinishPartial { .. } => "HandshakeFinishPartial",
             QunetMessage::HandshakeFailure { .. } => "HandshakeFailure",
             QunetMessage::ClientClose { .. } => "ClientClose",
             QunetMessage::ServerClose { .. } => "ServerClose",

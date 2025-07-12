@@ -7,25 +7,24 @@ pub type HandlerResult<T> = Result<T, HandlerError>;
 pub trait EventHandler: Send + Sync + Sized + 'static {
     /// This callback is invoked before the initial setup phase of the client, right as `build()` or `run()` is called.
     /// Returning an error from this callback shuts down the entire client with `ClientOutcome::CustomError`
-    fn pre_setup(&self, server: &Client<Self>) -> impl Future<Output = HandlerResult<()>> + Send {
+    fn pre_setup(&self, client: &Client<Self>) -> impl Future<Output = HandlerResult<()>> + Send {
         async move { Ok(()) }
     }
 
     /// This callback is invoked after the initial setup phase of the client.
     /// Returning an error from this callback shuts down the entire client with `ClientOutcome::CustomError`
-    fn post_setup(&self, server: &Client<Self>) -> impl Future<Output = HandlerResult<()>> + Send {
+    fn post_setup(&self, client: &Client<Self>) -> impl Future<Output = HandlerResult<()>> + Send {
         async move { Ok(()) }
     }
 
-    /// This callback is invoked once the client is fully launched.
-    /// Returning an error from this callback shuts down the entire client with `ServerOutcome::CustomError`.
-    /// Unlike most of other callbacks, this callback gives you a `ServerHandle` which can be cloned and stored for later use.
-    /// This is where you can start establishing a connection.
-    fn on_launch(
-        &self,
-        server: ClientHandle<Self>,
-    ) -> impl Future<Output = HandlerResult<()>> + Send {
-        async move { Ok(()) }
+    /// This callback is invoked when the client successfully connects to a server.
+    fn on_connected(&self, client: &Client<Self>) -> impl Future<Output = ()> + Send {
+        async move {}
+    }
+
+    /// This callback is invoked when the client disconnects from a server, due to either a graceful shutdown or an error.
+    fn on_disconnected(&self, client: &Client<Self>) -> impl Future<Output = ()> + Send {
+        async move {}
     }
 }
 

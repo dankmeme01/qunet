@@ -27,11 +27,4 @@ impl<H: EventHandler> ClientBuilder<H> {
 
         Ok(ClientHandle { inner: Arc::new(client) })
     }
-
-    pub async fn run(self) -> ClientOutcome {
-        match self.build().await {
-            Ok(x) => x.run().await,
-            Err(o) => o,
-        }
-    }
 }

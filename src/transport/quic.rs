@@ -1,36 +1,42 @@
-use std::{marker::PhantomData, net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, path::Path, time::Duration};
 
 use crate::{
     message::QunetMessage,
-    server::app_handler::AppHandler,
     transport::{QuicError, QunetTransportData, TransportError},
 };
 use s2n_quic::{Client, client::Connect, stream::BidirectionalStream};
 
 use super::stream;
 
-pub(crate) struct ClientQuicTransport<H: AppHandler> {
+pub(crate) struct ClientQuicTransport {
     stream: BidirectionalStream,
     buffer: Vec<u8>,
     buffer_pos: usize,
-    _phantom: PhantomData<H>,
 }
 
-impl<H: AppHandler> ClientQuicTransport<H> {
+impl ClientQuicTransport {
     pub fn new(_conn: s2n_quic::Connection, stream: BidirectionalStream) -> Self {
         Self {
             stream,
             buffer: vec![0u8; 512], // TODO: see comment in ClientTcpTransport
             buffer_pos: 0,
-            _phantom: PhantomData,
         }
     }
 
     pub async fn connect(
         addr: SocketAddr,
         hostname: &str,
+        cert_path: &Path,
         timeout: Duration,
     ) -> Result<Self, QuicError> {
+        let tls = s2n_quic::provider::tls::rustls::Client::builder()
+            .with_certificate(cert_path)
+            .unwrap()
+            .with_application_protocols([&b"qunet1"[..], &b"h3"[..]].iter())
+            .unwrap()
+            .build()
+            .unwrap();
+
         let limits = s2n_quic::provider::limits::Limits::new()
             .with_max_idle_timeout(Duration::from_secs(60))
             .unwrap()
@@ -38,6 +44,8 @@ impl<H: AppHandler> ClientQuicTransport<H> {
             .unwrap();
 
         let client = Client::builder()
+            .with_tls(tls)
+            .unwrap()
             .with_limits(limits)
             .unwrap()
             .with_io(if addr.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" })?
@@ -64,7 +72,7 @@ impl<H: AppHandler> ClientQuicTransport<H> {
 
     pub async fn receive_message(
         &mut self,
-        transport_data: &QunetTransportData<H>,
+        transport_data: &QunetTransportData,
     ) -> Result<QunetMessage, TransportError> {
         stream::receive_message(
             &mut self.buffer,
@@ -77,7 +85,7 @@ impl<H: AppHandler> ClientQuicTransport<H> {
 
     pub async fn send_message(
         &mut self,
-        transport_data: &QunetTransportData<H>,
+        transport_data: &QunetTransportData,
         msg: QunetMessage,
     ) -> Result<(), TransportError> {
         match tokio::time::timeout(
@@ -93,7 +101,7 @@ impl<H: AppHandler> ClientQuicTransport<H> {
 
     pub async fn send_handshake_response(
         &mut self,
-        transport_data: &QunetTransportData<H>,
+        transport_data: &QunetTransportData,
         qdb_data: Option<&[u8]>,
         qdb_uncompressed_size: usize,
     ) -> Result<(), TransportError> {

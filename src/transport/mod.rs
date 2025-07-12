@@ -1,15 +1,18 @@
-use std::{net::SocketAddr, num::NonZeroU32, time::Duration};
+use std::{net::SocketAddr, num::NonZeroU32, sync::Arc, time::Duration};
 
 use thiserror::Error;
 
+#[cfg(feature = "client")]
+use crate::client::{Client, EventHandler};
 use crate::{
+    buffers::multi_buffer_pool::MultiBufferPool,
     message::{
         CompressionHeader, CompressionType, DataMessageKind, QunetMessage, QunetMessageDecodeError,
         channel,
     },
     protocol::QunetHandshakeError,
-    server::{ServerHandle, app_handler::AppHandler, client::ClientNotification},
-    transport::compression::{CompressError, DecompressError},
+    server::{Server, ServerHandle, app_handler::AppHandler, client::ClientNotification},
+    transport::compression::{CompressError, CompressionHandler, DecompressError},
 };
 
 use self::{
@@ -36,28 +39,28 @@ pub enum TransportType {
     Quic,
 }
 
-pub(crate) enum QunetTransportKind<H: AppHandler> {
-    Udp(ClientUdpTransport<H>),
-    Tcp(ClientTcpTransport<H>),
-    Quic(ClientQuicTransport<H>),
+pub(crate) enum QunetTransportKind {
+    Udp(ClientUdpTransport),
+    Tcp(ClientTcpTransport),
+    Quic(ClientQuicTransport),
 }
 
-pub(crate) struct QunetTransportData<H: AppHandler> {
+pub(crate) struct QunetTransportData {
     pub connection_id: u64,
     pub closed: bool,
     pub address: SocketAddr,
     pub qunet_major_version: u16,
     pub initial_qdb_hash: [u8; 16],
     pub message_size_limit: usize,
-    pub server: ServerHandle<H>,
+    pub buffer_pool: Arc<MultiBufferPool>,
 
     c_sockaddr_data: SocketAddrCRepr,
     c_sockaddr_len: libc::socklen_t,
 }
 
-pub(crate) struct QunetTransport<H: AppHandler> {
-    pub(crate) kind: QunetTransportKind<H>,
-    pub data: QunetTransportData<H>,
+pub(crate) struct QunetTransport {
+    pub(crate) kind: QunetTransportKind,
+    pub data: QunetTransportData,
     pub notif_chan: (channel::Sender<ClientNotification>, channel::Receiver<ClientNotification>),
 }
 
@@ -101,21 +104,61 @@ pub enum TransportError {
     QuicError(#[from] QuicError),
     #[error("Not implemented: {0}")]
     NotImplemented(&'static str),
+    #[error("{0}")]
+    Other(String),
 }
 
-impl<H: AppHandler> QunetTransportData<H> {
+impl QunetTransportData {
     pub fn c_sockaddr(&self) -> (&SocketAddrCRepr, libc::socklen_t) {
         (&self.c_sockaddr_data, self.c_sockaddr_len)
     }
 }
 
-impl<H: AppHandler> QunetTransport<H> {
-    pub fn new(
-        kind: QunetTransportKind<H>,
+impl QunetTransport {
+    pub fn new_server<H: AppHandler>(
+        kind: QunetTransportKind,
         address: SocketAddr,
         qunet_major_version: u16,
         initial_qdb_hash: [u8; 16],
         server: ServerHandle<H>,
+    ) -> Self {
+        Self::new(
+            kind,
+            address,
+            qunet_major_version,
+            initial_qdb_hash,
+            server.message_size_limit(),
+            server.buffer_pool.clone(),
+        )
+    }
+
+    #[cfg(feature = "client")]
+    pub fn new_client<H: EventHandler>(
+        kind: QunetTransportKind,
+        address: SocketAddr,
+        qunet_major_version: u16,
+        initial_qdb_hash: [u8; 16],
+        client: &Client<H>,
+    ) -> Self {
+        use crate::protocol::DEFAULT_MESSAGE_SIZE_LIMIT;
+
+        Self::new(
+            kind,
+            address,
+            qunet_major_version,
+            initial_qdb_hash,
+            DEFAULT_MESSAGE_SIZE_LIMIT,
+            client.buffer_pool.clone(),
+        )
+    }
+
+    pub fn new(
+        kind: QunetTransportKind,
+        address: SocketAddr,
+        qunet_major_version: u16,
+        initial_qdb_hash: [u8; 16],
+        message_size_limit: usize,
+        buffer_pool: Arc<MultiBufferPool>,
     ) -> Self {
         let (c_sockaddr_data, c_sockaddr_len) = socket_addr_to_c(&address);
 
@@ -127,8 +170,8 @@ impl<H: AppHandler> QunetTransport<H> {
                 closed: false,
                 qunet_major_version,
                 initial_qdb_hash,
-                message_size_limit: server.message_size_limit(),
-                server,
+                message_size_limit,
+                buffer_pool,
                 c_sockaddr_data,
                 c_sockaddr_len,
             },
@@ -191,18 +234,24 @@ impl<H: AppHandler> QunetTransport<H> {
     }
 
     #[inline]
-    pub async fn run_setup(&mut self) -> Result<(), TransportError> {
+    pub async fn run_server_setup<H: AppHandler>(
+        &mut self,
+        server: &Server<H>,
+    ) -> Result<(), TransportError> {
         match &mut self.kind {
-            QunetTransportKind::Udp(udp) => udp.run_setup(&self.data, &self.data.server).await,
+            QunetTransportKind::Udp(udp) => udp.run_server_setup(&self.data, server).await,
             QunetTransportKind::Tcp(tcp) => tcp.run_setup().await,
             QunetTransportKind::Quic(quic) => quic.run_setup().await,
         }
     }
 
     #[inline]
-    pub async fn run_cleanup(&mut self) -> Result<(), TransportError> {
+    pub async fn run_server_cleanup<H: AppHandler>(
+        &mut self,
+        server: &Server<H>,
+    ) -> Result<(), TransportError> {
         match &mut self.kind {
-            QunetTransportKind::Udp(udp) => udp.run_cleanup(&self.data, &self.data.server).await,
+            QunetTransportKind::Udp(udp) => udp.run_server_cleanup(&self.data, server).await,
             QunetTransportKind::Tcp(tcp) => tcp.run_cleanup().await,
             QunetTransportKind::Quic(quic) => quic.run_cleanup().await,
         }
@@ -235,24 +284,26 @@ impl<H: AppHandler> QunetTransport<H> {
         }
     }
 
-    pub async fn decompress_message(
+    pub async fn decompress_message<C: CompressionHandler>(
         &mut self,
         msg: QunetMessage,
+        ch: &C,
     ) -> Result<QunetMessage, TransportError> {
-        self.do_decompress_data_message(msg).await
+        self.do_decompress_data_message(msg, ch).await
     }
 
     #[inline]
-    pub async fn send_message(
+    pub async fn send_message<C: CompressionHandler>(
         &mut self,
         mut message: QunetMessage,
         reliable: bool,
+        ch: &C,
     ) -> Result<(), TransportError> {
         // Compress this message?
         if let QunetMessage::Data { .. } = &message
             && let Some(comp_type) = self.should_compress_data_message(&message)
         {
-            message = self.do_compress_data_message(message, comp_type).await?;
+            message = self.do_compress_data_message(message, comp_type, ch).await?;
         }
 
         match &mut self.kind {
@@ -264,14 +315,15 @@ impl<H: AppHandler> QunetTransport<H> {
 
     /// Shorthand for sending a handshake error message.
     #[inline]
-    pub async fn send_handshake_error(
+    pub async fn send_handshake_error<C: CompressionHandler>(
         &mut self,
         error_code: QunetHandshakeError,
         reason: Option<String>,
+        ch: &C,
     ) -> Result<(), TransportError> {
         let message = QunetMessage::HandshakeFailure { error_code, reason };
 
-        self.send_message(message, false).await
+        self.send_message(message, false, ch).await
     }
 
     #[inline]
@@ -295,10 +347,11 @@ impl<H: AppHandler> QunetTransport<H> {
         }
     }
 
-    async fn do_compress_data_message(
+    async fn do_compress_data_message<C: CompressionHandler>(
         &mut self,
         message: QunetMessage,
         comp_type: CompressionType,
+        ch: &C,
     ) -> Result<QunetMessage, TransportError> {
         let data_buf = message.data_bytes().expect("Non data message passed to compression check");
 
@@ -310,8 +363,8 @@ impl<H: AppHandler> QunetTransport<H> {
         };
 
         let compressed_buf = match comp_type {
-            CompressionType::Lz4 => self.data.server.compress_lz4_data(data_buf).await?,
-            CompressionType::Zstd => self.data.server.compress_zstd_data(data_buf).await?,
+            CompressionType::Lz4 => ch.compress_lz4(data_buf).await?,
+            CompressionType::Zstd => ch.compress_zstd(data_buf).await?,
         };
 
         let reliability = match message {
@@ -326,9 +379,10 @@ impl<H: AppHandler> QunetTransport<H> {
         })
     }
 
-    async fn do_decompress_data_message(
+    async fn do_decompress_data_message<C: CompressionHandler>(
         &mut self,
         message: QunetMessage,
+        ch: &C,
     ) -> Result<QunetMessage, TransportError> {
         let compression_header = match &message {
             QunetMessage::Data { compression, .. } => {
@@ -338,16 +392,11 @@ impl<H: AppHandler> QunetTransport<H> {
         };
 
         let data = message.data_bytes().unwrap();
+        let unc_size = compression_header.uncompressed_size.get() as usize;
 
         let buf = match compression_header.compression_type {
-            CompressionType::Zstd => {
-                self.data
-                    .server
-                    .decompress_zstd_data(data, compression_header.uncompressed_size.get() as usize)
-                    .await?
-            }
-
-            _ => todo!("lz4"),
+            CompressionType::Zstd => ch.decompress_zstd(data, unc_size).await?,
+            CompressionType::Lz4 => ch.decompress_lz4(data, unc_size).await?,
         };
 
         Ok(QunetMessage::Data {
@@ -357,8 +406,6 @@ impl<H: AppHandler> QunetTransport<H> {
         })
     }
 }
-
-impl<H: AppHandler> QunetTransportKind<H> {}
 
 // just a helper function
 

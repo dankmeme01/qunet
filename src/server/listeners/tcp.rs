@@ -58,7 +58,7 @@ impl<H: AppHandler> TcpServerListener<H> {
 
             match tokio::time::timeout(Duration::from_secs(30), conn.wait_for_handshake()).await {
                 Ok(Ok((qunet_major, qdb_hash))) => {
-                    let transport = QunetTransport::new(
+                    let transport = QunetTransport::new_server(
                         QunetTransportKind::Tcp(ClientTcpTransport::new(
                             conn.stream,
                             server._builder.listener_opts.idle_timeout,
