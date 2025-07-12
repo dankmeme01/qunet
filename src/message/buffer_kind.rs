@@ -22,6 +22,21 @@ pub enum BufferKind {
 }
 
 impl BufferKind {
+    pub fn new_small() -> Self {
+        BufferKind::Small {
+            buf: [0; QUNET_SMALL_MESSAGE_SIZE],
+            size: 0,
+        }
+    }
+
+    pub fn new_pooled(buf: BorrowedMutBuffer) -> Self {
+        BufferKind::Pooled { buf, pos: 0, size: 0 }
+    }
+
+    pub fn new_heap(cap: usize) -> Self {
+        BufferKind::Heap(Vec::with_capacity(cap))
+    }
+
     pub fn append_bytes(&mut self, data: &[u8]) -> bool {
         match self {
             BufferKind::Heap(buf) => {

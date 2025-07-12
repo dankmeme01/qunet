@@ -11,7 +11,7 @@ use crate::{
         builder::{ListenerOptions, TcpOptions},
         listeners::listener::{BindError, ListenerError, ServerListener},
     },
-    transport::{ClientTransport, ClientTransportKind, tcp::ClientTcpTransport},
+    transport::{QunetTransport, QunetTransportKind, tcp::ClientTcpTransport},
 };
 
 use super::stream;
@@ -58,8 +58,11 @@ impl<H: AppHandler> TcpServerListener<H> {
 
             match tokio::time::timeout(Duration::from_secs(30), conn.wait_for_handshake()).await {
                 Ok(Ok((qunet_major, qdb_hash))) => {
-                    let transport = ClientTransport::new(
-                        ClientTransportKind::Tcp(ClientTcpTransport::new(conn.stream, &server)),
+                    let transport = QunetTransport::new(
+                        QunetTransportKind::Tcp(ClientTcpTransport::new(
+                            conn.stream,
+                            server._builder.listener_opts.idle_timeout,
+                        )),
                         conn.addr,
                         qunet_major,
                         qdb_hash,

@@ -12,7 +12,7 @@ use crate::{
     message::QunetMessage,
     protocol::{HANDSHAKE_HEADER_SIZE_WITH_QDB, MSG_HANDSHAKE_FINISH},
     server::app_handler::AppHandler,
-    transport::{ClientTransportData, TransportError},
+    transport::{QunetTransportData, TransportError},
 };
 
 /// Blocks until a full message can be read from the stream, or an error occurs.
@@ -20,7 +20,7 @@ use crate::{
 pub async fn receive_message<S: AsyncReadExt + Unpin, H: AppHandler>(
     buffer: &mut Vec<u8>,
     buffer_pos: &mut usize,
-    transport_data: &ClientTransportData<H>,
+    transport_data: &QunetTransportData<H>,
     stream: &mut S,
 ) -> Result<QunetMessage, TransportError> {
     // TODO: maybe refactor this to add another position variable,
@@ -79,7 +79,7 @@ pub async fn receive_message<S: AsyncReadExt + Unpin, H: AppHandler>(
 /// Sends the handshake response message to the stream.
 pub async fn send_handshake_response<S: AsyncWriteExt + Unpin, H: AppHandler>(
     stream: &mut S,
-    transport_data: &ClientTransportData<H>,
+    transport_data: &QunetTransportData<H>,
     qdb_data: Option<&[u8]>,
     qdb_uncompressed_size: usize,
     conn_type: &str,
@@ -131,7 +131,7 @@ pub async fn send_handshake_response<S: AsyncWriteExt + Unpin, H: AppHandler>(
 /// Sends the given message to the stream.
 pub async fn send_message<S: AsyncWriteExt + Unpin, H: AppHandler>(
     _stream: &mut S,
-    transport_data: &ClientTransportData<H>,
+    transport_data: &QunetTransportData<H>,
     msg: &QunetMessage,
 ) -> Result<(), TransportError> {
     let mut header_buf = [0u8; 12];

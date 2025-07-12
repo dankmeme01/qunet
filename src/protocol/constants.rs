@@ -42,6 +42,8 @@ pub const PROTO_WEBSOCKET: u8 = 0x04;
 pub const MSG_ZSTD_COMPRESSION_LEVEL: i32 = 3;
 pub const QDB_ZSTD_COMPRESSION_LEVEL: i32 = 22;
 
+pub const DEFAULT_PORT: u16 = 4340;
+
 pub const UDP_PACKET_LIMIT: usize = 1400;
 pub const DEFAULT_MESSAGE_SIZE_LIMIT: usize = 1024 * 1024; // 1 MiB limit for incoming messages
 

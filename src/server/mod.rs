@@ -38,7 +38,7 @@ use crate::{
             udp::UdpServerListener,
         },
     },
-    transport::{ClientTransport, TransportError, TransportType},
+    transport::{QunetTransport, TransportError, TransportType, compression},
 };
 
 pub mod app_handler;
@@ -77,13 +77,6 @@ pub enum AcceptError {
         client: u16,
         server: u16,
     },
-}
-
-// Spooky scary stuff
-
-thread_local! {
-    static ZSTD_CCTX: RefCell<CCtx<'static>> = RefCell::new(CCtx::create());
-    static ZSTD_DCTX: RefCell<DCtx<'static>> = RefCell::new(DCtx::create());
 }
 
 pub struct Server<H: AppHandler> {
@@ -339,7 +332,7 @@ impl<H: AppHandler> Server<H> {
 
     pub(crate) async fn accept_connection(
         self: ServerHandle<H>,
-        mut transport: ClientTransport<H>,
+        mut transport: QunetTransport<H>,
     ) {
         // spawn a new task for the connection
         tokio::spawn(async move {
@@ -461,7 +454,7 @@ impl<H: AppHandler> Server<H> {
 
     async fn send_handshake_error(
         &self,
-        transport: &mut ClientTransport<H>,
+        transport: &mut QunetTransport<H>,
         error: QunetHandshakeError,
     ) {
         assert!(error != QunetHandshakeError::Custom);
@@ -515,7 +508,7 @@ impl<H: AppHandler> Server<H> {
 
     async fn client_handler(
         &self,
-        transport: &mut ClientTransport<H>,
+        transport: &mut QunetTransport<H>,
         client: Arc<ClientState<H>>,
         send_qdb: bool,
     ) -> Result<(), TransportError> {
@@ -605,7 +598,7 @@ impl<H: AppHandler> Server<H> {
 
     fn on_client_error(
         &self,
-        transport: &ClientTransport<H>,
+        transport: &QunetTransport<H>,
         err: &TransportError,
     ) -> ErrorOutcome {
         match err {
@@ -645,8 +638,8 @@ impl<H: AppHandler> Server<H> {
             | TransportError::TooManyPendingFragments => ErrorOutcome::Terminate,
 
             // Errors that indicate a bug in the server
-            TransportError::CompressionLz4Error(_) | TransportError::CompressionZstdError(_) => {
-                warn!("[{}] Error compressing message: {}", transport.address(), err);
+            TransportError::CompressionError(e) => {
+                warn!("[{}] Error compressing message: {e}", transport.address());
                 ErrorOutcome::Ignore
             }
 
@@ -661,7 +654,7 @@ impl<H: AppHandler> Server<H> {
     #[inline]
     async fn handle_client_message(
         &self,
-        transport: &mut ClientTransport<H>,
+        transport: &mut QunetTransport<H>,
         client: &ClientState<H>,
         msg: &QunetMessage,
     ) -> Result<(), TransportError> {
@@ -785,7 +778,7 @@ impl<H: AppHandler> Server<H> {
     #[inline]
     async fn cleanup_connection(
         &self,
-        transport: &mut ClientTransport<H>,
+        transport: &mut QunetTransport<H>,
         client: Arc<ClientState<H>>,
     ) -> Result<(), TransportError> {
         self.app_handler.on_client_disconnect(self, &client).await;
@@ -831,10 +824,10 @@ impl<H: AppHandler> Server<H> {
 
     pub(crate) async fn get_new_buffer(&self, size: usize) -> BufferKind {
         match self.buffer_pool.get(size).await {
-            Some(buf) => BufferKind::Pooled { buf, pos: 0, size: 0 },
+            Some(buf) => BufferKind::new_pooled(buf),
 
             // fallback for very large needs
-            None => BufferKind::Heap(Vec::with_capacity(size)),
+            None => BufferKind::new_heap(size),
         }
     }
 
@@ -869,7 +862,7 @@ impl<H: AppHandler> Server<H> {
         &self,
         data: &[u8],
     ) -> Result<BufferKind, TransportError> {
-        let needed_len = zstd_safe::compress_bound(data.len());
+        let needed_len = compression::zstd_compress_bound(data.len());
 
         let mut buf = self.get_new_buffer(needed_len).await;
 
@@ -883,24 +876,11 @@ impl<H: AppHandler> Server<H> {
             needed_len
         );
 
-        let result = ZSTD_CCTX.with(|cctx| {
-            let mut ctx = cctx.borrow_mut();
+        let written = compression::zstd_compress(data, output, self.qdb_zstd_cdict.as_ref())?;
 
-            if let Some(dict) = self.qdb_zstd_cdict.as_ref() {
-                ctx.compress_using_cdict(output, data, dict)
-            } else {
-                ctx.compress(output, data, MSG_ZSTD_COMPRESSION_LEVEL)
-            }
-        });
-
-        match result {
-            Ok(size) => {
-                // safety: zstd guarantees that exactly `size` bytes are written to the output buffer
-                unsafe { Self::set_buffer_kind_len(&mut buf, size) };
-                Ok(buf)
-            }
-            Err(e) => Err(TransportError::CompressionZstdError(zstd_safe::get_error_name(e))),
-        }
+        // safety: zstd guarantees that exactly `size` bytes are written to the output buffer
+        unsafe { Self::set_buffer_kind_len(&mut buf, written) };
+        Ok(buf)
     }
 
     pub(crate) async fn decompress_zstd_data(
@@ -920,24 +900,11 @@ impl<H: AppHandler> Server<H> {
             uncompressed_size
         );
 
-        let result = ZSTD_DCTX.with(|dctx| {
-            let mut ctx = dctx.borrow_mut();
+        let written = compression::zstd_decompress(data, output, self.qdb_zstd_ddict.as_ref())?;
 
-            if let Some(dict) = self.qdb_zstd_ddict.as_ref() {
-                ctx.decompress_using_ddict(output, data, dict)
-            } else {
-                ctx.decompress(output, data)
-            }
-        });
-
-        match result {
-            Ok(size) => {
-                // safety: zstd guarantees that exactly `size` bytes are written to the output buffer
-                unsafe { Self::set_buffer_kind_len(&mut buf, size) };
-                Ok(buf)
-            }
-            Err(_) => Err(TransportError::DecompressionError),
-        }
+        // safety: zstd guarantees that exactly `size` bytes are written to the output buffer
+        unsafe { Self::set_buffer_kind_len(&mut buf, written) };
+        Ok(buf)
     }
 
     pub(crate) async fn compress_lz4_data(
@@ -958,7 +925,7 @@ impl<H: AppHandler> Server<H> {
             needed_len
         );
 
-        let written = lz4_flex::compress_into(data, output)?;
+        let written = compression::lz4_compress(data, output)?;
 
         // safety: lz4 guarantees that exactly `size` bytes are written to the output buffer
         unsafe { Self::set_buffer_kind_len(&mut buf, written) };
@@ -968,7 +935,7 @@ impl<H: AppHandler> Server<H> {
 
     // Public API for the application (sending packets, etc.)
 
-    pub async fn schedule<F, Fut>(self: ServerHandle<H>, interval: Duration, mut f: F)
+    pub fn schedule<F, Fut>(self: ServerHandle<H>, interval: Duration, mut f: F)
     where
         F: FnMut(&Server<H>) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
@@ -988,10 +955,7 @@ impl<H: AppHandler> Server<H> {
 
     pub async fn request_buffer(&self, size: usize) -> BufferKind {
         if size <= QUNET_SMALL_MESSAGE_SIZE {
-            BufferKind::Small {
-                buf: [0; QUNET_SMALL_MESSAGE_SIZE],
-                size: 0,
-            }
+            BufferKind::new_small()
         } else {
             self.get_new_buffer(size).await
         }
@@ -999,14 +963,12 @@ impl<H: AppHandler> Server<H> {
 }
 
 pub struct ServerHandle<H: AppHandler> {
-    server: Arc<Server<H>>,
+    inner: Arc<Server<H>>,
 }
 
 impl<H: AppHandler> Clone for ServerHandle<H> {
     fn clone(&self) -> Self {
-        ServerHandle {
-            server: Arc::clone(&self.server),
-        }
+        Self { inner: Arc::clone(&self.inner) }
     }
 }
 
@@ -1020,6 +982,6 @@ impl<H: AppHandler> Deref for ServerHandle<H> {
     type Target = Server<H>;
 
     fn deref(&self) -> &Self::Target {
-        &self.server
+        &self.inner
     }
 }

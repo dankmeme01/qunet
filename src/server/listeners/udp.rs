@@ -15,7 +15,7 @@ use crate::{
         builder::{ListenerOptions, MemoryUsageOptions, UdpDiscoveryMode, UdpOptions},
         listeners::listener::{BindError, ListenerError, ServerListener},
     },
-    transport::{ClientTransport, ClientTransportKind, udp::ClientUdpTransport},
+    transport::{QunetTransport, QunetTransportKind, udp::ClientUdpTransport},
 };
 
 struct OneListener {
@@ -47,6 +47,11 @@ pub(crate) async fn make_socket(
 
     if let Some(size) = recv_buffer_size {
         socket.set_recv_buffer_size(size)?;
+    }
+
+    // disable IPV6_V6ONLY
+    if address.is_ipv6() {
+        socket.set_only_v6(false)?;
     }
 
     socket.set_nonblocking(true)?;
@@ -257,16 +262,22 @@ impl<H: AppHandler> UdpServerListener<H> {
         let mut protocol_count = 0;
         writer.write_u8(0);
 
-        // write the protocols
+        // write the protocols, in order of preference: tcp > quic > udp
 
-        if let Some(listener) = &server.udp_listener {
-            writer.write_u8(PROTO_UDP);
+        if let Some(listener) = &server.tcp_listener {
+            writer.write_u8(PROTO_TCP);
             writer.write_u16(listener.port());
             protocol_count += 1;
         }
 
-        if let Some(listener) = &server.tcp_listener {
-            writer.write_u8(PROTO_TCP);
+        if let Some(listener) = &server.quic_listener {
+            writer.write_u8(PROTO_QUIC);
+            writer.write_u16(listener.port());
+            protocol_count += 1;
+        }
+
+        if let Some(listener) = &server.udp_listener {
+            writer.write_u8(PROTO_UDP);
             writer.write_u16(listener.port());
             protocol_count += 1;
         }
@@ -316,8 +327,12 @@ impl<H: AppHandler> UdpServerListener<H> {
 
         frag_limit = frag_limit.clamp(1000, UDP_PACKET_LIMIT as u16);
 
-        let transport = ClientTransport::new(
-            ClientTransportKind::Udp(ClientUdpTransport::new(socket, frag_limit as usize, server)),
+        let transport = QunetTransport::new(
+            QunetTransportKind::Udp(ClientUdpTransport::new(
+                socket,
+                frag_limit as usize,
+                server._builder.listener_opts.idle_timeout,
+            )),
             peer,
             major_version,
             qdb_hash,

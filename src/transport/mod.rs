@@ -9,6 +9,7 @@ use crate::{
     },
     protocol::QunetHandshakeError,
     server::{ServerHandle, app_handler::AppHandler, client::ClientNotification},
+    transport::compression::{CompressError, DecompressError},
 };
 
 use self::{
@@ -18,8 +19,9 @@ use self::{
     udp::ClientUdpTransport,
 };
 
-pub use udp_misc::*;
+pub(crate) use udp_misc::*;
 
+pub mod compression;
 pub mod lowlevel;
 pub mod quic;
 mod stream;
@@ -34,13 +36,13 @@ pub enum TransportType {
     Quic,
 }
 
-pub(crate) enum ClientTransportKind<H: AppHandler> {
+pub(crate) enum QunetTransportKind<H: AppHandler> {
     Udp(ClientUdpTransport<H>),
     Tcp(ClientTcpTransport<H>),
     Quic(ClientQuicTransport<H>),
 }
 
-pub(crate) struct ClientTransportData<H: AppHandler> {
+pub(crate) struct QunetTransportData<H: AppHandler> {
     pub connection_id: u64,
     pub closed: bool,
     pub address: SocketAddr,
@@ -53,10 +55,20 @@ pub(crate) struct ClientTransportData<H: AppHandler> {
     c_sockaddr_len: libc::socklen_t,
 }
 
-pub(crate) struct ClientTransport<H: AppHandler> {
-    pub(crate) kind: ClientTransportKind<H>,
-    pub data: ClientTransportData<H>,
+pub(crate) struct QunetTransport<H: AppHandler> {
+    pub(crate) kind: QunetTransportKind<H>,
+    pub data: QunetTransportData<H>,
     pub notif_chan: (channel::Sender<ClientNotification>, channel::Receiver<ClientNotification>),
+}
+
+#[derive(Debug, Error)]
+pub enum QuicError {
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+    #[error("Failed to start client: {0}")]
+    ClientStartError(#[from] s2n_quic::provider::StartError),
+    #[error("Connection error: {0}")]
+    ConnectionError(#[from] s2n_quic::connection::Error),
 }
 
 #[derive(Debug, Error)]
@@ -75,29 +87,31 @@ pub enum TransportError {
     DecodeError(#[from] QunetMessageDecodeError),
     #[error("Message channel was closed")]
     MessageChannelClosed,
-    #[error("Failed to compress data with lz4: {0}")]
-    CompressionLz4Error(#[from] lz4_flex::block::CompressError),
-    #[error("Failed to compress data with zstd: {0}")]
-    CompressionZstdError(&'static str),
-    #[error("Failed to decompress data")]
-    DecompressionError,
+    #[error("Failed to compress data: {0}")]
+    CompressionError(#[from] CompressError),
+    #[error("Failed to decompress data: {0}")]
+    DecompressionError(#[from] DecompressError),
     #[error("Remote is too unreliable, way too many lost messages")]
     TooUnreliable,
     #[error("Too many pending fragmented messages")]
     TooManyPendingFragments,
     #[error("Error defragmenting message")]
     DefragmentationError,
+    #[error("QUIC error: {0}")]
+    QuicError(#[from] QuicError),
+    #[error("Not implemented: {0}")]
+    NotImplemented(&'static str),
 }
 
-impl<H: AppHandler> ClientTransportData<H> {
+impl<H: AppHandler> QunetTransportData<H> {
     pub fn c_sockaddr(&self) -> (&SocketAddrCRepr, libc::socklen_t) {
         (&self.c_sockaddr_data, self.c_sockaddr_len)
     }
 }
 
-impl<H: AppHandler> ClientTransport<H> {
+impl<H: AppHandler> QunetTransport<H> {
     pub fn new(
-        kind: ClientTransportKind<H>,
+        kind: QunetTransportKind<H>,
         address: SocketAddr,
         qunet_major_version: u16,
         initial_qdb_hash: [u8; 16],
@@ -107,7 +121,7 @@ impl<H: AppHandler> ClientTransport<H> {
 
         Self {
             kind,
-            data: ClientTransportData {
+            data: QunetTransportData {
                 address,
                 connection_id: 0,
                 closed: false,
@@ -125,18 +139,18 @@ impl<H: AppHandler> ClientTransport<H> {
     #[inline]
     pub fn kind_str(&self) -> &'static str {
         match &self.kind {
-            ClientTransportKind::Udp(_) => "UDP",
-            ClientTransportKind::Tcp(_) => "TCP",
-            ClientTransportKind::Quic(_) => "QUIC",
+            QunetTransportKind::Udp(_) => "UDP",
+            QunetTransportKind::Tcp(_) => "TCP",
+            QunetTransportKind::Quic(_) => "QUIC",
         }
     }
 
     #[inline]
     pub fn transport_type(&self) -> TransportType {
         match &self.kind {
-            ClientTransportKind::Udp(_) => TransportType::Udp,
-            ClientTransportKind::Tcp(_) => TransportType::Tcp,
-            ClientTransportKind::Quic(_) => TransportType::Quic,
+            QunetTransportKind::Udp(_) => TransportType::Udp,
+            QunetTransportKind::Tcp(_) => TransportType::Tcp,
+            QunetTransportKind::Quic(_) => TransportType::Quic,
         }
     }
 
@@ -162,15 +176,15 @@ impl<H: AppHandler> ClientTransport<H> {
         qdb_uncompressed_size: usize,
     ) -> Result<(), TransportError> {
         match &mut self.kind {
-            ClientTransportKind::Udp(udp) => {
+            QunetTransportKind::Udp(udp) => {
                 udp.send_handshake_response(&self.data, qdb_data, qdb_uncompressed_size).await
             }
 
-            ClientTransportKind::Tcp(tcp) => {
+            QunetTransportKind::Tcp(tcp) => {
                 tcp.send_handshake_response(&self.data, qdb_data, qdb_uncompressed_size).await
             }
 
-            ClientTransportKind::Quic(quic) => {
+            QunetTransportKind::Quic(quic) => {
                 quic.send_handshake_response(&self.data, qdb_data, qdb_uncompressed_size).await
             }
         }
@@ -179,35 +193,35 @@ impl<H: AppHandler> ClientTransport<H> {
     #[inline]
     pub async fn run_setup(&mut self) -> Result<(), TransportError> {
         match &mut self.kind {
-            ClientTransportKind::Udp(udp) => udp.run_setup(&self.data, &self.data.server).await,
-            ClientTransportKind::Tcp(tcp) => tcp.run_setup().await,
-            ClientTransportKind::Quic(quic) => quic.run_setup().await,
+            QunetTransportKind::Udp(udp) => udp.run_setup(&self.data, &self.data.server).await,
+            QunetTransportKind::Tcp(tcp) => tcp.run_setup().await,
+            QunetTransportKind::Quic(quic) => quic.run_setup().await,
         }
     }
 
     #[inline]
     pub async fn run_cleanup(&mut self) -> Result<(), TransportError> {
         match &mut self.kind {
-            ClientTransportKind::Udp(udp) => udp.run_cleanup(&self.data, &self.data.server).await,
-            ClientTransportKind::Tcp(tcp) => tcp.run_cleanup().await,
-            ClientTransportKind::Quic(quic) => quic.run_cleanup().await,
+            QunetTransportKind::Udp(udp) => udp.run_cleanup(&self.data, &self.data.server).await,
+            QunetTransportKind::Tcp(tcp) => tcp.run_cleanup().await,
+            QunetTransportKind::Quic(quic) => quic.run_cleanup().await,
         }
     }
 
     #[inline]
     pub async fn receive_message(&mut self) -> Result<QunetMessage, TransportError> {
         match &mut self.kind {
-            ClientTransportKind::Udp(udp) => udp.receive_message(&self.data).await,
-            ClientTransportKind::Tcp(tcp) => tcp.receive_message(&self.data).await,
-            ClientTransportKind::Quic(quic) => quic.receive_message(&self.data).await,
+            QunetTransportKind::Udp(udp) => udp.receive_message(&self.data).await,
+            QunetTransportKind::Tcp(tcp) => tcp.receive_message(&self.data).await,
+            QunetTransportKind::Quic(quic) => quic.receive_message(&self.data).await,
         }
     }
 
     #[inline]
     pub fn until_timer_expiry(&self) -> Option<Duration> {
         match &self.kind {
-            ClientTransportKind::Udp(udp) => Some(udp.until_timer_expiry()),
-            ClientTransportKind::Tcp(tcp) => Some(tcp.until_timer_expiry()),
+            QunetTransportKind::Udp(udp) => Some(udp.until_timer_expiry()),
+            QunetTransportKind::Tcp(tcp) => Some(tcp.until_timer_expiry()),
             _ => None,
         }
     }
@@ -215,8 +229,8 @@ impl<H: AppHandler> ClientTransport<H> {
     #[inline]
     pub async fn handle_timer_expiry(&mut self) -> Result<(), TransportError> {
         match &mut self.kind {
-            ClientTransportKind::Udp(udp) => udp.handle_timer_expiry(&mut self.data).await,
-            ClientTransportKind::Tcp(tcp) => tcp.handle_timer_expiry(&mut self.data),
+            QunetTransportKind::Udp(udp) => udp.handle_timer_expiry(&mut self.data).await,
+            QunetTransportKind::Tcp(tcp) => tcp.handle_timer_expiry(&mut self.data),
             _ => Ok(()),
         }
     }
@@ -242,9 +256,9 @@ impl<H: AppHandler> ClientTransport<H> {
         }
 
         match &mut self.kind {
-            ClientTransportKind::Udp(udp) => udp.send_message(&self.data, message, reliable).await,
-            ClientTransportKind::Tcp(tcp) => tcp.send_message(&self.data, message).await,
-            ClientTransportKind::Quic(quic) => quic.send_message(&self.data, message).await,
+            QunetTransportKind::Udp(udp) => udp.send_message(&self.data, message, reliable).await,
+            QunetTransportKind::Tcp(tcp) => tcp.send_message(&self.data, message).await,
+            QunetTransportKind::Quic(quic) => quic.send_message(&self.data, message).await,
         }
     }
 
@@ -344,7 +358,7 @@ impl<H: AppHandler> ClientTransport<H> {
     }
 }
 
-impl<H: AppHandler> ClientTransportKind<H> {}
+impl<H: AppHandler> QunetTransportKind<H> {}
 
 // just a helper function
 

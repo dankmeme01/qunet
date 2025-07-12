@@ -150,9 +150,9 @@ impl FragmentStore {
         }
 
         let mut data = match buffer_pool.get_busy_loop(total_size) {
-            Some(buf) => BufferKind::Pooled { buf, pos: 0, size: 0 },
+            Some(buf) => BufferKind::new_pooled(buf),
 
-            None => BufferKind::Heap(Vec::with_capacity(total_size)),
+            None => BufferKind::new_heap(total_size),
         };
 
         for frag in &message.fragments {

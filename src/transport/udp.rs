@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{io::IoSlice, marker::PhantomData};
@@ -12,7 +13,7 @@ use crate::{
     },
     protocol::*,
     server::{Server, app_handler::AppHandler},
-    transport::{ClientTransportData, FragmentStore, TransportError},
+    transport::{FragmentStore, QunetTransportData, TransportError},
 };
 
 use super::udp_misc::ReliableStore;
@@ -32,23 +33,32 @@ pub(crate) struct ClientUdpTransport<H> {
 }
 
 impl<H: AppHandler> ClientUdpTransport<H> {
-    pub fn new(socket: Arc<UdpSocket>, mtu: usize, server: &Server<H>) -> Self {
+    pub fn new(socket: Arc<UdpSocket>, mtu: usize, idle_timeout: Duration) -> Self {
         Self {
             socket,
             mtu,
             receiver: None,
             rel_store: ReliableStore::new(),
             frag_store: FragmentStore::new(),
-            idle_timeout: server._builder.listener_opts.idle_timeout,
+            idle_timeout,
             last_data_exchange: Instant::now(),
             _phantom: PhantomData,
         }
     }
 
+    pub async fn connect(
+        _addr: SocketAddr,
+        _idle_timeout: Duration,
+    ) -> Result<Self, TransportError> {
+        Err(TransportError::NotImplemented(
+            "UDP transport currently cannot be used for client connections",
+        ))
+    }
+
     #[inline]
     pub async fn run_setup(
         &mut self,
-        transport_data: &ClientTransportData<H>,
+        transport_data: &QunetTransportData<H>,
         server: &Server<H>,
     ) -> Result<(), TransportError> {
         self.receiver = Some(server.create_udp_route(transport_data.connection_id));
@@ -58,7 +68,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
     #[inline]
     pub async fn run_cleanup(
         &mut self,
-        transport_data: &ClientTransportData<H>,
+        transport_data: &QunetTransportData<H>,
         server: &Server<H>,
     ) -> Result<(), TransportError> {
         server.remove_udp_route(transport_data.connection_id);
@@ -80,7 +90,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
     #[inline]
     pub async fn receive_message(
         &mut self,
-        transport_data: &ClientTransportData<H>,
+        transport_data: &QunetTransportData<H>,
     ) -> Result<QunetMessage, TransportError> {
         if let Some(msg) = self.rel_store.pop_delayed_message() {
             // we have a delayed message, return it
@@ -97,7 +107,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
 
     async fn process_incoming(
         &mut self,
-        transport_data: &ClientTransportData<H>,
+        transport_data: &QunetTransportData<H>,
     ) -> Result<Option<QunetMessage>, TransportError> {
         let raw_msg = match &self.receiver {
             Some(r) => match r.recv().await {
@@ -158,7 +168,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
 
     pub async fn send_message(
         &mut self,
-        transport_data: &ClientTransportData<H>,
+        transport_data: &QunetTransportData<H>,
         mut msg: QunetMessage,
         reliable: bool,
     ) -> Result<(), TransportError> {
@@ -207,7 +217,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
     async fn do_send_prefrag_data(
         &mut self,
         message: QunetMessage,
-        transport_data: &ClientTransportData<H>,
+        transport_data: &QunetTransportData<H>,
     ) -> Result<Option<QunetMessage>, TransportError> {
         let is_reliable = message.is_reliable_message();
         let data = message.data_bytes().expect("non-data message");
@@ -242,7 +252,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
     async fn do_send_prefrag_retrans_data(
         &self,
         message: &QunetMessage,
-        transport_data: &ClientTransportData<H>,
+        transport_data: &QunetTransportData<H>,
     ) -> Result<(), TransportError> {
         let data = message.data_bytes().expect("non-data message");
 
@@ -266,7 +276,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
     async fn do_send_unfrag_data(
         &self,
         message: &QunetMessage,
-        transport_data: &ClientTransportData<H>,
+        transport_data: &QunetTransportData<H>,
     ) -> Result<(), TransportError> {
         let mut header_buf = [0u8; MAX_HEADER_SIZE];
         let mut header_writer = ByteWriter::new(&mut header_buf);
@@ -286,7 +296,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
     async fn do_fragment_and_send(
         &self,
         message: &QunetMessage,
-        transport_data: &ClientTransportData<H>,
+        transport_data: &QunetTransportData<H>,
     ) -> Result<(), TransportError> {
         // TODO: rewrite a linux-only version of this function that uses sendmmsg, potentially use some static vec for that in Server?
 
@@ -344,7 +354,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
 
     pub async fn handle_timer_expiry(
         &mut self,
-        transport_data: &mut ClientTransportData<H>,
+        transport_data: &mut QunetTransportData<H>,
     ) -> Result<(), TransportError> {
         // if there's been no activity for a while, close the connection
         if self.last_data_exchange.elapsed() >= self.idle_timeout {
@@ -370,9 +380,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
             debug_assert!(!header.acks.is_empty(), "Urgent outgoing acks should not be empty");
 
             let msg = QunetMessage::Data {
-                kind: DataMessageKind::Regular {
-                    data: BufferKind::Heap(Vec::new()),
-                },
+                kind: DataMessageKind::Regular { data: BufferKind::new_heap(0) },
                 reliability: Some(header),
                 compression: None,
             };
@@ -385,7 +393,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
 
     pub async fn send_handshake_response(
         &self,
-        transport_data: &ClientTransportData<H>,
+        transport_data: &QunetTransportData<H>,
         qdb_data: Option<&[u8]>,
         qdb_uncompressed_size: usize,
     ) -> Result<(), TransportError> {
@@ -448,7 +456,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
         header_writer: &mut ByteWriter<'_>,
         data: &[u8],
         chunk_size: usize,
-        transport_data: &ClientTransportData<H>,
+        transport_data: &QunetTransportData<H>,
     ) -> Result<(), TransportError> {
         // TODO: rewrite a linux-only version of this function that uses sendmmsg, potentially use some static vec for that in Server?
 
@@ -486,7 +494,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
     async fn send_packet(
         &self,
         data: &[u8],
-        transport_data: &ClientTransportData<H>,
+        transport_data: &QunetTransportData<H>,
     ) -> Result<(), TransportError> {
         let _ = self.socket.send_to(data, transport_data.address).await?;
 
@@ -497,7 +505,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
     async fn send_packet_vectored(
         &self,
         data: &mut [IoSlice<'_>],
-        transport_data: &ClientTransportData<H>,
+        transport_data: &QunetTransportData<H>,
     ) -> Result<(), TransportError> {
         use std::os::fd::AsRawFd;
         use tokio::io::Interest;
@@ -540,7 +548,7 @@ impl<H: AppHandler> ClientUdpTransport<H> {
     async fn send_packet_vectored(
         &self,
         data: &mut [IoSlice<'_>],
-        transport_data: &ClientTransportData<H>,
+        transport_data: &QunetTransportData<H>,
     ) -> Result<(), TransportError> {
         let total_len: usize = data.iter().map(|slice| slice.len()).sum();
         debug_assert!(total_len <= self.mtu, "Data exceeds MTU size");

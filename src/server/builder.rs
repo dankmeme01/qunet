@@ -214,19 +214,21 @@ impl<H: AppHandler> ServerBuilder<H> {
         }
     }
 
-    pub fn build(self) -> Server<H> {
+    pub fn build_raw(self) -> Server<H> {
         Server::<H>::from_builder(self)
     }
 
+    pub async fn build(self) -> Result<ServerHandle<H>, ServerOutcome> {
+        let mut server = self.build_raw();
+        server.setup().await?;
+
+        Ok(ServerHandle { inner: Arc::new(server) })
+    }
+
     pub async fn run(self) -> ServerOutcome {
-        let mut server = self.build();
-
-        if let Err(o) = server.setup().await {
-            return o;
+        match self.build().await {
+            Ok(x) => x.run().await,
+            Err(o) => o,
         }
-
-        let handle = ServerHandle { server: Arc::new(server) };
-
-        handle.run().await
     }
 }

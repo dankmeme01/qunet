@@ -8,6 +8,7 @@ pub(crate) use meta::{
     CompressionHeader, CompressionType, FragmentationHeader, QunetMessageBareMeta,
     QunetMessageMeta, ReliabilityHeader,
 };
+use num_derive::{FromPrimitive, ToPrimitive};
 pub use raw::{QUNET_SMALL_MESSAGE_SIZE, QunetRawMessage};
 
 use num_traits::FromPrimitive;
@@ -40,8 +41,14 @@ pub enum QunetMessageDecodeError {
     InvalidMessageType,
     #[error("Message had additional data in it that is too long ({0} bytes)")]
     AdditionalDataTooLong(usize),
+    #[error("Message had invalid additional data")]
+    InvalidAdditionalData,
     #[error("Message header is malformed")]
     InvalidHeader,
+    #[error("Too many protocols in a Pong message")]
+    TooManyProtocols,
+    #[error("Invalid protocol in a Pong message")]
+    InvalidProtocol,
     #[error("Invalid error code in an error message: {0}")]
     InvalidErrorCode(u32),
 }
@@ -69,14 +76,52 @@ impl DataMessageKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[repr(u8)]
+pub(crate) enum Protocol {
+    Tcp = 1,
+    Udp = 2,
+    Quic = 3,
+}
+
+pub(crate) struct PongProtocol {
+    pub protocol: Protocol,
+    pub port: u16,
+}
+
+impl PongProtocol {
+    pub fn as_tcp(&self) -> Option<u16> {
+        if self.protocol == Protocol::Tcp { Some(self.port) } else { None }
+    }
+
+    pub fn as_udp(&self) -> Option<u16> {
+        if self.protocol == Protocol::Udp { Some(self.port) } else { None }
+    }
+
+    pub fn as_quic(&self) -> Option<u16> {
+        if self.protocol == Protocol::Quic { Some(self.port) } else { None }
+    }
+}
+
 pub(crate) enum QunetMessage {
+    Ping {
+        ping_id: u32,
+        omit_protocols: bool,
+    },
+
+    Pong {
+        ping_id: u32,
+        protocols: heapless::Vec<PongProtocol, 4>,
+        data: Option<BufferKind>,
+    },
+
     Keepalive {
         timestamp: u64,
     },
 
     KeepaliveResponse {
         timestamp: u64,
-        data: Option<BorrowedMutBuffer>,
+        data: Option<BufferKind>,
     },
 
     HandshakeStart {
@@ -133,13 +178,42 @@ enum RawOrSlice<'a> {
 
 impl QunetMessage {
     /// Parses the header of a Qunet message into a `QunetMessageMeta` structure,
-    /// which cen then be used to fully decode the message.
+    /// which can then be used to fully decode the message.
     #[inline]
     pub fn parse_header<'a>(
         data: &'a [u8],
         udp: bool,
     ) -> Result<QunetMessageMeta<'a>, QunetMessageDecodeError> {
         QunetMessageMeta::parse(data, udp)
+    }
+
+    /// Get a buffer for additional data in a message.
+    fn _fill_additional_data(
+        size: usize,
+        pool: &MultiBufferPool,
+        reader: &mut ByteReader<'_>,
+    ) -> Result<Option<BufferKind>, QunetMessageDecodeError> {
+        if size > pool.max_buf_size() {
+            return Err(QunetMessageDecodeError::AdditionalDataTooLong(size));
+        }
+
+        if size > 0 {
+            let rem = reader.remaining_bytes();
+            if rem.len() != size {
+                return Err(QunetMessageDecodeError::InvalidAdditionalData);
+            }
+
+            let mut buf = if size < QUNET_SMALL_MESSAGE_SIZE {
+                BufferKind::new_small()
+            } else {
+                BufferKind::new_pooled(pool.get_busy_loop(size).unwrap())
+            };
+
+            buf.append_bytes(rem);
+            Ok(Some(buf))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Decodes a Qunet message from a `QunetMessageMeta` structure earlier obtained from `parse_header`.
@@ -150,6 +224,38 @@ impl QunetMessage {
         let mut reader = ByteReader::new(meta.data);
         if !meta.bare.is_data {
             match meta.bare.header_byte {
+                MSG_PING => {
+                    let ping_id = reader.read_u32()?;
+                    let flags = reader.read_bits::<u8>()?;
+
+                    let omit_protocols = flags.get_bit(0);
+
+                    Ok(QunetMessage::Ping { ping_id, omit_protocols })
+                }
+
+                MSG_PONG => {
+                    let ping_id = reader.read_u32()?;
+                    let protocol_count = reader.read_u8()?;
+
+                    let mut protocols = heapless::Vec::new();
+                    for _ in 0..protocol_count {
+                        let protocol_num = reader.read_u8()?;
+                        let port = reader.read_u16()?;
+
+                        let protocol = Protocol::from_u8(protocol_num)
+                            .ok_or(QunetMessageDecodeError::InvalidProtocol)?;
+
+                        protocols
+                            .push(PongProtocol { protocol, port })
+                            .map_err(|_| QunetMessageDecodeError::TooManyProtocols)?;
+                    }
+
+                    let data_len = reader.read_u16()? as usize;
+                    let data = Self::_fill_additional_data(data_len, buffer_pool, &mut reader)?;
+
+                    Ok(QunetMessage::Pong { ping_id, protocols, data })
+                }
+
                 MSG_KEEPALIVE => {
                     let timestamp = reader.read_u64()?;
                     let _flags = reader.read_bits::<u8>()?;
@@ -160,24 +266,10 @@ impl QunetMessage {
                 MSG_KEEPALIVE_RESPONSE => {
                     let timestamp = reader.read_u64()?;
                     let data_len = reader.read_u16()? as usize;
-                    if data_len > buffer_pool.max_buf_size() {
-                        return Err(QunetMessageDecodeError::AdditionalDataTooLong(data_len));
-                    }
 
-                    let buf = if data_len > 0 {
-                        let mut buf = buffer_pool.get_busy_loop(data_len).unwrap();
-                        let rem = reader.remaining_bytes();
-                        if rem.len() != data_len {
-                            return Err(QunetMessageDecodeError::InvalidHeader);
-                        }
+                    let data = Self::_fill_additional_data(data_len, buffer_pool, &mut reader)?;
 
-                        buf[..data_len].copy_from_slice(rem);
-                        Some(buf)
-                    } else {
-                        None
-                    };
-
-                    Ok(QunetMessage::KeepaliveResponse { timestamp, data: buf })
+                    Ok(QunetMessage::KeepaliveResponse { timestamp, data })
                 }
 
                 MSG_HANDSHAKE_START => {
@@ -421,6 +513,18 @@ impl QunetMessage {
         let mut body_writer = BinaryWriter::new(body_writer);
 
         match self {
+            Self::Ping { ping_id, omit_protocols } => {
+                header_writer.write_u8(MSG_PING)?;
+                body_writer.write_u32(*ping_id)?;
+
+                let mut flags = Bits::new(0u8);
+                if *omit_protocols {
+                    flags.set_bit(0);
+                }
+
+                body_writer.write_u8(flags.to_bits())?;
+            }
+
             Self::Keepalive { timestamp } => {
                 header_writer.write_u8(MSG_KEEPALIVE)?;
                 body_writer.write_u64(*timestamp)?;
@@ -554,6 +658,8 @@ impl QunetMessage {
     #[inline]
     pub fn type_str(&self) -> &'static str {
         match self {
+            QunetMessage::Ping { .. } => "Ping",
+            QunetMessage::Pong { .. } => "Pong",
             QunetMessage::Keepalive { .. } => "Keepalive",
             QunetMessage::KeepaliveResponse { .. } => "KeepaliveResponse",
             QunetMessage::HandshakeStart { .. } => "HandshakeStart",

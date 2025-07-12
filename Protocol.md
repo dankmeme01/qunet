@@ -9,8 +9,6 @@ Table of contents:
 * [Qunet Database (qdb)](#qunet-database)
 * * [Header](#header)
 * * [Sections](#sections)
-* * * [Type section (ID 1)](#type-section-id-1)
-* * * [Options section (ID 2)](#options-section-id-2)
 * * * [Dict section (ID 3)](#dict-section-id-3)
 * [Data encoding](#data-encoding)
 * [Socket Protocol](#socket-protocol)

@@ -1,5 +1,6 @@
 use std::{
     marker::PhantomData,
+    net::SocketAddr,
     time::{Duration, Instant},
 };
 
@@ -11,7 +12,7 @@ use tokio::net::{
 use crate::{
     message::QunetMessage,
     server::{Server, app_handler::AppHandler},
-    transport::{ClientTransportData, TransportError},
+    transport::{QunetTransportData, TransportError},
 };
 
 use super::stream;
@@ -27,7 +28,7 @@ pub(crate) struct ClientTcpTransport<H: AppHandler> {
 }
 
 impl<H: AppHandler> ClientTcpTransport<H> {
-    pub fn new(socket: TcpStream, server: &Server<H>) -> Self {
+    pub fn new(socket: TcpStream, idle_timeout: Duration) -> Self {
         let (sock_read, sock_write) = socket.into_split();
 
         Self {
@@ -35,10 +36,16 @@ impl<H: AppHandler> ClientTcpTransport<H> {
             sock_write,
             buffer: vec![0u8; 512], // TODO: if it's a significant performance issue, don't zero the bytes, also maybe make size configurable
             buffer_pos: 0,
-            idle_timeout: server._builder.listener_opts.idle_timeout,
+            idle_timeout,
             last_data_exchange: Instant::now(),
             _phantom: PhantomData,
         }
+    }
+
+    pub async fn connect(addr: SocketAddr, idle_timeout: Duration) -> Result<Self, TransportError> {
+        let socket = TcpStream::connect(addr).await?;
+
+        Ok(Self::new(socket, idle_timeout))
     }
 
     pub async fn run_setup(&mut self) -> Result<(), TransportError> {
@@ -63,7 +70,7 @@ impl<H: AppHandler> ClientTcpTransport<H> {
     #[inline]
     pub fn handle_timer_expiry(
         &self,
-        transport_data: &mut ClientTransportData<H>,
+        transport_data: &mut QunetTransportData<H>,
     ) -> Result<(), TransportError> {
         if self.last_data_exchange.elapsed() >= self.idle_timeout {
             transport_data.closed = true;
@@ -74,7 +81,7 @@ impl<H: AppHandler> ClientTcpTransport<H> {
 
     pub async fn receive_message(
         &mut self,
-        transport_data: &ClientTransportData<H>,
+        transport_data: &QunetTransportData<H>,
     ) -> Result<QunetMessage, TransportError> {
         let msg = stream::receive_message(
             &mut self.buffer,
@@ -91,7 +98,7 @@ impl<H: AppHandler> ClientTcpTransport<H> {
 
     pub async fn send_message(
         &mut self,
-        transport_data: &ClientTransportData<H>,
+        transport_data: &QunetTransportData<H>,
         msg: QunetMessage,
     ) -> Result<(), TransportError> {
         self.update_exchange_time();
@@ -109,7 +116,7 @@ impl<H: AppHandler> ClientTcpTransport<H> {
 
     pub async fn send_handshake_response(
         &mut self,
-        transport_data: &ClientTransportData<H>,
+        transport_data: &QunetTransportData<H>,
         qdb_data: Option<&[u8]>,
         qdb_uncompressed_size: usize,
     ) -> Result<(), TransportError> {

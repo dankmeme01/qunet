@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use crate::{
     message::{BufferKind, channel},
     server::app_handler::AppHandler,
-    transport::{ClientTransport, TransportType},
+    transport::{QunetTransport, TransportType},
 };
 
 pub enum ClientNotification {
@@ -23,7 +23,7 @@ pub struct ClientState<H: AppHandler> {
 }
 
 impl<H: AppHandler> ClientState<H> {
-    pub(crate) fn new(app_data: H::ClientData, transport: &ClientTransport<H>) -> Self {
+    pub(crate) fn new(app_data: H::ClientData, transport: &QunetTransport<H>) -> Self {
         Self {
             app_data,
             connection_id: transport.connection_id(),

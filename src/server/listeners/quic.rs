@@ -12,7 +12,7 @@ use crate::{
         builder::{ListenerOptions, QuicOptions},
         listeners::listener::{BindError, ListenerError, ServerListener},
     },
-    transport::{ClientTransport, ClientTransportKind, quic::ClientQuicTransport},
+    transport::{QunetTransport, QunetTransportKind, quic::ClientQuicTransport},
 };
 
 use super::stream;
@@ -107,8 +107,8 @@ impl<H: AppHandler> QuicServerListener<H> {
 
             match tokio::time::timeout(timeout, conn.wait_for_handshake()).await {
                 Ok(Ok(outcome)) => {
-                    let transport = ClientTransport::new(
-                        ClientTransportKind::Quic(ClientQuicTransport::new(
+                    let transport = QunetTransport::new(
+                        QunetTransportKind::Quic(ClientQuicTransport::new(
                             conn.conn,
                             outcome.stream,
                         )),
