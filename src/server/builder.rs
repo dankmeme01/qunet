@@ -130,6 +130,13 @@ impl<H: AppHandler> ServerBuilder<H> {
         discovery_mode: UdpDiscoveryMode,
         binds: usize,
     ) -> Self {
+        #[cfg(target_os = "windows")]
+        {
+            if binds > 1 {
+                panic!("Multiple UDP binds are not supported on Windows.");
+            }
+        }
+
         self.udp_opts = Some(UdpOptions {
             address,
             binds: NonZeroUsize::new(binds).expect("Binds value must be non-zero"),

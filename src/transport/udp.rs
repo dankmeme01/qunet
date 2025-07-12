@@ -1,10 +1,10 @@
+use std::io::IoSlice;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::{io::IoSlice, marker::PhantomData};
 
 use tokio::net::UdpSocket;
-use tracing::debug;
+use tracing::{debug, debug_span};
 
 use crate::{
     buffers::byte_writer::ByteWriter,
@@ -128,6 +128,9 @@ impl ClientUdpTransport {
         };
 
         if kind.is_fragment() {
+            let span = debug_span!("process_fragment", conn = transport_data.connection_id);
+            let _g = span.enter();
+
             match self.frag_store.process_fragment(message, &transport_data.buffer_pool)? {
                 None => {
                     // not enough fragments yet, return None
@@ -144,6 +147,11 @@ impl ClientUdpTransport {
         };
 
         if reliability.is_some() {
+            let span =
+                debug_span!("ReliableStore::handle_incoming", conn = transport_data.connection_id);
+
+            let _g = span.enter();
+
             match self.rel_store.handle_incoming(message)? {
                 None => {
                     // duplicate or otherwise invalid message, return None
@@ -227,6 +235,12 @@ impl ClientUdpTransport {
             self.do_send_unfrag_data(&message, transport_data).await?;
 
             if is_reliable {
+                let span = debug_span!(
+                    "ReliableStore::push_local_unacked",
+                    conn = transport_data.connection_id
+                );
+                let _g = span.enter();
+
                 self.rel_store.push_local_unacked(message)?;
                 return Ok(None);
             } else {
@@ -238,6 +252,12 @@ impl ClientUdpTransport {
         self.do_fragment_and_send(&message, transport_data).await?;
 
         if is_reliable {
+            let span = debug_span!(
+                "ReliableStore::push_local_unacked",
+                conn = transport_data.connection_id
+            );
+            let _g = span.enter();
+
             self.rel_store.push_local_unacked(message)?;
             Ok(None)
         } else {
@@ -359,7 +379,14 @@ impl ClientUdpTransport {
             return Ok(());
         }
 
-        while self.rel_store.maybe_retransmit()? {
+        loop {
+            let span =
+                debug_span!("ReliableStore::maybe_retransmit", conn = transport_data.connection_id);
+
+            if !span.in_scope(|| self.rel_store.maybe_retransmit())? {
+                break;
+            }
+
             match self.rel_store.get_retransmit_message() {
                 Some(msg) => self.do_send_prefrag_retrans_data(msg, transport_data).await?,
                 None => break,

@@ -34,7 +34,7 @@ tracing = "0.1.41"
 lz4_flex = { version = "0.11.5", default-features = false, features = [
     "checked-decode",
 ] }
-dashmap = "6.1.0"
+dashmap = { version = "6.1.0", features = ["inline"] }
 heapless = "0.8.0"
 zstd-safe = { version = "7.2.4", features = ["std"] }
 hickory-resolver = { version = "0.25.2", optional = true }
