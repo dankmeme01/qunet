@@ -175,7 +175,7 @@ impl QunetTransport {
                 c_sockaddr_data,
                 c_sockaddr_len,
             },
-            notif_chan: channel::new_channel(),
+            notif_chan: channel::new_channel(16),
         }
     }
 

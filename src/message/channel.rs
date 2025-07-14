@@ -35,8 +35,14 @@ impl<T> Clone for Receiver<T> {
 pub type RawMessageSender = Sender<QunetRawMessage>;
 pub type RawMessageReceiver = Receiver<QunetRawMessage>;
 
-pub fn new_channel<T>() -> (Sender<T>, Receiver<T>) {
-    let (tx, rx) = flume::bounded(16);
+pub fn new_channel<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
+    let (tx, rx) = flume::bounded(cap);
+
+    (Sender { inner: tx }, Receiver { inner: rx })
+}
+
+pub fn new_channel_unbounded<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
+    let (tx, rx) = flume::unbounded();
 
     (Sender { inner: tx }, Receiver { inner: rx })
 }

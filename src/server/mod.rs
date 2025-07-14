@@ -26,7 +26,7 @@ use crate::{
     },
     protocol::{self, *},
     server::{
-        app_handler::{AppHandler, DefaultAppHandler},
+        app_handler::{AppHandler, DefaultAppHandler, MsgData},
         builder::ServerBuilder,
         client::{ClientNotification, ClientState},
         listeners::{
@@ -38,9 +38,7 @@ use crate::{
     },
     transport::{
         QunetTransport, TransportError, TransportType,
-        compression::{
-            self, CompressError, CompressionHandler, CompressionHandlerImpl, DecompressError,
-        },
+        compression::{CompressError, CompressionHandler, CompressionHandlerImpl, DecompressError},
     },
 };
 
@@ -48,6 +46,7 @@ pub mod app_handler;
 pub mod builder;
 pub mod client;
 pub(crate) mod listeners;
+mod msg_data;
 
 #[derive(Error, Debug)]
 pub enum ServerOutcome {
@@ -416,10 +415,10 @@ impl<H: AppHandler> Server<H> {
 
             let client = Arc::new(ClientState::new(client_data, &transport));
 
-            self.clients.insert(client.connection_id, client.clone());
+            self.clients.insert(client.connection_id, Arc::clone(&client));
 
             if let Err(e) =
-                Self::client_handler(&self, &mut transport, client.clone(), send_qdb).await
+                Self::client_handler(&self, &mut transport, Arc::clone(&client), send_qdb).await
             {
                 warn!("[{}] Client connection terminated due to error: {}", address, e);
 
@@ -485,7 +484,7 @@ impl<H: AppHandler> Server<H> {
 
     #[inline]
     pub(crate) fn create_udp_route(&self, connection_id: u64) -> RawMessageReceiver {
-        let (tx, rx) = message::channel::new_channel();
+        let (tx, rx) = message::channel::new_channel(16);
         self.udp_router.insert(connection_id, tx);
 
         rx
@@ -538,14 +537,14 @@ impl<H: AppHandler> Server<H> {
 
             let res = tokio::select! {
                 msg = transport.receive_message() => match msg {
-                    Ok(msg) => {
+                    Ok(mut msg) => {
                         if msg.is_data_compressed() {
                             match transport.decompress_message(msg, self).await {
-                                Ok(msg) => self.handle_client_message(transport, &client, &msg).await,
+                                Ok(mut msg) => self.handle_client_message(transport, &client, &mut msg).await,
                                 Err(e) => Err(e),
                             }
                         } else {
-                            self.handle_client_message(transport, &client, &msg).await
+                            self.handle_client_message(transport, &client, &mut msg).await
                         }
                     },
 
@@ -661,7 +660,7 @@ impl<H: AppHandler> Server<H> {
         &self,
         transport: &mut QunetTransport,
         client: &ClientState<H>,
-        msg: &QunetMessage,
+        msg: &mut QunetMessage,
     ) -> Result<(), TransportError> {
         #[cfg(debug_assertions)]
         debug!("[{}] Received message: {:?}", transport.address(), msg.type_str());
@@ -773,14 +772,14 @@ impl<H: AppHandler> Server<H> {
     async fn handle_data_message(
         &self,
         client: &ClientState<H>,
-        msg: &QunetMessage,
+        msg: &mut QunetMessage,
     ) -> Result<(), TransportError> {
-        let bytes = match msg.data_bytes() {
+        let data = match msg.data_bufkind_mut() {
             Some(x) => x,
             None => unreachable!(),
         };
 
-        self.app_handler.on_client_data(self, client, bytes).await;
+        self.app_handler.on_client_data(self, client, MsgData { data }).await;
 
         Ok(())
     }

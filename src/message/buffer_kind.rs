@@ -83,6 +83,13 @@ impl BufferKind {
             }
         }
     }
+
+    /// Resets the buffer. Any held memory will be completely released, and the buffer
+    /// will be reset to a `Heap` buffer with zero capacity.
+    /// This is intended to be used when the buffer is no longer needed.
+    pub fn reset(&mut self) {
+        *self = BufferKind::Heap(Vec::new());
+    }
 }
 
 impl Write for BufferKind {

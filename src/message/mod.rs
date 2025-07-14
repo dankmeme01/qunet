@@ -12,7 +12,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 pub use raw::{QUNET_SMALL_MESSAGE_SIZE, QunetRawMessage};
 
 use num_traits::FromPrimitive;
-use std::sync::Arc;
+use std::{ops::Deref, sync::Arc};
 use thiserror::Error;
 
 use crate::{
@@ -489,6 +489,23 @@ impl QunetMessage {
 
     /// Convenience method that returns bytes of a `Data` message. Returns None if the message is not a `Data` message.
     pub fn data_bytes(&self) -> Option<&[u8]> {
+        self.data_bufkind().map(|buf| buf.deref())
+    }
+
+    /// Convenience method that returns a `BufferKind` of a `Data` message. Returns None if the message is not a `Data` message.
+    pub fn data_bufkind(&self) -> Option<&BufferKind> {
+        if let QunetMessage::Data { kind, .. } = self {
+            match kind {
+                DataMessageKind::Fragment { data, .. } => Some(data),
+                DataMessageKind::Regular { data } => Some(data),
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Convenience method that returns a mutable `BufferKind` of a `Data` message. Returns None if the message is not a `Data` message.
+    pub fn data_bufkind_mut(&mut self) -> Option<&mut BufferKind> {
         if let QunetMessage::Data { kind, .. } = self {
             match kind {
                 DataMessageKind::Fragment { data, .. } => Some(data),

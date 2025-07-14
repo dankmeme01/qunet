@@ -1,8 +1,8 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, ops::Deref};
 
 use crate::{
     message::{BufferKind, channel},
-    server::app_handler::AppHandler,
+    server::{Server, app_handler::AppHandler},
     transport::{QunetTransport, TransportType},
 };
 
@@ -37,11 +37,23 @@ impl<H: AppHandler> ClientState<H> {
         &self.app_data
     }
 
-    pub fn send_data(&self, msg: BufferKind) -> bool {
+    pub async fn send_data(&self, data: &[u8], server: &Server<H>) -> bool {
+        let mut buf = server.request_buffer(data.len()).await;
+        buf.append_bytes(data);
+        self.send_data_bufkind(buf)
+    }
+
+    pub fn send_data_bufkind(&self, msg: BufferKind) -> bool {
         self.notif_tx.send(ClientNotification::DataMessage { buf: msg, reliable: true })
     }
 
-    pub fn send_unreliable_data(&self, msg: BufferKind) -> bool {
+    pub async fn send_unreliable_data(&self, data: &[u8], server: &Server<H>) -> bool {
+        let mut buf = server.request_buffer(data.len()).await;
+        buf.append_bytes(data);
+        self.send_data_bufkind(buf)
+    }
+
+    pub fn send_unreliable_data_bufkind(&self, msg: BufferKind) -> bool {
         self.notif_tx.send(ClientNotification::DataMessage { buf: msg, reliable: false })
     }
 
@@ -51,5 +63,13 @@ impl<H: AppHandler> ClientState<H> {
 
     pub fn transport_type(&self) -> TransportType {
         self.transport_type
+    }
+}
+
+impl<H: AppHandler> Deref for ClientState<H> {
+    type Target = H::ClientData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.app_data
     }
 }

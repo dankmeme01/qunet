@@ -4,9 +4,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tokio::net::{
-    TcpStream,
-    tcp::{OwnedReadHalf, OwnedWriteHalf},
+use tokio::{
+    io::AsyncWriteExt,
+    net::{
+        TcpStream,
+        tcp::{OwnedReadHalf, OwnedWriteHalf},
+    },
 };
 
 use crate::{
@@ -51,6 +54,9 @@ impl ClientTcpTransport {
     }
 
     pub async fn run_cleanup(&mut self) -> Result<(), TransportError> {
+        self.sock_write.shutdown().await?;
+        // TODO: idk how to shutdown read half
+
         Ok(())
     }
 

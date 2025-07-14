@@ -7,6 +7,8 @@ use crate::{
     server::{Server, ServerHandle, client::ClientState},
 };
 
+pub use crate::server::msg_data::MsgData;
+
 pub type AppError = Box<dyn std::error::Error + Send + Sync>;
 pub type AppResult<T> = Result<T, AppError>;
 
@@ -100,7 +102,7 @@ pub trait AppHandler: Send + Sync + Sized + 'static {
         &self,
         server: &Server<Self>,
         client: &ClientState<Self>,
-        data: &[u8],
+        data: MsgData<'_>,
     ) -> impl Future<Output = ()> + Send {
         async move {}
     }
