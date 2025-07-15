@@ -87,7 +87,7 @@ impl BufferPool {
         vec![0u8; self.buf_size].into_boxed_slice()
     }
 
-    pub async fn get(&self) -> BorrowedMutBuffer {
+    pub async fn get(&self) -> PooledBuffer {
         if let Some(buffer) = self.try_get() {
             return buffer;
         }
@@ -98,23 +98,19 @@ impl BufferPool {
         let permit = self.inner.semaphore.clone().acquire_owned().await.unwrap();
         let buffer = self.get_buffer();
 
-        BorrowedMutBuffer::new(buffer, self.inner.clone(), Some(permit))
+        PooledBuffer::new(buffer, self.inner.clone(), Some(permit))
     }
 
     #[inline]
-    fn try_get_no_grow(&self) -> Option<BorrowedMutBuffer> {
+    fn try_get_no_grow(&self) -> Option<PooledBuffer> {
         if let Ok(permit) = self.inner.semaphore.clone().try_acquire_owned() {
-            return Some(BorrowedMutBuffer::new(
-                self.get_buffer(),
-                self.inner.clone(),
-                Some(permit),
-            ));
+            return Some(PooledBuffer::new(self.get_buffer(), self.inner.clone(), Some(permit)));
         }
 
         None
     }
 
-    pub fn try_get(&self) -> Option<BorrowedMutBuffer> {
+    pub fn try_get(&self) -> Option<PooledBuffer> {
         // first, try acquire a permit if there are any available
         if let Some(buf) = self.try_get_no_grow() {
             return Some(buf);
@@ -139,7 +135,7 @@ impl BufferPool {
                     // successfully incremented the count, allocate a new buffer
                     let buffer = self.alloc_new_buffer();
 
-                    break Some(BorrowedMutBuffer::new(buffer, self.inner.clone(), None));
+                    break Some(PooledBuffer::new(buffer, self.inner.clone(), None));
                 }
 
                 Err(num) => {
@@ -151,7 +147,7 @@ impl BufferPool {
         }
     }
 
-    pub fn get_busy_loop(&self) -> BorrowedMutBuffer {
+    pub fn get_busy_loop(&self) -> PooledBuffer {
         loop {
             let bufs = self.allocated_buffers.load(Ordering::Relaxed);
             let buf = if bufs >= self.max_buffers {
@@ -220,13 +216,16 @@ impl BufferPool {
     }
 }
 
-pub struct BorrowedMutBuffer {
+pub struct PooledBuffer {
     buffer: ManuallyDrop<Box<[u8]>>,
     pool: Arc<BufferPoolInner>,
     permit: Option<OwnedSemaphorePermit>,
+
+    #[cfg(debug_assertions)]
+    created_at: std::time::Instant,
 }
 
-impl BorrowedMutBuffer {
+impl PooledBuffer {
     fn new(
         buffer: Box<[u8]>,
         pool: Arc<BufferPoolInner>,
@@ -236,11 +235,13 @@ impl BorrowedMutBuffer {
             buffer: ManuallyDrop::new(buffer),
             pool,
             permit,
+            #[cfg(debug_assertions)]
+            created_at: std::time::Instant::now(),
         }
     }
 }
 
-impl Deref for BorrowedMutBuffer {
+impl Deref for PooledBuffer {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -248,27 +249,38 @@ impl Deref for BorrowedMutBuffer {
     }
 }
 
-impl DerefMut for BorrowedMutBuffer {
+impl DerefMut for PooledBuffer {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.buffer
     }
 }
 
-impl AsRef<[u8]> for BorrowedMutBuffer {
+impl AsRef<[u8]> for PooledBuffer {
     fn as_ref(&self) -> &[u8] {
         &self.buffer
     }
 }
 
-impl AsMut<[u8]> for BorrowedMutBuffer {
+impl AsMut<[u8]> for PooledBuffer {
     fn as_mut(&mut self) -> &mut [u8] {
         &mut self.buffer
     }
 }
 
-impl Drop for BorrowedMutBuffer {
+impl Drop for PooledBuffer {
     fn drop(&mut self) {
         // return the buffer to the pool
+
+        #[cfg(debug_assertions)]
+        {
+            let elapsed = self.created_at.elapsed();
+            tracing::trace!(
+                "PooledBuffer (size {}, free pool bufs: {}) returned after {:?}",
+                self.buffer.len(),
+                self.pool.semaphore.available_permits(),
+                elapsed
+            );
+        }
 
         // safety: `self.buffer` is never used after this point
         let buf = unsafe { ManuallyDrop::take(&mut self.buffer) };

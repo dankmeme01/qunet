@@ -70,11 +70,6 @@ impl DataMessageKind {
     pub fn is_fragment(&self) -> bool {
         matches!(self, DataMessageKind::Fragment { .. })
     }
-
-    #[inline]
-    pub fn is_regular(&self) -> bool {
-        matches!(self, DataMessageKind::Regular { .. })
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, ToPrimitive)]
@@ -104,6 +99,7 @@ impl PongProtocol {
     }
 }
 
+#[allow(unused)]
 pub(crate) struct HandshakeQdbData {
     pub uncompressed_size: u32,
     pub full_size: u32,
@@ -121,6 +117,7 @@ pub(crate) enum QunetMessage {
     Pong {
         ping_id: u32,
         protocols: heapless::Vec<PongProtocol, 4>,
+        #[allow(unused)]
         data: Option<BufferKind>,
     },
 

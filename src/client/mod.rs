@@ -294,10 +294,11 @@ impl<H: EventHandler> Client<H> {
 
     async fn main_loop(
         self: ClientHandle<H>,
-        mut transport: QunetTransport,
+        transport: QunetTransport,
     ) -> Result<(), ClientOutcome> {
         debug!("Entered main loop!");
-        Ok(())
+        let _ = transport;
+        todo!();
     }
 
     async fn _dns_fetch_ip_and_connect(

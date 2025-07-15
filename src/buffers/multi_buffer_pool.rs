@@ -1,4 +1,4 @@
-use crate::buffers::buffer_pool::{BorrowedMutBuffer, BufferPool, BufferPoolStats};
+use crate::buffers::buffer_pool::{BufferPool, BufferPoolStats, PooledBuffer};
 
 /// A pool of `BufferPool`s. Wow.
 #[derive(Default)]
@@ -75,20 +75,20 @@ impl MultiBufferPool {
     /// Attempts to returns a new buffer of at least `size` bytes without blocking.
     /// If no pool is large enough or no buffers are available in the chosen pool, this will return `None`.
     #[inline]
-    pub fn try_get(&self, size: usize) -> Option<BorrowedMutBuffer> {
+    pub fn try_get(&self, size: usize) -> Option<PooledBuffer> {
         self.get_pool_for_size(size)?.try_get()
     }
 
     /// Returns a future which will return a new buffer of at least `size` bytes, as soon as one is available.
     /// If no pool is large enough, this will return `None`.
     #[inline]
-    pub async fn get(&self, size: usize) -> Option<BorrowedMutBuffer> {
+    pub async fn get(&self, size: usize) -> Option<PooledBuffer> {
         Some(self.get_pool_for_size(size)?.get().await)
     }
 
     /// Same as `get`, but is synchronous. Not recommended to use in async code.
     #[inline]
-    pub fn get_busy_loop(&self, size: usize) -> Option<BorrowedMutBuffer> {
+    pub fn get_busy_loop(&self, size: usize) -> Option<PooledBuffer> {
         Some(self.get_pool_for_size(size)?.get_busy_loop())
     }
 

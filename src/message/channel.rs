@@ -45,7 +45,7 @@ pub fn new_channel<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
     (Sender { inner: tx }, Receiver { inner: rx })
 }
 
-pub fn new_channel_unbounded<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
+pub fn new_channel_unbounded<T>() -> (Sender<T>, Receiver<T>) {
     let (tx, rx) = flume::unbounded();
 
     (Sender { inner: tx }, Receiver { inner: rx })

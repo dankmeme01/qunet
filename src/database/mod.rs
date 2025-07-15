@@ -132,7 +132,7 @@ pub enum DecodeError {
 
 struct SectionHeader {
     r#type: u16,
-    options: u16,
+    _options: u16,
     offset: u32,
     size: u32,
 }
@@ -186,7 +186,7 @@ impl QunetDatabase {
 
             section_headers.push(SectionHeader {
                 r#type: section_type,
-                options,
+                _options: options,
                 offset,
                 size,
             });

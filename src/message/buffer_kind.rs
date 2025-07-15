@@ -4,12 +4,12 @@ use std::{
     sync::Arc,
 };
 
-use crate::{buffers::buffer_pool::BorrowedMutBuffer, message::QUNET_SMALL_MESSAGE_SIZE};
+use crate::{buffers::buffer_pool::PooledBuffer, message::QUNET_SMALL_MESSAGE_SIZE};
 
 pub enum BufferKind {
     Heap(Vec<u8>),
     Pooled {
-        buf: BorrowedMutBuffer,
+        buf: PooledBuffer,
         pos: usize,
         size: usize,
     },
@@ -29,7 +29,7 @@ impl BufferKind {
         }
     }
 
-    pub fn new_pooled(buf: BorrowedMutBuffer) -> Self {
+    pub fn new_pooled(buf: PooledBuffer) -> Self {
         BufferKind::Pooled { buf, pos: 0, size: 0 }
     }
 

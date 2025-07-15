@@ -1,4 +1,4 @@
-use crate::client::{Client, ClientHandle};
+use crate::client::Client;
 
 pub type HandlerError = Box<dyn std::error::Error + Send + Sync>;
 pub type HandlerResult<T> = Result<T, HandlerError>;
