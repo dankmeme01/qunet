@@ -11,6 +11,7 @@ use tokio::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
     },
 };
+use tracing::debug;
 
 use crate::{
     message::QunetMessage,
@@ -76,6 +77,7 @@ impl ClientTcpTransport {
         transport_data: &mut QunetTransportData,
     ) -> Result<(), TransportError> {
         if self.last_data_exchange.elapsed() >= self.idle_timeout {
+            debug!("[{}] idle timeout reached, closing connection", transport_data.address);
             transport_data.closed = true;
         }
 

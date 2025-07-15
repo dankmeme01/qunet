@@ -374,7 +374,7 @@ impl ClientUdpTransport {
     ) -> Result<(), TransportError> {
         // if there's been no activity for a while, close the connection
         if self.last_data_exchange.elapsed() >= self.idle_timeout {
-            debug!("Idle timeout reached, closing connection");
+            debug!("[{}] idle timeout reached, closing connection", transport_data.address);
             transport_data.closed = true;
             return Ok(());
         }
