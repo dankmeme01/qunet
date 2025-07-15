@@ -34,6 +34,7 @@ pub(crate) async fn make_socket(
     address: SocketAddr,
     multi: bool,
     recv_buffer_size: Option<usize>,
+    send_buffer_size: Option<usize>,
 ) -> std::io::Result<UdpSocket> {
     let domain = if address.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
 
@@ -47,6 +48,10 @@ pub(crate) async fn make_socket(
 
     if let Some(size) = recv_buffer_size {
         socket.set_recv_buffer_size(size)?;
+    }
+
+    if let Some(size) = send_buffer_size {
+        socket.set_send_buffer_size(size)?;
     }
 
     // disable IPV6_V6ONLY
@@ -74,8 +79,13 @@ impl<H: AppHandler> UdpServerListener<H> {
         let mut sockets = Vec::with_capacity(binds);
 
         for _ in 0..binds {
-            let socket =
-                make_socket(opts.address, binds > 1, mem_opts.udp_recv_buffer_size).await?;
+            let socket = make_socket(
+                opts.address,
+                binds > 1,
+                mem_opts.udp_recv_buffer_size,
+                mem_opts.udp_send_buffer_size,
+            )
+            .await?;
 
             sockets.push(OneListener { socket: Arc::new(socket) });
         }

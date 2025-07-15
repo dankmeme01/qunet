@@ -18,6 +18,10 @@ impl<T> Receiver<T> {
     pub async fn recv(&self) -> Option<T> {
         self.inner.recv_async().await.ok()
     }
+
+    pub fn drain(&self) -> flume::Drain<'_, T> {
+        self.inner.drain()
+    }
 }
 
 impl<T> Clone for Sender<T> {

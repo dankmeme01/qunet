@@ -1,9 +1,14 @@
-use crate::buffers::buffer_pool::{BorrowedMutBuffer, BufferPool};
+use crate::buffers::buffer_pool::{BorrowedMutBuffer, BufferPool, BufferPoolStats};
 
 /// A pool of `BufferPool`s. Wow.
 #[derive(Default)]
 pub struct MultiBufferPool {
     pools: Vec<BufferPool>,
+}
+
+pub struct MultiBufferPoolStats {
+    pub total_heap_usage: usize,
+    pub pool_stats: Vec<BufferPoolStats>,
 }
 
 impl MultiBufferPool {
@@ -85,5 +90,12 @@ impl MultiBufferPool {
     #[inline]
     pub fn get_busy_loop(&self, size: usize) -> Option<BorrowedMutBuffer> {
         Some(self.get_pool_for_size(size)?.get_busy_loop())
+    }
+
+    pub fn stats(&self) -> MultiBufferPoolStats {
+        let total_heap_usage = self.heap_usage();
+        let pool_stats = self.pools.iter().map(|pool| pool.stats()).collect();
+
+        MultiBufferPoolStats { total_heap_usage, pool_stats }
     }
 }

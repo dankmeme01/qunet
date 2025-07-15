@@ -216,9 +216,7 @@ impl<H: AppHandler> Server<H> {
             Box::new([])
         };
 
-        if qdb_data.is_empty() {
-            warn!("No QDB file provided, data packets will not be functional");
-        } else {
+        if !qdb_data.is_empty() {
             self.qdb_hash = protocol::blake3_hash(&qdb_data);
             self.qdb = QunetDatabase::decode(&mut &*qdb_data)?;
             self.qdb_uncompressed_size = qdb_data.len();
@@ -867,6 +865,31 @@ impl<H: AppHandler> Server<H> {
             BufferKind::new_small()
         } else {
             self.get_new_buffer(size).await
+        }
+    }
+
+    pub fn print_server_status(&self) {
+        info!("Server status:");
+        info!(
+            " - {}/{} clients connected, {} udp routes",
+            self.clients.len(),
+            self.connected_addrs.len(),
+            self.udp_router.len()
+        );
+
+        let pool_stats = self.buffer_pool.stats();
+        info!(" - Buffer pool heap usage: {} bytes", pool_stats.total_heap_usage);
+
+        for (i, pool) in pool_stats.pool_stats.iter().enumerate() {
+            info!(
+                "   - Subpool {} (bufsize {}): {}/{} allocated, {} free, heap usage: {} bytes",
+                i + 1,
+                pool.buf_size,
+                pool.allocated_buffers,
+                pool.max_buffers,
+                pool.avail_buffers,
+                pool.heap_usage,
+            );
         }
     }
 }

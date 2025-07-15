@@ -23,6 +23,14 @@ pub struct BufferPool {
     inner: Arc<BufferPoolInner>,
 }
 
+pub struct BufferPoolStats {
+    pub buf_size: usize,
+    pub heap_usage: usize,
+    pub allocated_buffers: usize,
+    pub max_buffers: usize,
+    pub avail_buffers: usize,
+}
+
 impl BufferPoolInner {
     #[inline]
     fn return_buffer(&self, buffer: Box<[u8]>) {
@@ -195,6 +203,20 @@ impl BufferPool {
     #[inline]
     pub fn heap_usage(&self) -> usize {
         self.buf_size * self.allocated_buffers.load(Ordering::Relaxed)
+    }
+
+    pub fn stats(&self) -> BufferPoolStats {
+        let allocated = self.allocated_buffers.load(Ordering::Relaxed);
+        let max = self.max_buffers;
+        let available = self.inner.semaphore.available_permits();
+
+        BufferPoolStats {
+            buf_size: self.buf_size,
+            heap_usage: self.heap_usage(),
+            allocated_buffers: allocated,
+            max_buffers: max,
+            avail_buffers: available,
+        }
     }
 }
 
