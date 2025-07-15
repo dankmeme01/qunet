@@ -1,15 +1,15 @@
 use std::{
     io::Cursor,
     net::SocketAddr,
-    ops::{Deref, DerefMut},
-    sync::Arc,
+    ops::Deref,
+    sync::{Arc, Weak},
     time::Duration,
 };
 
 use dashmap::DashMap;
 use nohash_hasher::BuildNoHashHasher;
 use thiserror::Error;
-use tokio::task::JoinSet;
+use tokio::{sync::Mutex as AsyncMutex, task::JoinSet};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{debug, error, info, warn};
 
@@ -68,6 +68,8 @@ pub enum ServerOutcome {
     ListenerShutdown(ListenerError),
     #[error("All listeners terminated unsuccessfully")]
     AllListenersTerminated,
+    #[error("No listeners were enabled, server cannot run")]
+    NoListenersEnabled,
     #[error("Application error: {0}")]
     CustomError(Box<dyn std::error::Error + Send + Sync + 'static>),
 }
@@ -95,7 +97,7 @@ pub struct Server<H: AppHandler> {
     udp_router: DashMap<u64, RawMessageSender, BuildNoHashHasher<u64>>,
     clients: DashMap<u64, Arc<ClientState<H>>, BuildNoHashHasher<u64>>,
     connected_addrs: DashMap<SocketAddr, u64>, // this serves to detect duplicate connections from the same ip:port tuple
-    schedules: parking_lot::Mutex<JoinSet<!>>,
+    schedules: AsyncMutex<JoinSet<!>>,
     compressor: CompressionHandlerImpl,
 
     // misc settings
@@ -153,7 +155,7 @@ impl<H: AppHandler> Server<H> {
             udp_router: DashMap::default(),
             clients: DashMap::default(),
             connected_addrs: DashMap::default(),
-            schedules: parking_lot::Mutex::new(JoinSet::new()),
+            schedules: AsyncMutex::new(JoinSet::new()),
             compressor,
             message_size_limit: 0,
 
@@ -276,6 +278,13 @@ impl<H: AppHandler> Server<H> {
 
         self.listener_tracker.close();
 
+        if self.listener_tracker.is_empty() {
+            error!(
+                "No listeners were started, shutting down! Please turn on at least one of the listeners (UDP, TCP, QUIC)"
+            );
+            return ServerOutcome::NoListenersEnabled;
+        }
+
         // invoke launch hook
         if let Err(o) = self.app_handler.on_launch(self.clone()).await {
             return ServerOutcome::CustomError(o);
@@ -319,7 +328,12 @@ impl<H: AppHandler> Server<H> {
         self.shutdown_token.cancel();
 
         // Cancel all schedules
-        self.schedules.lock().abort_all();
+        let mut schedules = self.schedules.lock().await;
+        schedules.abort_all();
+
+        while !schedules.is_empty() {
+            schedules.join_next().await;
+        }
 
         // Wait for all listeners to finish
         self.listener_tracker.wait().await;
@@ -842,20 +856,20 @@ impl<H: AppHandler> Server<H> {
 
     // Public API for the application (sending packets, etc.)
 
-    pub fn schedule<F, Fut>(self: ServerHandle<H>, interval: Duration, mut f: F)
+    pub async fn schedule<F, Fut>(self: ServerHandle<H>, interval: Duration, mut f: F)
     where
-        F: FnMut(&Server<H>) -> Fut + Send + 'static,
+        F: FnMut(ServerHandle<H>) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         let this = self.clone();
 
-        self.schedules.lock().spawn(async move {
+        self.schedules.lock().await.spawn(async move {
             let mut interval = tokio::time::interval(interval);
             interval.tick().await; // avoid instant tick
 
             loop {
                 interval.tick().await;
-                f(&this).await;
+                f(this.clone()).await;
             }
         });
     }
@@ -934,6 +948,12 @@ impl<H: AppHandler> ServerHandle<H> {
     pub async fn run(self) -> ServerOutcome {
         Server::run_server(self.clone()).await
     }
+
+    pub fn make_weak(&self) -> WeakServerHandle<H> {
+        WeakServerHandle {
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
 }
 
 impl<H: AppHandler> Deref for ServerHandle<H> {
@@ -941,5 +961,21 @@ impl<H: AppHandler> Deref for ServerHandle<H> {
 
     fn deref(&self) -> &Self::Target {
         &self.inner
+    }
+}
+
+pub struct WeakServerHandle<H: AppHandler> {
+    inner: Weak<Server<H>>,
+}
+
+impl<H: AppHandler> WeakServerHandle<H> {
+    pub fn upgrade(&self) -> Option<ServerHandle<H>> {
+        self.inner.upgrade().map(ServerHandle::from)
+    }
+}
+
+impl<H: AppHandler> From<Arc<Server<H>>> for ServerHandle<H> {
+    fn from(server: Arc<Server<H>>) -> Self {
+        Self { inner: server }
     }
 }
