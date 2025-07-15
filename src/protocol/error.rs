@@ -12,6 +12,7 @@ pub enum QunetConnectionError {
     ZeroLengthStreamMessage = 5,
     StreamMessageTooLong = 6,
     InternalServerError = 7,
+    ServerShutdown = 8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, ToPrimitive)]

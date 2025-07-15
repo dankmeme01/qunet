@@ -11,7 +11,7 @@ use nohash_hasher::BuildNoHashHasher;
 use thiserror::Error;
 use tokio::{sync::Mutex as AsyncMutex, task::JoinSet};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     buffers::{
@@ -93,6 +93,7 @@ pub struct Server<H: AppHandler> {
 
     shutdown_token: CancellationToken,
     listener_tracker: TaskTracker,
+    conn_tracker: TaskTracker,
 
     udp_router: DashMap<u64, RawMessageSender, BuildNoHashHasher<u64>>,
     clients: DashMap<u64, Arc<ClientState<H>>, BuildNoHashHasher<u64>>,
@@ -151,6 +152,7 @@ impl<H: AppHandler> Server<H> {
 
             shutdown_token: CancellationToken::new(),
             listener_tracker: TaskTracker::new(),
+            conn_tracker: TaskTracker::new(),
 
             udp_router: DashMap::default(),
             clients: DashMap::default(),
@@ -301,7 +303,7 @@ impl<H: AppHandler> Server<H> {
             }
         };
 
-        let timeout = self._builder.graceful_shutdown_timeout.unwrap_or(Duration::from_secs(5));
+        let timeout = self._builder.graceful_shutdown_timeout.unwrap_or(Duration::from_secs(10));
 
         match tokio::time::timeout(timeout, self.graceful_shutdown()).await {
             Ok(Ok(())) => info!("Shutdown successful"),
@@ -321,13 +323,14 @@ impl<H: AppHandler> Server<H> {
     }
 
     async fn graceful_shutdown(&self) -> Result<(), ServerOutcome> {
-        // Run pre-shutdown hook
+        trace!("running pre-shutdown hook");
         self.app_handler.pre_shutdown(self).await.map_err(ServerOutcome::CustomError)?;
 
-        // Cancel all listeners
+        trace!("cancelling all listeners and active connections");
         self.shutdown_token.cancel();
+        self.conn_tracker.close();
 
-        // Cancel all schedules
+        trace!("aborting all schedules");
         let mut schedules = self.schedules.lock().await;
         schedules.abort_all();
 
@@ -335,20 +338,22 @@ impl<H: AppHandler> Server<H> {
             schedules.join_next().await;
         }
 
-        // Wait for all listeners to finish
+        trace!("waiting for all listeners to terminate");
         self.listener_tracker.wait().await;
+        trace!("waiting for all connections to terminate");
+        self.conn_tracker.wait().await;
 
-        // Run post-shutdown hook
+        trace!("running post-shutdown hook");
         self.app_handler.post_shutdown(self).await.map_err(ServerOutcome::CustomError)?;
 
-        // Done!
+        trace!("graceful shutdown complete!");
 
         Ok(())
     }
 
     pub(crate) async fn accept_connection(self: ServerHandle<H>, mut transport: QunetTransport) {
         // spawn a new task for the connection
-        tokio::spawn(async move {
+        self.clone().conn_tracker.spawn(async move {
             let client_ver = transport.data.qunet_major_version;
             let address = transport.address();
 
@@ -565,6 +570,17 @@ impl<H: AppHandler> Server<H> {
 
                 _ = tokio::time::sleep(timer_expiry.unwrap()), if timer_expiry.is_some() => {
                     transport.handle_timer_expiry().await
+                },
+
+                _ = self.shutdown_token.cancelled() => {
+                    // server has been shut down, notify and close the connection
+                    let _ = tokio::time::timeout(Duration::from_secs(1),
+                        transport.send_message(
+                            QunetMessage::ServerClose { error_code: QunetConnectionError::ServerShutdown, error_message: None },
+                        false, self)
+                    ).await;
+
+                    break;
                 },
 
                 notif = notif_chan.recv() => match notif {

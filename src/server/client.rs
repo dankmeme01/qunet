@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, ops::Deref};
+use std::{hash::Hash, net::SocketAddr, ops::Deref};
 
 use crate::{
     message::{BufferKind, channel},
@@ -71,5 +71,19 @@ impl<H: AppHandler> Deref for ClientState<H> {
 
     fn deref(&self) -> &Self::Target {
         &self.app_data
+    }
+}
+
+impl<H: AppHandler> PartialEq for ClientState<H> {
+    fn eq(&self, other: &Self) -> bool {
+        self.connection_id == other.connection_id
+    }
+}
+
+impl<H: AppHandler> Eq for ClientState<H> {}
+
+impl<H: AppHandler> Hash for ClientState<H> {
+    fn hash<Hs: std::hash::Hasher>(&self, state: &mut Hs) {
+        self.connection_id.hash(state);
     }
 }
