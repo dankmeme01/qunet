@@ -1,4 +1,4 @@
-use crate::client::Client;
+use crate::{client::Client, message::MsgData};
 
 pub type HandlerError = Box<dyn std::error::Error + Send + Sync>;
 pub type HandlerResult<T> = Result<T, HandlerError>;
@@ -24,6 +24,15 @@ pub trait EventHandler: Send + Sync + Sized + 'static {
 
     /// This callback is invoked when the client disconnects from a server, due to either a graceful shutdown or an error.
     fn on_disconnected(&self, client: &Client<Self>) -> impl Future<Output = ()> + Send {
+        async move {}
+    }
+
+    /// This callback is invoked when the client receives data from the server.
+    fn on_recv_data(
+        &self,
+        client: &Client<Self>,
+        data: MsgData<'_>,
+    ) -> impl Future<Output = ()> + Send {
         async move {}
     }
 }

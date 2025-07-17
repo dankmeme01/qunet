@@ -1,13 +1,12 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 
 use tracing::info;
 
 use crate::{
     buffers::byte_writer::{ByteWriter, ByteWriterError},
+    message::MsgData,
     server::{Server, ServerHandle, client::ClientState},
 };
-
-pub use crate::server::msg_data::MsgData;
 
 pub type AppError = Box<dyn std::error::Error + Send + Sync>;
 pub type AppResult<T> = Result<T, AppError>;
@@ -71,7 +70,7 @@ pub trait AppHandler: Send + Sync + Sized + 'static {
     fn on_client_disconnect(
         &self,
         server: &Server<Self>,
-        client: &ClientState<Self>,
+        client: &Arc<ClientState<Self>>,
     ) -> impl Future<Output = ()> + Send {
         async move {}
     }
@@ -83,7 +82,7 @@ pub trait AppHandler: Send + Sync + Sized + 'static {
     fn on_client_suspend(
         &self,
         server: &Server<Self>,
-        client: &ClientState<Self>,
+        client: &Arc<ClientState<Self>>,
     ) -> impl Future<Output = ()> + Send {
         async move {}
     }
@@ -92,7 +91,7 @@ pub trait AppHandler: Send + Sync + Sized + 'static {
     fn on_client_resume(
         &self,
         server: &Server<Self>,
-        client: &ClientState<Self>,
+        client: &Arc<ClientState<Self>>,
     ) -> impl Future<Output = ()> + Send {
         async move {}
     }
@@ -101,7 +100,7 @@ pub trait AppHandler: Send + Sync + Sized + 'static {
     fn on_client_data(
         &self,
         server: &Server<Self>,
-        client: &ClientState<Self>,
+        client: &Arc<ClientState<Self>>,
         data: MsgData<'_>,
     ) -> impl Future<Output = ()> + Send {
         async move {}

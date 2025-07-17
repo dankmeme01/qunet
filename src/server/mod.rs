@@ -9,7 +9,10 @@ use std::{
 use dashmap::DashMap;
 use nohash_hasher::BuildNoHashHasher;
 use thiserror::Error;
-use tokio::{sync::Mutex as AsyncMutex, task::JoinSet};
+use tokio::{
+    sync::{Mutex as AsyncMutex, Notify},
+    task::JoinSet,
+};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{debug, error, info, trace, warn};
 
@@ -21,12 +24,12 @@ use crate::{
     },
     database::{self, QunetDatabase},
     message::{
-        self, BufferKind, DataMessageKind, QUNET_SMALL_MESSAGE_SIZE, QunetMessage, QunetRawMessage,
+        self, BufferKind, MsgData, QUNET_SMALL_MESSAGE_SIZE, QunetMessage, QunetRawMessage,
         channel::{RawMessageReceiver, RawMessageSender},
     },
     protocol::{self, *},
     server::{
-        app_handler::{AppHandler, DefaultAppHandler, MsgData},
+        app_handler::{AppHandler, DefaultAppHandler},
         builder::ServerBuilder,
         client::{ClientNotification, ClientState},
         listeners::{
@@ -37,7 +40,7 @@ use crate::{
         },
     },
     transport::{
-        QunetTransport, TransportError, TransportType,
+        QunetTransport, TransportError, TransportErrorOutcome, TransportType,
         compression::{CompressError, CompressionHandler, CompressionHandlerImpl, DecompressError},
     },
 };
@@ -46,7 +49,6 @@ pub mod app_handler;
 pub mod builder;
 pub mod client;
 pub(crate) mod listeners;
-mod msg_data;
 
 #[derive(Error, Debug)]
 pub enum ServerOutcome {
@@ -94,6 +96,7 @@ pub struct Server<H: AppHandler> {
     shutdown_token: CancellationToken,
     listener_tracker: TaskTracker,
     conn_tracker: TaskTracker,
+    terminate_notify: Notify,
 
     udp_router: DashMap<u64, RawMessageSender, BuildNoHashHasher<u64>>,
     clients: DashMap<u64, Arc<ClientState<H>>, BuildNoHashHasher<u64>>,
@@ -115,12 +118,6 @@ impl Server<DefaultAppHandler> {
     pub fn builder() -> ServerBuilder<DefaultAppHandler> {
         ServerBuilder::<DefaultAppHandler>::default().with_app_handler(DefaultAppHandler)
     }
-}
-
-enum ErrorOutcome {
-    Terminate,
-    GracefulClosure,
-    Ignore,
 }
 
 impl<H: AppHandler> Server<H> {
@@ -153,6 +150,7 @@ impl<H: AppHandler> Server<H> {
             shutdown_token: CancellationToken::new(),
             listener_tracker: TaskTracker::new(),
             conn_tracker: TaskTracker::new(),
+            terminate_notify: Notify::new(),
 
             udp_router: DashMap::default(),
             clients: DashMap::default(),
@@ -296,6 +294,10 @@ impl<H: AppHandler> Server<H> {
             _ = self.listener_tracker.wait() => {
                 error!("All listeners have unexpectedly terminated, shutting down!");
                 return ServerOutcome::AllListenersTerminated;
+            },
+
+            _ = self.terminate_notify.notified() => {
+                info!("Server termination requested, trying to shut down gracefully");
             },
 
             _ = tokio::signal::ctrl_c() => {
@@ -554,14 +556,10 @@ impl<H: AppHandler> Server<H> {
 
             let res = tokio::select! {
                 msg = transport.receive_message() => match msg {
-                    Ok(mut msg) => {
-                        if msg.is_data_compressed() {
-                            match transport.decompress_message(msg, self).await {
-                                Ok(mut msg) => self.handle_client_message(transport, &client, &mut msg).await,
-                                Err(e) => Err(e),
-                            }
-                        } else {
-                            self.handle_client_message(transport, &client, &mut msg).await
+                    Ok(msg) => {
+                        match transport.decompress_message(msg, self).await {
+                            Ok(mut msg) => self.handle_client_message(transport, &client, &mut msg).await,
+                            Err(e) => Err(e),
                         }
                     },
 
@@ -586,7 +584,7 @@ impl<H: AppHandler> Server<H> {
                 notif = notif_chan.recv() => match notif {
                     Some(notif) => match notif {
                         ClientNotification::DataMessage{ buf, reliable } => {
-                            transport.send_message(QunetMessage::Data { kind: DataMessageKind::Regular { data: buf }, reliability: None, compression: None }, reliable, self).await
+                            transport.send_message(QunetMessage::new_data(buf), reliable, self).await
                         }
 
                         ClientNotification::RetransmitHandshake => {
@@ -616,10 +614,13 @@ impl<H: AppHandler> Server<H> {
 
             match res {
                 Ok(()) => continue,
-                Err(e) => match self.on_client_error(transport, &e) {
-                    ErrorOutcome::Terminate => return Err(e),
-                    ErrorOutcome::GracefulClosure => break,
-                    ErrorOutcome::Ignore => {}
+                Err(e) => match e.analyze() {
+                    TransportErrorOutcome::Terminate => return Err(e),
+                    TransportErrorOutcome::GracefulClosure => break,
+                    TransportErrorOutcome::Log => {
+                        warn!("[{}] error handling client message: {}", transport.address(), e);
+                    }
+                    TransportErrorOutcome::Ignore => {}
                 },
             }
         }
@@ -629,65 +630,11 @@ impl<H: AppHandler> Server<H> {
         Ok(())
     }
 
-    fn on_client_error(&self, transport: &QunetTransport, err: &TransportError) -> ErrorOutcome {
-        match err {
-            TransportError::ConnectionClosed => ErrorOutcome::GracefulClosure,
-            TransportError::IoError(e) => {
-                use std::io::Write;
-                // unfortunately we have to write the error to a buffer, i tried `downcast` but it just refused to work with s2n_quic errors
-
-                let mut buf = [0u8; 256];
-                let mut cursor = Cursor::new(&mut buf[..]);
-
-                let write_res = write!(cursor, "{e}");
-                let cpos = cursor.position();
-
-                if write_res.is_ok() {
-                    // check for the error type
-                    if let Ok(str) = std::str::from_utf8(&buf[..cpos as usize])
-                        && (str.contains("closed on the application level")
-                            || str.contains("connection was closed without an error"))
-                    {
-                        // s2n-quic no-error message, treat it the same as ConnectionClosed
-                        return ErrorOutcome::GracefulClosure;
-                    }
-                }
-
-                // TODO: handle other IO errors
-
-                ErrorOutcome::Terminate
-            }
-
-            // Critical errors
-            TransportError::MessageChannelClosed
-            | TransportError::ZeroLengthMessage
-            | TransportError::MessageTooLong
-            | TransportError::Timeout
-            | TransportError::TooUnreliable
-            | TransportError::TooManyPendingFragments
-            | TransportError::QuicError(_) => ErrorOutcome::Terminate,
-
-            // Errors that indicate a bug in the server
-            TransportError::CompressionError(_)
-            | TransportError::NotImplemented(_)
-            | TransportError::Other(_) => {
-                warn!("[{}] Unexpected error: {err}", transport.address());
-                ErrorOutcome::Ignore
-            }
-
-            // Non-critical errors, just log and continue
-            e => {
-                debug!("[{}] Error handling message: {}", transport.address(), e);
-                ErrorOutcome::Ignore
-            }
-        }
-    }
-
     #[inline]
     async fn handle_client_message(
         &self,
         transport: &mut QunetTransport,
-        client: &ClientState<H>,
+        client: &Arc<ClientState<H>>,
         msg: &mut QunetMessage,
     ) -> Result<(), TransportError> {
         #[cfg(debug_assertions)]
@@ -799,7 +746,7 @@ impl<H: AppHandler> Server<H> {
     #[inline]
     async fn handle_data_message(
         &self,
-        client: &ClientState<H>,
+        client: &Arc<ClientState<H>>,
         msg: &mut QunetMessage,
     ) -> Result<(), TransportError> {
         let data = match msg.data_bufkind_mut() {
@@ -871,6 +818,10 @@ impl<H: AppHandler> Server<H> {
     }
 
     // Public API for the application (sending packets, etc.)
+
+    pub fn shutdown(&self) {
+        self.terminate_notify.notify_one();
+    }
 
     pub async fn schedule<F, Fut>(self: ServerHandle<H>, interval: Duration, mut f: F)
     where

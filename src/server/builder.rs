@@ -117,13 +117,8 @@ pub struct ServerBuilder<H: AppHandler = DefaultAppHandler> {
 }
 
 impl<H: AppHandler> ServerBuilder<H> {
-    pub fn with_udp(mut self, address: SocketAddr, discovery_mode: UdpDiscoveryMode) -> Self {
-        self.udp_opts = Some(UdpOptions {
-            address,
-            binds: NonZeroUsize::new(1).unwrap(),
-            discovery_mode,
-        });
-        self
+    pub fn with_udp(self, address: SocketAddr, discovery_mode: UdpDiscoveryMode) -> Self {
+        self.with_udp_multiple(address, discovery_mode, 1)
     }
 
     pub fn with_udp_multiple(

@@ -1,6 +1,7 @@
 mod buffer_kind;
 pub mod channel;
 mod meta;
+mod msg_data;
 mod raw;
 
 pub use buffer_kind::BufferKind;
@@ -8,6 +9,7 @@ pub(crate) use meta::{
     CompressionHeader, CompressionType, FragmentationHeader, QunetMessageBareMeta,
     QunetMessageMeta, ReliabilityHeader,
 };
+pub use msg_data::MsgData;
 use num_derive::{FromPrimitive, ToPrimitive};
 pub use raw::{QUNET_SMALL_MESSAGE_SIZE, QunetRawMessage};
 
@@ -188,6 +190,14 @@ enum RawOrSlice<'a> {
 }
 
 impl QunetMessage {
+    pub fn new_data(buf: BufferKind) -> Self {
+        QunetMessage::Data {
+            kind: DataMessageKind::Regular { data: buf },
+            reliability: None,
+            compression: None,
+        }
+    }
+
     /// Parses the header of a Qunet message into a `QunetMessageMeta` structure,
     /// which can then be used to fully decode the message.
     #[inline]

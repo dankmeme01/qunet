@@ -1,18 +1,13 @@
 use std::{net::SocketAddr, num::NonZeroU32, sync::Arc, time::Duration};
 
-use thiserror::Error;
-
 #[cfg(feature = "client")]
 use crate::client::{Client, EventHandler};
 use crate::{
     buffers::multi_buffer_pool::MultiBufferPool,
-    message::{
-        CompressionHeader, CompressionType, DataMessageKind, QunetMessage, QunetMessageDecodeError,
-        channel,
-    },
+    message::{CompressionHeader, CompressionType, DataMessageKind, QunetMessage, channel},
     protocol::QunetHandshakeError,
     server::{Server, ServerHandle, app_handler::AppHandler, client::ClientNotification},
-    transport::compression::{CompressError, CompressionHandler, DecompressError},
+    transport::compression::CompressionHandler,
 };
 
 use self::{
@@ -25,12 +20,15 @@ use self::{
 pub(crate) use udp_misc::*;
 
 pub mod compression;
+mod error;
 pub mod lowlevel;
 pub mod quic;
 mod stream;
 pub mod tcp;
 pub mod udp;
 mod udp_misc;
+
+pub use error::{QuicError, TransportError, TransportErrorOutcome};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportType {
@@ -62,50 +60,6 @@ pub(crate) struct QunetTransport {
     pub(crate) kind: QunetTransportKind,
     pub data: QunetTransportData,
     pub notif_chan: (channel::Sender<ClientNotification>, channel::Receiver<ClientNotification>),
-}
-
-#[derive(Debug, Error)]
-pub enum QuicError {
-    #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
-    #[error("Failed to start client: {0}")]
-    ClientStartError(#[from] s2n_quic::provider::StartError),
-    #[error("Connection error: {0}")]
-    ConnectionError(#[from] s2n_quic::connection::Error),
-}
-
-#[derive(Debug, Error)]
-pub enum TransportError {
-    #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
-    #[error("Connection closed by peer")]
-    ConnectionClosed,
-    #[error("Operation timed out")]
-    Timeout,
-    #[error("Client sent an invalid zero-length message")]
-    ZeroLengthMessage,
-    #[error("Client sent a message that exceeds the size limit")]
-    MessageTooLong,
-    #[error("Failed to decode message: {0}")]
-    DecodeError(#[from] QunetMessageDecodeError),
-    #[error("Message channel was closed")]
-    MessageChannelClosed,
-    #[error("Failed to compress data: {0}")]
-    CompressionError(#[from] CompressError),
-    #[error("Failed to decompress data: {0}")]
-    DecompressionError(#[from] DecompressError),
-    #[error("Remote is too unreliable, way too many lost messages")]
-    TooUnreliable,
-    #[error("Too many pending fragmented messages")]
-    TooManyPendingFragments,
-    #[error("Error defragmenting message")]
-    DefragmentationError,
-    #[error("QUIC error: {0}")]
-    QuicError(#[from] QuicError),
-    #[error("Not implemented: {0}")]
-    NotImplemented(&'static str),
-    #[error("{0}")]
-    Other(String),
 }
 
 impl QunetTransportData {
@@ -289,6 +243,10 @@ impl QunetTransport {
         msg: QunetMessage,
         ch: &C,
     ) -> Result<QunetMessage, TransportError> {
+        if !msg.is_data_compressed() {
+            return Ok(msg);
+        }
+
         self.do_decompress_data_message(msg, ch).await
     }
 
