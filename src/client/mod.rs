@@ -413,8 +413,6 @@ impl<H: EventHandler> Client<H> {
                 },
             };
 
-            debug!("meow: {res:?}");
-
             match res {
                 Ok(()) => continue,
                 Err(e) => match e.analyze() {
