@@ -42,20 +42,31 @@ pub async fn receive_message<S: AsyncReadExt + Unpin>(
             if *buffer_pos >= total_len {
                 // we have a full message in the buffer
                 let data = &buffer[4..total_len];
-                // TODO dont early return if parsing failed, still shift the buffer
-                let meta = QunetMessage::parse_header(data, false)?;
-                let msg = QunetMessage::decode(meta, &transport_data.buffer_pool)?;
 
-                // shift leftover bytes in the buffer
-                // TODO: we could elide the memmove by adding another pos field
-                let leftover_bytes = *buffer_pos - total_len;
-                if leftover_bytes > 0 {
-                    buffer.copy_within(total_len..*buffer_pos, 0);
-                }
+                let do_shift = |buffer: &mut Vec<u8>, buffer_pos: &mut usize| {
+                    // shift leftover bytes in the buffer
+                    // TODO: we could elide the memmove by adding another pos field
+                    let leftover_bytes = *buffer_pos - total_len;
+                    if leftover_bytes > 0 {
+                        buffer.copy_within(total_len..*buffer_pos, 0);
+                    }
 
-                *buffer_pos = leftover_bytes;
+                    *buffer_pos = leftover_bytes;
+                };
 
-                return Ok(msg);
+                // parse the message header, skip this message if it fails
+                let meta = match QunetMessage::parse_header(data, false) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        do_shift(buffer, buffer_pos);
+                        return Err(e.into());
+                    }
+                };
+
+                let msg = QunetMessage::decode(meta, &transport_data.buffer_pool);
+                do_shift(buffer, buffer_pos);
+
+                return Ok(msg?);
             }
 
             // if there's not enough data but we know the length, check if additional space needs to be allocated
