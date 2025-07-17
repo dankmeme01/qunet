@@ -823,6 +823,10 @@ impl<H: AppHandler> Server<H> {
         self.terminate_notify.notify_one();
     }
 
+    pub fn handler(&self) -> &H {
+        &self.app_handler
+    }
+
     pub async fn schedule<F, Fut>(self: ServerHandle<H>, interval: Duration, mut f: F)
     where
         F: FnMut(ServerHandle<H>) -> Fut + Send + 'static,

@@ -191,6 +191,10 @@ impl<H: EventHandler> Client<H> {
         }
     }
 
+    pub fn handler(&self) -> &H {
+        &self.event_handler
+    }
+
     /// Attempt to asynchronously connect to the server at the given URL.
     /// See qunet-cpp Connection class for the URL format.
     pub fn connect(self: ClientHandle<H>, url: &str) -> Result<(), ConnectionError> {
@@ -337,7 +341,7 @@ impl<H: EventHandler> Client<H> {
     async fn main_loop_wrap(self: ClientHandle<H>, transport: QunetTransport) {
         assert_eq!(self.conn_state.load(Ordering::SeqCst), ConnectionState::Connected);
 
-        self.event_handler.on_connected(&*self).await;
+        self.event_handler.on_connected(&self).await;
 
         match self.clone().main_loop(transport).await {
             Ok(()) => {}
@@ -352,7 +356,7 @@ impl<H: EventHandler> Client<H> {
         }
 
         self._set_state(ConnectionState::Disconnected);
-        self.event_handler.on_disconnected(&*self).await;
+        self.event_handler.on_disconnected(&self).await;
     }
 
     async fn main_loop(
