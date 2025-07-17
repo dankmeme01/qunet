@@ -774,25 +774,25 @@ impl<H: AppHandler> Server<H> {
     }
 
     fn print_config(&self) {
-        info!("Server configuration:");
+        debug!("Server configuration:");
 
         if let Some(udp) = &self._builder.udp_opts {
-            info!(
+            debug!(
                 "- {} (UDP, {} binds, discovery mode: {:?})",
                 udp.address, udp.binds, udp.discovery_mode
             );
         }
 
         if let Some(tcp) = &self._builder.tcp_opts {
-            info!("- {} (TCP)", tcp.address);
+            debug!("- {} (TCP)", tcp.address);
         }
 
         if let Some(quic) = &self._builder.quic_opts {
-            info!("- {} (QUIC)", quic.address);
+            debug!("- {} (QUIC)", quic.address);
         }
 
         if let Some(ws) = &self._builder.ws_opts {
-            info!("- {} (WebSocket)", ws.address);
+            debug!("- {} (WebSocket)", ws.address);
         }
 
         debug!("- Estimate buffer pool memory usage: {} bytes", self.buffer_pool.heap_usage());
@@ -827,7 +827,7 @@ impl<H: AppHandler> Server<H> {
         &self.app_handler
     }
 
-    pub async fn schedule<F, Fut>(self: ServerHandle<H>, interval: Duration, mut f: F)
+    pub async fn schedule<F, Fut>(self: &ServerHandle<H>, interval: Duration, mut f: F)
     where
         F: FnMut(ServerHandle<H>) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
