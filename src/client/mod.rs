@@ -11,7 +11,10 @@ use hickory_resolver::{Resolver, config::*, name_server::TokioConnectionProvider
 use nohash_hasher::IntMap;
 use socket2::Domain;
 use thiserror::Error;
-use tokio::{net::UdpSocket, sync::Mutex};
+use tokio::{
+    net::UdpSocket,
+    sync::{Mutex, Notify},
+};
 use tracing::{debug, error, warn};
 
 use crate::{
@@ -116,6 +119,7 @@ pub struct Client<H: EventHandler> {
     resolver: Option<Resolver<TokioConnectionProvider>>,
     compressor: Mutex<CompressionHandlerImpl>,
     tx_msg_queue: (channel::Sender<QueuedMessage>, channel::Receiver<QueuedMessage>),
+    disconnect_notify: Notify,
 }
 
 impl Client<DefaultEventHandler> {
@@ -147,6 +151,7 @@ impl<H: EventHandler> Client<H> {
             resolver: None,
             compressor: Mutex::new(compressor),
             tx_msg_queue,
+            disconnect_notify: Notify::new(),
         }
     }
 
@@ -178,6 +183,10 @@ impl<H: EventHandler> Client<H> {
         let s = self.conn_state.load(Ordering::Relaxed);
 
         matches!(s, ConnectionState::Connected)
+    }
+
+    pub fn disconnect(&self) {
+        self.disconnect_notify.notify_waiters();
     }
 
     pub async fn request_buffer(&self, size: usize) -> BufferKind {
@@ -368,7 +377,6 @@ impl<H: EventHandler> Client<H> {
         while !transport.data.closed {
             let timer_expiry = transport.until_timer_expiry();
 
-            // TODO: graceful shutdown
             // TODO: keepalives
             let res = tokio::select! {
                 msg = transport.receive_message() => match msg {
@@ -388,6 +396,13 @@ impl<H: EventHandler> Client<H> {
                     transport.handle_timer_expiry().await
                 },
 
+                _ = self.disconnect_notify.notified() => {
+                    let compressor = self.compressor.lock().await;
+                    let _ = transport.send_message(QunetMessage::ClientClose { dont_terminate: false }, false, &*compressor).await;
+                    transport.data.closed = true;
+                    Ok(())
+                }
+
                 msg = self.tx_msg_queue.1.recv() => match msg {
                     Some(msg) => {
                         let compressor = self.compressor.lock().await;
@@ -397,6 +412,8 @@ impl<H: EventHandler> Client<H> {
                     None => Err(TransportError::MessageChannelClosed),
                 },
             };
+
+            debug!("meow: {res:?}");
 
             match res {
                 Ok(()) => continue,
@@ -411,7 +428,7 @@ impl<H: EventHandler> Client<H> {
             }
         }
 
-        todo!();
+        Ok(())
     }
 
     async fn handle_server_message(
