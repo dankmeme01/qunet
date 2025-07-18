@@ -77,7 +77,51 @@ impl BufferKind {
                     inner.append_bytes(data)
                 } else {
                     panic!(
-                        "tried calling deref_mut on BufferKind::Reference with more than 1 reference"
+                        "tried calling append_bytes on BufferKind::Reference with more than 1 reference"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Returns a mutable slice of the buffer that can be used for writing.
+    /// For `BufferKind::Heap`, it will return unallocated memory, which must not be read from, only written to.
+    /// Returns `None` if the buffer is not large enough to accommodate the requested size.
+    pub unsafe fn write_window(&mut self, size: usize) -> Option<&mut [u8]> {
+        match self {
+            BufferKind::Heap(buf) => {
+                if size > buf.capacity() {
+                    return None;
+                }
+
+                unsafe {
+                    buf.set_len(size);
+                }
+
+                Some(&mut buf[..size])
+            }
+            BufferKind::Pooled { buf, pos, .. } => {
+                if *pos + size > buf.len() {
+                    return None;
+                }
+
+                Some(&mut buf[*pos..*pos + size])
+            }
+
+            BufferKind::Small { buf, .. } => {
+                if buf.len() < size {
+                    return None;
+                }
+
+                Some(&mut buf[..size])
+            }
+
+            BufferKind::Reference(arc) => {
+                if let Some(inner) = Arc::get_mut(arc) {
+                    unsafe { inner.write_window(size) }
+                } else {
+                    panic!(
+                        "tried calling write_window on BufferKind::Reference with more than 1 reference"
                     );
                 }
             }
