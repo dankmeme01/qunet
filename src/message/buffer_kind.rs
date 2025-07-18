@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::{buffers::buffer_pool::PooledBuffer, message::QUNET_SMALL_MESSAGE_SIZE};
+use crate::{buffers::PooledBuffer, message::QUNET_SMALL_MESSAGE_SIZE};
 
 pub enum BufferKind {
     Heap(Vec<u8>),

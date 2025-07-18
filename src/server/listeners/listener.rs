@@ -3,7 +3,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::{
-    buffers::{byte_reader::ByteReaderError, byte_writer::ByteWriterError},
+    buffers::{ByteReaderError, ByteWriterError},
     server::{AcceptError, ServerHandle, app_handler::AppHandler},
 };
 

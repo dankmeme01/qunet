@@ -7,7 +7,7 @@ use tokio::net::UdpSocket;
 use tracing::{debug, debug_span};
 
 use crate::{
-    buffers::byte_writer::ByteWriter,
+    buffers::ByteWriter,
     message::{
         BufferKind, DataMessageKind, QunetMessage, ReliabilityHeader, channel::RawMessageReceiver,
     },

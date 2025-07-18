@@ -7,7 +7,7 @@ use nohash_hasher::IntMap;
 use tracing::debug;
 
 use crate::{
-    buffers::multi_buffer_pool::MultiBufferPool,
+    buffers::MultiBufferPool,
     message::{BufferKind, CompressionHeader, DataMessageKind, QunetMessage, ReliabilityHeader},
     transport::TransportError,
 };

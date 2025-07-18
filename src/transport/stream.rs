@@ -6,9 +6,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::debug;
 
 use crate::{
-    buffers::{
-        byte_reader::ByteReader, byte_writer::ByteWriter, multi_buffer_pool::MultiBufferPool,
-    },
+    buffers::{ByteReader, ByteWriter, MultiBufferPool},
     message::QunetMessage,
     protocol::{HANDSHAKE_HEADER_SIZE_WITH_QDB, MSG_HANDSHAKE_FINISH},
     transport::{QunetTransportData, TransportError},

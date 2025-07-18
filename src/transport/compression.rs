@@ -3,10 +3,7 @@ use std::{cell::RefCell, ops::DerefMut, sync::Arc};
 use thiserror::Error;
 use zstd_safe::{CCtx, CDict, DCtx, DDict};
 
-use crate::{
-    buffers::multi_buffer_pool::MultiBufferPool, message::BufferKind,
-    protocol::MSG_ZSTD_COMPRESSION_LEVEL,
-};
+use crate::{buffers::MultiBufferPool, message::BufferKind, protocol::MSG_ZSTD_COMPRESSION_LEVEL};
 
 thread_local! {
     static ZSTD_CCTX: RefCell<CCtx<'static>> = RefCell::new(CCtx::create());

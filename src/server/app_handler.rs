@@ -3,7 +3,7 @@ use std::{net::SocketAddr, sync::Arc};
 use tracing::info;
 
 use crate::{
-    buffers::byte_writer::{ByteWriter, ByteWriterError},
+    buffers::{ByteWriter, ByteWriterError},
     message::MsgData,
     server::{Server, ServerHandle, client::ClientState},
 };

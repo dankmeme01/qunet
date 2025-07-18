@@ -1,7 +1,7 @@
 use std::num::NonZeroU32;
 
 use crate::{
-    buffers::{bits::Bits, byte_reader::ByteReader},
+    buffers::{Bits, ByteReader},
     message::QunetMessageDecodeError,
     protocol::*,
 };

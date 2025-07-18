@@ -3,7 +3,7 @@ use std::{net::SocketAddr, num::NonZeroU32, sync::Arc, time::Duration};
 #[cfg(feature = "client")]
 use crate::client::{Client, EventHandler};
 use crate::{
-    buffers::multi_buffer_pool::MultiBufferPool,
+    buffers::MultiBufferPool,
     message::{CompressionHeader, CompressionType, DataMessageKind, QunetMessage, channel},
     protocol::QunetHandshakeError,
     server::{Server, ServerHandle, app_handler::AppHandler, client::ClientNotification},

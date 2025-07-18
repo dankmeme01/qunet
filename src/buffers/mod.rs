@@ -1,12 +1,22 @@
-pub mod binary_reader;
-pub mod binary_writer;
-pub mod bits;
-pub mod buffer_pool;
-pub mod byte_reader;
-pub mod byte_writer;
-pub mod circular_byte_buffer;
-pub mod heap_byte_writer;
-pub mod multi_buffer_pool;
+mod binary_reader;
+mod binary_writer;
+mod bits;
+mod buffer_pool;
+mod byte_reader;
+mod byte_writer;
+mod circular_byte_buffer;
+mod heap_byte_writer;
+mod multi_buffer_pool;
+
+pub use binary_reader::BinaryReader;
+pub use binary_writer::BinaryWriter;
+pub use bits::Bits;
+pub use buffer_pool::{BufferPool, BufferPoolStats, PooledBuffer};
+pub use byte_reader::{ByteReader, ByteReaderError};
+pub use byte_writer::{ByteWriter, ByteWriterError};
+pub use circular_byte_buffer::{CircularByteBuffer, NotEnoughData, WrappedRead};
+pub use heap_byte_writer::{HeapByteWriter, HeapByteWriterError};
+pub use multi_buffer_pool::{MultiBufferPool, MultiBufferPoolStats};
 
 #[cfg(test)]
 mod tests {

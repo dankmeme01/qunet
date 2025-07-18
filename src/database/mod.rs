@@ -2,7 +2,7 @@ use std::io;
 
 use thiserror::Error;
 
-use crate::buffers::{binary_reader::BinaryReader, binary_writer::BinaryWriter, bits::Bits};
+use crate::buffers::{BinaryReader, BinaryWriter, Bits};
 
 pub const CURRENT_VERSION: u16 = 1;
 

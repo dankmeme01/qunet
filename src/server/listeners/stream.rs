@@ -3,7 +3,7 @@
 use tokio::io::AsyncReadExt;
 
 use crate::{
-    buffers::byte_reader::ByteReader,
+    buffers::ByteReader,
     protocol::{HANDSHAKE_START_SIZE, MSG_HANDSHAKE_START},
     server::listeners::listener::ListenerError,
 };
