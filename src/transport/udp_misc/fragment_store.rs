@@ -7,7 +7,7 @@ use nohash_hasher::IntMap;
 use tracing::debug;
 
 use crate::{
-    buffers::MultiBufferPool,
+    buffers::BufPool,
     message::{BufferKind, CompressionHeader, DataMessageKind, QunetMessage, ReliabilityHeader},
     transport::TransportError,
 };
@@ -44,10 +44,10 @@ impl FragmentStore {
     }
 
     /// Accepts incoming message fragment. If a whole message is ready, it will be reassembled and returned, otherwise None is returned.
-    pub fn process_fragment(
+    pub fn process_fragment<P: BufPool>(
         &mut self,
         message: QunetMessage,
-        buffer_pool: &MultiBufferPool,
+        buffer_pool: &P,
     ) -> Result<Option<QunetMessage>, TransportError> {
         let (data, frag_header, rel_header, comp_header) = match message {
             QunetMessage::Data { kind, reliability, compression } => match kind {
@@ -131,9 +131,9 @@ impl FragmentStore {
         });
     }
 
-    fn reassemble(
+    fn reassemble<P: BufPool>(
         message: &mut Message,
-        buffer_pool: &MultiBufferPool,
+        buffer_pool: &P,
     ) -> Result<QunetMessage, TransportError> {
         // sort fragments by index
         message.fragments.sort_by_key(|f| f.index);

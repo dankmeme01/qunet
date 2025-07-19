@@ -134,7 +134,7 @@ impl<H: AppHandler> UdpServerListener<H> {
 
         // we try to reuse the same buffer when accepting packets,
         // only getting a new one when we give away this buffer to another task
-        let mut buf = self.buffer_pool.get().await;
+        let mut buf = self.buffer_pool.get_unchecked().await;
 
         loop {
             // TODO: dabble into recvmmsg for better performance, linux only
@@ -188,7 +188,7 @@ impl<H: AppHandler> UdpServerListener<H> {
                     // get a new buffer for the next message
                     buf = match self.buffer_pool.try_get() {
                         Some(x) => x,
-                        None => self.buffer_pool.get().await,
+                        None => self.buffer_pool.get_unchecked().await,
                     };
 
                     msg

@@ -18,7 +18,7 @@ use tokio::{
 use tracing::{debug, error, warn};
 
 use crate::{
-    buffers::{BufferPool, ByteWriter, MultiBufferPool},
+    buffers::{BufPool, ByteWriter, HybridBufferPool},
     client::builder::ClientBuilder,
     database::QunetDatabase,
     message::{BufferKind, MsgData, QUNET_SMALL_MESSAGE_SIZE, QunetMessage, channel},
@@ -112,10 +112,10 @@ struct QueuedMessage {
 pub struct Client<H: EventHandler> {
     pub(crate) _builder: ClientBuilder<H>,
     pub(crate) event_handler: H,
-    pub(crate) buffer_pool: Arc<MultiBufferPool>,
+    pub(crate) buffer_pool: Arc<HybridBufferPool>,
     conn_state: AtomicConnectionState,
     resolver: Option<Resolver<TokioConnectionProvider>>,
-    compressor: Mutex<CompressionHandlerImpl>,
+    compressor: Mutex<CompressionHandlerImpl<HybridBufferPool>>,
     tx_msg_queue: (channel::Sender<QueuedMessage>, channel::Receiver<QueuedMessage>),
     disconnect_notify: Notify,
 }
@@ -132,11 +132,9 @@ impl<H: EventHandler> Client<H> {
             builder.event_handler.take().expect("Event handler must be set in the builder");
 
         // init buffer pool
-        let mut buffer_pool = MultiBufferPool::new();
-        buffer_pool.add_pool(BufferPool::new(1024, 8, 256));
-        buffer_pool.add_pool(BufferPool::new(16384, 2, 64));
+        // TODO: make this configurable?
+        let buffer_pool = Arc::new(HybridBufferPool::new(1024 * 64, 4 * 1024 * 1024));
 
-        let buffer_pool = Arc::new(buffer_pool);
         let compressor = CompressionHandlerImpl::new(buffer_pool.clone());
 
         let tx_msg_queue = channel::new_channel(32);
@@ -617,7 +615,7 @@ impl<H: EventHandler> Client<H> {
                 Ok(Ok((len, addr))) => {
                     let data = &buf[..len];
                     let message = match QunetMessage::parse_header(data, true)
-                        .and_then(|x| QunetMessage::decode(x, &self.buffer_pool))
+                        .and_then(|x| QunetMessage::decode(x, &*self.buffer_pool))
                     {
                         Ok(msg) => msg,
                         Err(e) => {

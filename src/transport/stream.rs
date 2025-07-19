@@ -6,7 +6,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::debug;
 
 use crate::{
-    buffers::{ByteReader, ByteWriter, MultiBufferPool},
+    buffers::{BufPool, ByteReader, ByteWriter},
     message::QunetMessage,
     protocol::{HANDSHAKE_HEADER_SIZE_WITH_QDB, MSG_HANDSHAKE_FINISH},
     transport::{QunetTransportData, TransportError},
@@ -61,7 +61,7 @@ pub async fn receive_message<S: AsyncReadExt + Unpin>(
                     }
                 };
 
-                let msg = QunetMessage::decode(meta, &transport_data.buffer_pool);
+                let msg = QunetMessage::decode(meta, &*transport_data.buffer_pool);
                 do_shift(buffer, buffer_pos);
 
                 return Ok(msg?);
@@ -122,7 +122,7 @@ pub async fn send_handshake_response<S: AsyncWriteExt + Unpin>(
 
         let mut iovecs = [IoSlice::new(header_writer.written()), IoSlice::new(qdb_data)];
 
-        send_raw_bytes_vectored(stream, &mut iovecs, &transport_data.buffer_pool).await?;
+        send_raw_bytes_vectored(stream, &mut iovecs, &*transport_data.buffer_pool).await?;
     } else {
         debug!("Sending {conn_type} handshake response (no QDB)");
 
@@ -164,7 +164,7 @@ pub async fn send_message<S: AsyncWriteExt + Unpin>(
         }
 
         let mut vecs = [IoSlice::new(header_writer.written()), IoSlice::new(body_writer.written())];
-        send_raw_bytes_vectored(_stream, &mut vecs, &transport_data.buffer_pool).await?;
+        send_raw_bytes_vectored(_stream, &mut vecs, &*transport_data.buffer_pool).await?;
 
         return Ok(());
     }
@@ -180,7 +180,7 @@ pub async fn send_message<S: AsyncWriteExt + Unpin>(
     }
 
     let mut vecs = [IoSlice::new(header_writer.written()), IoSlice::new(data)];
-    send_raw_bytes_vectored(_stream, &mut vecs, &transport_data.buffer_pool).await?;
+    send_raw_bytes_vectored(_stream, &mut vecs, &*transport_data.buffer_pool).await?;
 
     Ok(())
 }
@@ -195,10 +195,10 @@ pub async fn send_raw_bytes<S: AsyncWriteExt + Unpin>(
 /// Sends a vector of IoSlices to the stream, returning an error if the write fails.
 /// If the underlying stream does not support vectored writes, it will allocate a buffer from the pool
 /// if possible, otherwise allocates a temporary buffer.
-pub async fn send_raw_bytes_vectored<S: AsyncWriteExt + Unpin>(
+pub async fn send_raw_bytes_vectored<P: BufPool, S: AsyncWriteExt + Unpin>(
     stream: &mut S,
     bufs: &mut [IoSlice<'_>],
-    buffer_pool: &MultiBufferPool,
+    buffer_pool: &P,
 ) -> Result<(), TransportError> {
     if stream.is_write_vectored() {
         do_vectored_write(stream, bufs).await

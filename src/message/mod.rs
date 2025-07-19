@@ -19,8 +19,7 @@ use thiserror::Error;
 
 use crate::{
     buffers::{
-        BinaryWriter, Bits, ByteReader, ByteReaderError, ByteWriter, ByteWriterError,
-        MultiBufferPool,
+        BinaryWriter, Bits, BufPool, ByteReader, ByteReaderError, ByteWriter, ByteWriterError,
     },
     protocol::*,
 };
@@ -206,9 +205,9 @@ impl QunetMessage {
     }
 
     /// Get a buffer for additional data in a message.
-    fn _fill_additional_data(
+    fn _fill_additional_data<P: BufPool>(
         size: usize,
-        pool: &MultiBufferPool,
+        pool: &P,
         reader: &mut ByteReader<'_>,
     ) -> Result<Option<BufferKind>, QunetMessageDecodeError> {
         if size > pool.max_buf_size() {
@@ -235,9 +234,9 @@ impl QunetMessage {
     }
 
     /// Decodes a Qunet message from a `QunetMessageMeta` structure earlier obtained from `parse_header`.
-    pub fn decode(
+    pub fn decode<P: BufPool>(
         meta: QunetMessageMeta<'_>,
-        buffer_pool: &MultiBufferPool,
+        buffer_pool: &P,
     ) -> Result<QunetMessage, QunetMessageDecodeError> {
         let mut reader = ByteReader::new(meta.data);
         if !meta.bare.is_data {
@@ -369,9 +368,9 @@ impl QunetMessage {
         }
     }
 
-    fn decode_data_message(
+    fn decode_data_message<P: BufPool>(
         meta: QunetMessageBareMeta,
-        buffer_pool: &MultiBufferPool,
+        buffer_pool: &P,
         raw_msg: RawOrSlice<'_>,
     ) -> Result<QunetMessage, QunetMessageDecodeError> {
         // we want to try and not copy data/request buffers if possible
@@ -441,9 +440,9 @@ impl QunetMessage {
 
     /// Decodes a `QunetRawMessage` into a `QunetMessage`. UDP is assumed.
     #[inline]
-    pub fn from_raw_udp_message(
+    pub fn from_raw_udp_message<P: BufPool>(
         raw_msg: QunetRawMessage,
-        buffer_pool: &MultiBufferPool,
+        buffer_pool: &P,
     ) -> Result<QunetMessage, QunetMessageDecodeError> {
         let meta = QunetMessageMeta::parse(&raw_msg, true)?;
 

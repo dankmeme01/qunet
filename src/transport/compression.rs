@@ -3,7 +3,7 @@ use std::{cell::RefCell, ops::DerefMut, sync::Arc};
 use thiserror::Error;
 use zstd_safe::{CCtx, CDict, DCtx, DDict};
 
-use crate::{buffers::MultiBufferPool, message::BufferKind, protocol::MSG_ZSTD_COMPRESSION_LEVEL};
+use crate::{buffers::BufPool, message::BufferKind, protocol::MSG_ZSTD_COMPRESSION_LEVEL};
 
 thread_local! {
     static ZSTD_CCTX: RefCell<CCtx<'static>> = RefCell::new(CCtx::create());
@@ -119,14 +119,14 @@ pub trait CompressionHandler {
 
 // A compression handler that works with a buffer pool and optional dictionaries
 
-pub struct CompressionHandlerImpl {
+pub struct CompressionHandlerImpl<P: BufPool> {
     zstd_cdict: Option<CDict<'static>>,
     zstd_ddict: Option<DDict<'static>>,
-    buffer_pool: Arc<MultiBufferPool>,
+    buffer_pool: Arc<P>,
 }
 
-impl CompressionHandlerImpl {
-    pub fn new(buffer_pool: Arc<MultiBufferPool>) -> Self {
+impl<P: BufPool> CompressionHandlerImpl<P> {
+    pub fn new(buffer_pool: Arc<P>) -> Self {
         Self {
             zstd_cdict: None,
             zstd_ddict: None,
@@ -143,7 +143,7 @@ impl CompressionHandlerImpl {
     }
 }
 
-impl CompressionHandlerImpl {
+impl<P: BufPool> CompressionHandlerImpl<P> {
     async fn get_new_buffer(&self, size: usize) -> BufferKind {
         match self.buffer_pool.get(size).await {
             Some(buf) => BufferKind::new_pooled(buf),
@@ -181,7 +181,7 @@ impl CompressionHandlerImpl {
     }
 }
 
-impl CompressionHandler for CompressionHandlerImpl {
+impl<P: BufPool> CompressionHandler for CompressionHandlerImpl<P> {
     async fn compress_zstd(&self, data: &[u8]) -> Result<BufferKind, CompressError> {
         let needed_len = zstd_compress_bound(data.len());
 

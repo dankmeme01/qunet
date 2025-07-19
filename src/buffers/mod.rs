@@ -6,16 +6,18 @@ mod byte_reader;
 mod byte_writer;
 mod circular_byte_buffer;
 mod heap_byte_writer;
+mod hybrid_buffer_pool;
 mod multi_buffer_pool;
 
 pub use binary_reader::BinaryReader;
 pub use binary_writer::BinaryWriter;
 pub use bits::Bits;
-pub use buffer_pool::{BufferPool, BufferPoolStats, PooledBuffer};
+pub use buffer_pool::{BufPool, BufferPool, BufferPoolStats, PooledBuffer};
 pub use byte_reader::{ByteReader, ByteReaderError};
 pub use byte_writer::{ByteWriter, ByteWriterError};
 pub use circular_byte_buffer::{CircularByteBuffer, NotEnoughData, WrappedRead};
 pub use heap_byte_writer::{HeapByteWriter, HeapByteWriterError};
+pub use hybrid_buffer_pool::{HybridBufferPool, HybridBufferPoolStats};
 pub use multi_buffer_pool::{MultiBufferPool, MultiBufferPoolStats};
 
 #[cfg(test)]
@@ -28,26 +30,28 @@ mod tests {
 
         assert_eq!(pool.buf_size(), 1024);
 
-        let one = pool.get().await;
+        let one = pool.get_unchecked().await;
         assert_eq!(one.len(), 1024);
         drop(one);
 
         let mut vec = Vec::new();
 
         for _ in 0..16 {
-            let buf = pool.get().await;
+            let buf = pool.get_unchecked().await;
             vec.push(buf);
         }
 
         // assert that taking the next buffer will time out
-        let result = tokio::time::timeout(std::time::Duration::from_millis(100), pool.get()).await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(100), pool.get_unchecked()).await;
         assert!(result.is_err(), "Expected timeout when trying to get more buffers than available");
 
         // drop one
         drop(vec.pop());
 
         // assert that we can get a new buffer now
-        let result = tokio::time::timeout(std::time::Duration::from_millis(100), pool.get()).await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(100), pool.get_unchecked()).await;
         assert!(result.is_ok(), "Expected to get a new buffer after dropping one");
     }
 

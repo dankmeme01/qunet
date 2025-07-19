@@ -115,7 +115,8 @@ impl ClientUdpTransport {
             None => unreachable!("run_setup was not called before receiving messages"),
         }?;
 
-        let mut message = QunetMessage::from_raw_udp_message(raw_msg, &transport_data.buffer_pool)?;
+        let mut message =
+            QunetMessage::from_raw_udp_message(raw_msg, &*transport_data.buffer_pool)?;
 
         if !message.is_data() {
             // control messages don't need special handling
@@ -131,7 +132,7 @@ impl ClientUdpTransport {
             let span = debug_span!("process_fragment", conn = transport_data.connection_id);
             let _g = span.enter();
 
-            match self.frag_store.process_fragment(message, &transport_data.buffer_pool)? {
+            match self.frag_store.process_fragment(message, &*transport_data.buffer_pool)? {
                 None => {
                     // not enough fragments yet, return None
                     return Ok(None);

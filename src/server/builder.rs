@@ -76,7 +76,8 @@ impl BufferPoolOpts {
 
 #[derive(Debug, Clone)]
 pub struct MemoryUsageOptions {
-    pub buffer_pools: Vec<BufferPoolOpts>,
+    pub initial_mem: usize,
+    pub max_mem: usize,
     pub udp_listener_buffer_pool: BufferPoolOpts,
     pub udp_recv_buffer_size: Option<usize>,
     pub udp_send_buffer_size: Option<usize>,
@@ -85,12 +86,9 @@ pub struct MemoryUsageOptions {
 impl Default for MemoryUsageOptions {
     fn default() -> Self {
         Self {
-            buffer_pools: vec![
-                BufferPoolOpts::new(1500, 256, 4096), // buffers around mtu size for udp
-                BufferPoolOpts::new(4096, 128, 1024), // small buffers
-                BufferPoolOpts::new(65536, 16, 256),  // large buffers
-            ],
-            udp_listener_buffer_pool: BufferPoolOpts::new(1500, 64, 512),
+            initial_mem: 1024 * 64,    // 64 kib
+            max_mem: 16 * 1024 * 1024, // 16 mib
+            udp_listener_buffer_pool: BufferPoolOpts::new(1500, 64, 1024),
             udp_recv_buffer_size: None,
             udp_send_buffer_size: None,
         }

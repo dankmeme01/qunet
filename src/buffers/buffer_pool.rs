@@ -14,12 +14,12 @@ use tracing::warn;
 struct BufferPoolInner {
     storage: Mutex<Vec<Box<[u8]>>>,
     semaphore: Arc<Semaphore>,
+    allocated_buffers: AtomicUsize,
 }
 
 pub struct BufferPool {
     buf_size: usize,
     max_buffers: usize,
-    allocated_buffers: AtomicUsize,
     inner: Arc<BufferPoolInner>,
 }
 
@@ -32,9 +32,41 @@ pub struct BufferPoolStats {
 }
 
 impl BufferPoolInner {
+    /// Atomically returns a buffer to the pool and returns the semaphore permit if it was acquired.
+    /// If not acquired, increments the semaphore permit count by 1.
     #[inline]
-    fn return_buffer(&self, buffer: Box<[u8]>) {
-        self.storage.lock().push(buffer);
+    fn return_buffer(&self, buffer: Box<[u8]>, permit: Option<OwnedSemaphorePermit>) {
+        let mut storage = self.storage.lock();
+        storage.push(buffer);
+
+        // if we have a permit, it will release on its own when dropped,
+        // if we don't have a permit, we need to manually increment the semaphore permit count
+        match permit {
+            Some(_) => {}
+            None => self.semaphore.add_permits(1),
+        }
+
+        // // if less than half the buffers are actually used, automatically shrink the pool
+        // let allocated = self.allocated_buffers.load(Ordering::Relaxed);
+        // if storage.len() <= allocated / 2 {
+        //     self.shrink();
+        // }
+    }
+
+    fn shrink(&self) {
+        // `forget_permits` returns how many permits actually were released, and we can free that many buffers
+        let released_bufs =
+            self.semaphore.forget_permits(self.allocated_buffers.load(Ordering::Relaxed));
+
+        // decrease the allocated buffers count
+        self.allocated_buffers.fetch_sub(released_bufs, Ordering::SeqCst);
+
+        let mut storage = self.storage.lock();
+
+        assert!(released_bufs <= storage.len());
+
+        let to_keep = storage.len() - released_bufs;
+        storage.truncate(to_keep);
     }
 }
 
@@ -53,12 +85,12 @@ impl BufferPool {
         let inner = BufferPoolInner {
             storage: Mutex::new(storage),
             semaphore: Arc::new(Semaphore::new(initial_buffers)),
+            allocated_buffers: AtomicUsize::new(initial_buffers),
         };
 
         Self {
             buf_size,
             max_buffers,
-            allocated_buffers: AtomicUsize::new(initial_buffers),
             inner: Arc::new(inner),
         }
     }
@@ -87,7 +119,8 @@ impl BufferPool {
         vec![0u8; self.buf_size].into_boxed_slice()
     }
 
-    pub async fn get(&self) -> PooledBuffer {
+    /// Like `get`, but without needing to pass the size.
+    pub async fn get_unchecked(&self) -> PooledBuffer {
         if let Some(buffer) = self.try_get() {
             return buffer;
         }
@@ -117,7 +150,7 @@ impl BufferPool {
         }
 
         // if we failed to acquire a permit, see if we can grow the pool
-        let mut num_buffers = self.allocated_buffers.load(Ordering::Relaxed);
+        let mut num_buffers = self.inner.allocated_buffers.load(Ordering::Relaxed);
 
         loop {
             if num_buffers >= self.max_buffers {
@@ -125,7 +158,7 @@ impl BufferPool {
             }
 
             // try to grow the pool
-            match self.allocated_buffers.compare_exchange(
+            match self.inner.allocated_buffers.compare_exchange(
                 num_buffers,
                 num_buffers + 1,
                 Ordering::SeqCst,
@@ -147,9 +180,9 @@ impl BufferPool {
         }
     }
 
-    pub fn get_busy_loop(&self) -> PooledBuffer {
+    pub fn get_busy_loop_unchecked(&self) -> PooledBuffer {
         loop {
-            let bufs = self.allocated_buffers.load(Ordering::Relaxed);
+            let bufs = self.inner.allocated_buffers.load(Ordering::Relaxed);
             let buf = if bufs >= self.max_buffers {
                 self.try_get_no_grow()
             } else {
@@ -171,24 +204,6 @@ impl BufferPool {
         }
     }
 
-    /// Shrinks the pool to the smallest possible size, releasing the excess buffers.
-    /// This will free up memory, but subsequent calls to `get` or `try_get` may have to allocate new buffers again.
-    pub fn shrink(&self) {
-        // `forget_permits` returns how many permits actually were released, and we can free that many buffers
-        let released_bufs =
-            self.inner.semaphore.forget_permits(self.allocated_buffers.load(Ordering::Relaxed));
-
-        // decrease the allocated buffers count
-        self.allocated_buffers.fetch_sub(released_bufs, Ordering::SeqCst);
-
-        let mut storage = self.inner.storage.lock();
-
-        assert!(released_bufs <= storage.len());
-
-        let to_keep = storage.len() - released_bufs;
-        storage.truncate(to_keep);
-    }
-
     /// Returns the size of a single buffer in this pool.
     #[inline]
     pub fn buf_size(&self) -> usize {
@@ -198,11 +213,11 @@ impl BufferPool {
     /// Returns the total heap usage of this pool. (only including buffers, not the pool itself)
     #[inline]
     pub fn heap_usage(&self) -> usize {
-        self.buf_size * self.allocated_buffers.load(Ordering::Relaxed)
+        self.buf_size * self.inner.allocated_buffers.load(Ordering::Relaxed)
     }
 
     pub fn stats(&self) -> BufferPoolStats {
-        let allocated = self.allocated_buffers.load(Ordering::Relaxed);
+        let allocated = self.inner.allocated_buffers.load(Ordering::Relaxed);
         let max = self.max_buffers;
         let available = self.inner.semaphore.available_permits();
 
@@ -284,13 +299,77 @@ impl Drop for PooledBuffer {
 
         // safety: `self.buffer` is never used after this point
         let buf = unsafe { ManuallyDrop::take(&mut self.buffer) };
-        self.pool.return_buffer(buf);
+        self.pool.return_buffer(buf, self.permit.take());
+    }
+}
 
-        // if we have a permit, it will release on its own when dropped,
-        // if we don't have a permit, we need to manually increment the semaphore permit count
+pub trait BufPool: Send + Sync + 'static {
+    fn get(&self, size: usize) -> impl Future<Output = Option<PooledBuffer>> + Send;
+    /// Same as `get`, but is synchronous. Not recommended to use in async code.
+    fn get_busy_loop(&self, size: usize) -> Option<PooledBuffer>;
 
-        if self.permit.is_none() {
-            self.pool.semaphore.add_permits(1);
+    /// Attempts to returns a new buffer of at least `size` bytes without blocking.
+    /// If no pool is large enough or no buffers are available in the chosen pool, this will return `None`.
+    fn try_get(&self, size: usize) -> Option<PooledBuffer>;
+
+    /// Returns the size of the smallest buffer in the pool.
+    fn min_buf_size(&self) -> usize;
+    /// Returns the size of the largest buffer in the pool.
+    fn max_buf_size(&self) -> usize;
+
+    /// Shrinks the pool to the smallest possible size, releasing the excess buffers.
+    /// This will free up memory, but subsequent calls to `get` or `try_get` may have to allocate new buffers again.
+    fn shrink(&self);
+
+    /// Returns the total heap usage of all the buffer pools. (only including buffers, not the pool itself or any inner pools)
+    fn heap_usage(&self) -> usize;
+
+    /// Returns whether it is possible to allocate a buffer of at least `size` bytes in the pool.
+    fn can_allocate(&self, size: usize) -> bool {
+        size <= self.max_buf_size()
+    }
+}
+
+impl BufPool for BufferPool {
+    /// Returns a future which will return a new buffer of at least `size` bytes, as soon as one is available.
+    /// If no pool is large enough, this will return `None`.
+    async fn get(&self, size: usize) -> Option<PooledBuffer> {
+        if size > self.buf_size {
+            return None;
         }
+
+        Some(self.get_unchecked().await)
+    }
+
+    fn try_get(&self, size: usize) -> Option<PooledBuffer> {
+        if size > self.buf_size {
+            return None;
+        }
+
+        self.try_get()
+    }
+
+    fn get_busy_loop(&self, size: usize) -> Option<PooledBuffer> {
+        if size > self.buf_size {
+            return None;
+        }
+
+        Some(self.get_busy_loop_unchecked())
+    }
+
+    fn min_buf_size(&self) -> usize {
+        self.buf_size
+    }
+
+    fn max_buf_size(&self) -> usize {
+        self.buf_size
+    }
+
+    fn shrink(&self) {
+        self.inner.shrink();
+    }
+
+    fn heap_usage(&self) -> usize {
+        self.heap_usage()
     }
 }

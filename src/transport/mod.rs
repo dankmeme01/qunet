@@ -3,7 +3,7 @@ use std::{net::SocketAddr, num::NonZeroU32, sync::Arc, time::Duration};
 #[cfg(feature = "client")]
 use crate::client::{Client, EventHandler};
 use crate::{
-    buffers::MultiBufferPool,
+    buffers::{HybridBufferPool, MultiBufferPool},
     message::{CompressionHeader, CompressionType, DataMessageKind, QunetMessage, channel},
     protocol::QunetHandshakeError,
     server::{Server, ServerHandle, app_handler::AppHandler, client::ClientNotification},
@@ -50,7 +50,7 @@ pub(crate) struct QunetTransportData {
     pub qunet_major_version: u16,
     pub initial_qdb_hash: [u8; 16],
     pub message_size_limit: usize,
-    pub buffer_pool: Arc<MultiBufferPool>,
+    pub buffer_pool: Arc<HybridBufferPool>,
 
     c_sockaddr_data: SocketAddrCRepr,
     c_sockaddr_len: libc::socklen_t,
@@ -112,7 +112,7 @@ impl QunetTransport {
         qunet_major_version: u16,
         initial_qdb_hash: [u8; 16],
         message_size_limit: usize,
-        buffer_pool: Arc<MultiBufferPool>,
+        buffer_pool: Arc<HybridBufferPool>,
     ) -> Self {
         let (c_sockaddr_data, c_sockaddr_len) = socket_addr_to_c(&address);
 

@@ -17,7 +17,7 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
-    buffers::{BufferPool, ByteWriter, ByteWriterError, MultiBufferPool},
+    buffers::{BufPool, ByteWriter, ByteWriterError, HybridBufferPool},
     database::{self, QunetDatabase},
     message::{
         self, BufferKind, MsgData, QUNET_SMALL_MESSAGE_SIZE, QunetMessage, QunetRawMessage,
@@ -84,7 +84,7 @@ pub struct Server<H: AppHandler> {
     udp_listener: Option<Arc<UdpServerListener<H>>>,
     tcp_listener: Option<Arc<TcpServerListener<H>>>,
     quic_listener: Option<Arc<QuicServerListener<H>>>,
-    pub(crate) buffer_pool: Arc<MultiBufferPool>,
+    pub(crate) buffer_pool: Arc<HybridBufferPool>,
     pub(crate) app_handler: H,
 
     shutdown_token: CancellationToken,
@@ -96,7 +96,7 @@ pub struct Server<H: AppHandler> {
     clients: DashMap<u64, Arc<ClientState<H>>, BuildNoHashHasher<u64>>,
     connected_addrs: DashMap<SocketAddr, u64>, // this serves to detect duplicate connections from the same ip:port tuple
     schedules: AsyncMutex<JoinSet<!>>,
-    compressor: CompressionHandlerImpl,
+    compressor: CompressionHandlerImpl<HybridBufferPool>,
 
     // misc settings
     message_size_limit: usize,
@@ -120,17 +120,11 @@ impl<H: AppHandler> Server<H> {
             builder.app_handler.take().expect("App handler must be set in the builder");
 
         // setup buffer pool, while it's unique
-        let mut buffer_pool = MultiBufferPool::new();
+        let buffer_pool = Arc::new(HybridBufferPool::new(
+            builder.mem_options.initial_mem,
+            builder.mem_options.max_mem,
+        ));
 
-        for opts in &builder.mem_options.buffer_pools {
-            buffer_pool.add_pool(BufferPool::new(
-                opts.buf_size,
-                opts.initial_buffers,
-                opts.max_buffers,
-            ));
-        }
-
-        let buffer_pool = Arc::new(buffer_pool);
         let compressor = CompressionHandlerImpl::new(buffer_pool.clone());
 
         Server {
