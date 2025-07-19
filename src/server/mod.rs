@@ -333,7 +333,9 @@ impl<H: AppHandler> Server<H> {
         trace!("waiting for all connections to terminate");
         self.conn_tracker.wait().await;
 
-        trace!("running post-shutdown hook");
+        trace!("cleaning up and running post-shutdown hook");
+        self.clients.clear();
+        self.udp_router.clear();
         self.app_handler.post_shutdown(self).await.map_err(ServerOutcome::CustomError)?;
 
         trace!("graceful shutdown complete!");
