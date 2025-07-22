@@ -338,11 +338,7 @@ impl<H: AppHandler> UdpServerListener<H> {
         frag_limit = frag_limit.clamp(1000, UDP_PACKET_LIMIT as u16);
 
         let transport = QunetTransport::new_server(
-            QunetTransportKind::Udp(ClientUdpTransport::new(
-                socket,
-                frag_limit as usize,
-                server._builder.listener_opts.idle_timeout,
-            )),
+            QunetTransportKind::Udp(ClientUdpTransport::new(socket, frag_limit as usize)),
             peer,
             major_version,
             qdb_hash,

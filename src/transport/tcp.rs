@@ -25,12 +25,10 @@ pub(crate) struct ClientTcpTransport {
     sock_read: OwnedReadHalf,
     buffer: Vec<u8>,
     buffer_pos: usize,
-    idle_timeout: Duration,
-    last_data_exchange: Instant,
 }
 
 impl ClientTcpTransport {
-    pub fn new(socket: TcpStream, idle_timeout: Duration) -> Self {
+    pub fn new(socket: TcpStream) -> Self {
         let (sock_read, sock_write) = socket.into_split();
 
         Self {
@@ -38,15 +36,13 @@ impl ClientTcpTransport {
             sock_write,
             buffer: vec![0u8; 512], // TODO: if it's a significant performance issue, don't zero the bytes, also maybe make size configurable
             buffer_pos: 0,
-            idle_timeout,
-            last_data_exchange: Instant::now(),
         }
     }
 
-    pub async fn connect(addr: SocketAddr, idle_timeout: Duration) -> Result<Self, io::Error> {
+    pub async fn connect(addr: SocketAddr) -> Result<Self, io::Error> {
         let socket = TcpStream::connect(addr).await?;
 
-        Ok(Self::new(socket, idle_timeout))
+        Ok(Self::new(socket))
     }
 
     pub async fn run_setup(&mut self) -> Result<(), TransportError> {
@@ -60,33 +56,9 @@ impl ClientTcpTransport {
 
         Ok(())
     }
-
-    #[inline]
-    fn update_exchange_time(&mut self) {
-        self.last_data_exchange = Instant::now();
-    }
-
-    #[inline]
-    pub fn until_timer_expiry(&self) -> Duration {
-        self.idle_timeout.saturating_sub(self.last_data_exchange.elapsed())
-    }
-
-    #[inline]
-    pub fn handle_timer_expiry(
-        &self,
-        transport_data: &mut QunetTransportData,
-    ) -> Result<(), TransportError> {
-        if self.last_data_exchange.elapsed() >= self.idle_timeout {
-            debug!("[{}] idle timeout reached, closing connection", transport_data.address);
-            transport_data.closed = true;
-        }
-
-        Ok(())
-    }
-
     pub async fn receive_message(
         &mut self,
-        transport_data: &QunetTransportData,
+        transport_data: &mut QunetTransportData,
     ) -> Result<QunetMessage, TransportError> {
         let msg = stream::receive_message(
             &mut self.buffer,
@@ -96,17 +68,17 @@ impl ClientTcpTransport {
         )
         .await?;
 
-        self.update_exchange_time();
+        transport_data.update_exchange_time();
 
         Ok(msg)
     }
 
     pub async fn send_message(
         &mut self,
-        transport_data: &QunetTransportData,
+        transport_data: &mut QunetTransportData,
         msg: QunetMessage,
     ) -> Result<(), TransportError> {
-        self.update_exchange_time();
+        transport_data.update_exchange_time();
 
         match tokio::time::timeout(
             Duration::from_secs(30),

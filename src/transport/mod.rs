@@ -1,9 +1,14 @@
-use std::{net::SocketAddr, num::NonZeroU32, sync::Arc, time::Duration};
+use std::{
+    net::SocketAddr,
+    num::NonZeroU32,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 #[cfg(feature = "client")]
 use crate::client::{Client, EventHandler};
 use crate::{
-    buffers::{HybridBufferPool, MultiBufferPool},
+    buffers::HybridBufferPool,
     message::{CompressionHeader, CompressionType, DataMessageKind, QunetMessage, channel},
     protocol::QunetHandshakeError,
     server::{Server, ServerHandle, app_handler::AppHandler, client::ClientNotification},
@@ -17,6 +22,7 @@ use self::{
     udp::ClientUdpTransport,
 };
 
+use tracing::debug;
 pub(crate) use udp_misc::*;
 
 pub mod compression;
@@ -51,6 +57,9 @@ pub(crate) struct QunetTransportData {
     pub initial_qdb_hash: [u8; 16],
     pub message_size_limit: usize,
     pub buffer_pool: Arc<HybridBufferPool>,
+    pub idle_timeout: Duration,
+    pub last_data_exchange: Instant,
+    pub keepalive_interval: Duration,
 
     c_sockaddr_data: SocketAddrCRepr,
     c_sockaddr_len: libc::socklen_t,
@@ -65,6 +74,11 @@ pub(crate) struct QunetTransport {
 impl QunetTransportData {
     pub fn c_sockaddr(&self) -> (&SocketAddrCRepr, libc::socklen_t) {
         (&self.c_sockaddr_data, self.c_sockaddr_len)
+    }
+
+    #[inline]
+    fn update_exchange_time(&mut self) {
+        self.last_data_exchange = Instant::now();
     }
 }
 
@@ -83,6 +97,8 @@ impl QunetTransport {
             initial_qdb_hash,
             server.message_size_limit(),
             server.buffer_pool.clone(),
+            server._builder.listener_opts.idle_timeout,
+            Duration::from_secs(2u64.pow(30)), // server never sends keepalives
         )
     }
 
@@ -103,9 +119,12 @@ impl QunetTransport {
             initial_qdb_hash,
             DEFAULT_MESSAGE_SIZE_LIMIT,
             client.buffer_pool.clone(),
+            Duration::from_secs(60),
+            Duration::from_secs(30),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         kind: QunetTransportKind,
         address: SocketAddr,
@@ -113,6 +132,8 @@ impl QunetTransport {
         initial_qdb_hash: [u8; 16],
         message_size_limit: usize,
         buffer_pool: Arc<HybridBufferPool>,
+        idle_timeout: Duration,
+        keepalive_interval: Duration,
     ) -> Self {
         let (c_sockaddr_data, c_sockaddr_len) = socket_addr_to_c(&address);
 
@@ -128,6 +149,9 @@ impl QunetTransport {
                 buffer_pool,
                 c_sockaddr_data,
                 c_sockaddr_len,
+                last_data_exchange: Instant::now(),
+                idle_timeout,
+                keepalive_interval,
             },
             notif_chan: channel::new_channel(16),
         }
@@ -214,26 +238,44 @@ impl QunetTransport {
     #[inline]
     pub async fn receive_message(&mut self) -> Result<QunetMessage, TransportError> {
         match &mut self.kind {
-            QunetTransportKind::Udp(udp) => udp.receive_message(&self.data).await,
-            QunetTransportKind::Tcp(tcp) => tcp.receive_message(&self.data).await,
+            QunetTransportKind::Udp(udp) => udp.receive_message(&mut self.data).await,
+            QunetTransportKind::Tcp(tcp) => tcp.receive_message(&mut self.data).await,
             QunetTransportKind::Quic(quic) => quic.receive_message(&self.data).await,
         }
     }
 
     #[inline]
     pub fn until_timer_expiry(&self) -> Option<Duration> {
+        let keepalive_timeout =
+            self.data.keepalive_interval.saturating_sub(self.data.last_data_exchange.elapsed());
+
         match &self.kind {
-            QunetTransportKind::Udp(udp) => Some(udp.until_timer_expiry()),
-            QunetTransportKind::Tcp(tcp) => Some(tcp.until_timer_expiry()),
-            _ => None,
+            QunetTransportKind::Udp(udp) => Some(udp.until_timer_expiry().min(keepalive_timeout)),
+            QunetTransportKind::Tcp(_tcp) => Some(keepalive_timeout),
+            _ => None, // quic does keepalives internally
         }
     }
 
     #[inline]
     pub async fn handle_timer_expiry(&mut self) -> Result<(), TransportError> {
+        // if there's been no activity for a while, close the connection
+        let now = Instant::now();
+        let since_last_exchange = now.duration_since(self.data.last_data_exchange);
+
+        if since_last_exchange >= self.data.keepalive_interval {
+            debug!("[{}] keepalive interval reached, sending keepalive", self.data.address);
+
+            self.send_message(QunetMessage::Keepalive { timestamp: 0 }, true, &()).await?;
+        }
+
+        if since_last_exchange >= self.data.idle_timeout {
+            debug!("[{}] idle timeout reached, closing connection", self.data.address);
+            self.data.closed = true;
+            return Ok(());
+        }
+
         match &mut self.kind {
             QunetTransportKind::Udp(udp) => udp.handle_timer_expiry(&mut self.data).await,
-            QunetTransportKind::Tcp(tcp) => tcp.handle_timer_expiry(&mut self.data),
             _ => Ok(()),
         }
     }
@@ -265,8 +307,10 @@ impl QunetTransport {
         }
 
         match &mut self.kind {
-            QunetTransportKind::Udp(udp) => udp.send_message(&self.data, message, reliable).await,
-            QunetTransportKind::Tcp(tcp) => tcp.send_message(&self.data, message).await,
+            QunetTransportKind::Udp(udp) => {
+                udp.send_message(&mut self.data, message, reliable).await
+            }
+            QunetTransportKind::Tcp(tcp) => tcp.send_message(&mut self.data, message).await,
             QunetTransportKind::Quic(quic) => quic.send_message(&self.data, message).await,
         }
     }

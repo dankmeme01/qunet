@@ -259,3 +259,29 @@ impl<P: BufPool> CompressionHandler for CompressionHandlerImpl<P> {
         todo!();
     }
 }
+
+impl CompressionHandler for () {
+    async fn compress_zstd(&self, _data: &[u8]) -> Result<BufferKind, CompressError> {
+        panic!("null CompressionHandler cannot compress data");
+    }
+
+    async fn decompress_zstd(
+        &self,
+        _data: &[u8],
+        _uncompressed_size: usize,
+    ) -> Result<BufferKind, DecompressError> {
+        panic!("null CompressionHandler cannot decompress data");
+    }
+
+    async fn compress_lz4(&self, _data: &[u8]) -> Result<BufferKind, CompressError> {
+        panic!("null CompressionHandler cannot compress data");
+    }
+
+    async fn decompress_lz4(
+        &self,
+        _data: &[u8],
+        _uncompressed_size: usize,
+    ) -> Result<BufferKind, DecompressError> {
+        panic!("null CompressionHandler cannot decompress data");
+    }
+}

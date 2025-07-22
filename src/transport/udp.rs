@@ -26,27 +26,20 @@ pub(crate) struct ClientUdpTransport {
     receiver: Option<RawMessageReceiver>,
     rel_store: ReliableStore,
     frag_store: FragmentStore,
-    idle_timeout: Duration,
-    last_data_exchange: Instant,
 }
 
 impl ClientUdpTransport {
-    pub fn new(socket: Arc<UdpSocket>, mtu: usize, idle_timeout: Duration) -> Self {
+    pub fn new(socket: Arc<UdpSocket>, mtu: usize) -> Self {
         Self {
             socket,
             mtu,
             receiver: None,
             rel_store: ReliableStore::new(),
             frag_store: FragmentStore::new(),
-            idle_timeout,
-            last_data_exchange: Instant::now(),
         }
     }
 
-    pub async fn connect(
-        _addr: SocketAddr,
-        _idle_timeout: Duration,
-    ) -> Result<Self, TransportError> {
+    pub async fn connect(_addr: SocketAddr) -> Result<Self, TransportError> {
         Err(TransportError::NotImplemented(
             "UDP transport currently cannot be used for client connections",
         ))
@@ -74,20 +67,13 @@ impl ClientUdpTransport {
 
     #[inline]
     pub fn until_timer_expiry(&self) -> Duration {
-        let idle_timeout = self.idle_timeout.saturating_sub(self.last_data_exchange.elapsed());
-
-        self.rel_store.until_timer_expiry().min(idle_timeout)
-    }
-
-    #[inline]
-    fn update_exchange_time(&mut self) {
-        self.last_data_exchange = Instant::now();
+        self.rel_store.until_timer_expiry()
     }
 
     #[inline]
     pub async fn receive_message(
         &mut self,
-        transport_data: &QunetTransportData,
+        transport_data: &mut QunetTransportData,
     ) -> Result<QunetMessage, TransportError> {
         if let Some(msg) = self.rel_store.pop_delayed_message() {
             // we have a delayed message, return it
@@ -96,7 +82,7 @@ impl ClientUdpTransport {
 
         loop {
             if let Some(msg) = self.process_incoming(transport_data).await? {
-                self.update_exchange_time();
+                transport_data.update_exchange_time();
                 break Ok(msg);
             }
         }
@@ -173,11 +159,11 @@ impl ClientUdpTransport {
 
     pub async fn send_message(
         &mut self,
-        transport_data: &QunetTransportData,
+        transport_data: &mut QunetTransportData,
         mut msg: QunetMessage,
         reliable: bool,
     ) -> Result<(), TransportError> {
-        self.update_exchange_time();
+        transport_data.update_exchange_time();
 
         if !msg.is_data() {
             let mut header_buf = [0u8; MAX_HEADER_SIZE];
@@ -373,13 +359,6 @@ impl ClientUdpTransport {
         &mut self,
         transport_data: &mut QunetTransportData,
     ) -> Result<(), TransportError> {
-        // if there's been no activity for a while, close the connection
-        if self.last_data_exchange.elapsed() >= self.idle_timeout {
-            debug!("[{}] idle timeout reached, closing connection", transport_data.address);
-            transport_data.closed = true;
-            return Ok(());
-        }
-
         loop {
             let span =
                 debug_span!("ReliableStore::maybe_retransmit", conn = transport_data.connection_id);

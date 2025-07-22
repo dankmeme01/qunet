@@ -745,7 +745,7 @@ impl<H: EventHandler> Client<H> {
         let fut = async move {
             let kind = match ty {
                 ConnectionType::Tcp => {
-                    QunetTransportKind::Tcp(ClientTcpTransport::connect(addr, idle_timeout).await?)
+                    QunetTransportKind::Tcp(ClientTcpTransport::connect(addr).await?)
                 }
 
                 ConnectionType::Quic => {
@@ -763,7 +763,7 @@ impl<H: EventHandler> Client<H> {
                 }
 
                 ConnectionType::Udp => {
-                    QunetTransportKind::Udp(ClientUdpTransport::connect(addr, idle_timeout).await?)
+                    QunetTransportKind::Udp(ClientUdpTransport::connect(addr).await?)
                 }
 
                 _ => unreachable!(),
