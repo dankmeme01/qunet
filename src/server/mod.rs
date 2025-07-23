@@ -1,5 +1,4 @@
 use std::{
-    io::Cursor,
     net::SocketAddr,
     ops::Deref,
     sync::{Arc, Weak},

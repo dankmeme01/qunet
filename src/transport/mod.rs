@@ -60,6 +60,7 @@ pub(crate) struct QunetTransportData {
     pub idle_timeout: Duration,
     pub last_data_exchange: Instant,
     pub keepalive_interval: Duration,
+    pub is_client: bool,
 
     c_sockaddr_data: SocketAddrCRepr,
     c_sockaddr_len: libc::socklen_t,
@@ -91,6 +92,7 @@ impl QunetTransport {
         server: ServerHandle<H>,
     ) -> Self {
         Self::new(
+            false,
             kind,
             address,
             qunet_major_version,
@@ -113,6 +115,7 @@ impl QunetTransport {
         use crate::protocol::DEFAULT_MESSAGE_SIZE_LIMIT;
 
         Self::new(
+            true,
             kind,
             address,
             qunet_major_version,
@@ -126,6 +129,7 @@ impl QunetTransport {
 
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        is_client: bool,
         kind: QunetTransportKind,
         address: SocketAddr,
         qunet_major_version: u16,
@@ -140,6 +144,7 @@ impl QunetTransport {
         Self {
             kind,
             data: QunetTransportData {
+                is_client,
                 address,
                 connection_id: 0,
                 closed: false,
@@ -246,12 +251,17 @@ impl QunetTransport {
 
     #[inline]
     pub fn until_timer_expiry(&self) -> Option<Duration> {
-        let keepalive_timeout =
-            self.data.keepalive_interval.saturating_sub(self.data.last_data_exchange.elapsed());
+        let timeout = if self.data.is_client {
+            // for clients, the timer expires when the keepalive interval is reached
+            self.data.keepalive_interval.saturating_sub(self.data.last_data_exchange.elapsed())
+        } else {
+            // for servers, the timer expires when the idle timeout is reached
+            self.data.idle_timeout.saturating_sub(self.data.last_data_exchange.elapsed())
+        };
 
         match &self.kind {
-            QunetTransportKind::Udp(udp) => Some(udp.until_timer_expiry().min(keepalive_timeout)),
-            QunetTransportKind::Tcp(_tcp) => Some(keepalive_timeout),
+            QunetTransportKind::Udp(udp) => Some(udp.until_timer_expiry().min(timeout)),
+            QunetTransportKind::Tcp(_tcp) => Some(timeout),
             _ => None, // quic does keepalives internally
         }
     }
