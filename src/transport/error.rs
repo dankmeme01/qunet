@@ -47,6 +47,10 @@ pub enum TransportError {
     QuicError(#[from] QuicError),
     #[error("Not implemented: {0}")]
     NotImplemented(&'static str),
+    #[error("Client requested the connection to be suspended")]
+    SuspendRequested,
+    #[error("Connection timed out, no data received for a long time")]
+    IdleTimeout,
     #[error("{0}")]
     Other(String),
 }
@@ -99,7 +103,9 @@ impl TransportError {
             | TransportError::Timeout
             | TransportError::TooUnreliable
             | TransportError::TooManyPendingFragments
-            | TransportError::QuicError(_) => TransportErrorOutcome::Terminate,
+            | TransportError::QuicError(_)
+            | TransportError::SuspendRequested
+            | TransportError::IdleTimeout => TransportErrorOutcome::Terminate,
 
             // Errors that indicate a bug in qunet
             TransportError::CompressionError(_)

@@ -51,7 +51,7 @@ impl ClientTcpTransport {
     }
 
     pub async fn run_cleanup(&mut self) -> Result<(), TransportError> {
-        self.sock_write.shutdown().await?;
+        let _ = self.sock_write.shutdown().await;
         // TODO: idk how to shutdown read half
 
         Ok(())

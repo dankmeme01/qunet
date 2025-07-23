@@ -5,11 +5,15 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
 use crate::{
+    protocol::MAJOR_VERSION,
     server::{
         ServerHandle,
         app_handler::AppHandler,
         builder::{ListenerOptions, TcpOptions},
-        listeners::listener::{BindError, ListenerError, ServerListener},
+        listeners::{
+            listener::{BindError, ListenerError, ServerListener},
+            stream::StreamFirstPacket,
+        },
     },
     transport::{QunetTransport, QunetTransportKind, tcp::ClientTcpTransport},
 };
@@ -29,7 +33,7 @@ struct PendingTcpConnection {
 }
 
 impl PendingTcpConnection {
-    pub async fn wait_for_handshake(&mut self) -> Result<(u16, [u8; 16]), ListenerError> {
+    pub async fn wait_for_handshake(&mut self) -> Result<StreamFirstPacket, ListenerError> {
         stream::wait_for_handshake(&mut self.stream).await
     }
 }
@@ -57,17 +61,31 @@ impl<H: AppHandler> TcpServerListener<H> {
             let mut conn = PendingTcpConnection { stream, addr };
 
             match tokio::time::timeout(Duration::from_secs(30), conn.wait_for_handshake()).await {
-                Ok(Ok((qunet_major, qdb_hash))) => {
-                    let transport = QunetTransport::new_server(
-                        QunetTransportKind::Tcp(ClientTcpTransport::new(conn.stream)),
-                        conn.addr,
-                        qunet_major,
-                        qdb_hash,
-                        server.clone(),
-                    );
+                Ok(Ok(pkt)) => match pkt {
+                    StreamFirstPacket::HandshakeStart(qunet_major, qdb_hash) => {
+                        let transport: QunetTransport = QunetTransport::new_server(
+                            QunetTransportKind::Tcp(ClientTcpTransport::new(conn.stream)),
+                            conn.addr,
+                            qunet_major,
+                            qdb_hash,
+                            server.clone(),
+                        );
 
-                    server.accept_connection(transport).await;
-                }
+                        server.accept_connection(transport);
+                    }
+
+                    StreamFirstPacket::ClientReconnect(connection_id) => {
+                        let transport: QunetTransport = QunetTransport::new_server(
+                            QunetTransportKind::Tcp(ClientTcpTransport::new(conn.stream)),
+                            conn.addr,
+                            MAJOR_VERSION,
+                            [0; 16],
+                            server.clone(),
+                        );
+
+                        server.recover_connection(connection_id, transport).await;
+                    }
+                },
                 Ok(Err(err)) => {
                     warn!("Client {addr} (TCP) failed to complete handshake: {err}");
                 }

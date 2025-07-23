@@ -2,7 +2,7 @@ use std::{
     borrow::Cow,
     net::SocketAddr,
     ops::Deref,
-    sync::{Arc, Weak},
+    sync::{Arc, OnceLock, Weak},
     time::Duration,
 };
 
@@ -79,6 +79,33 @@ pub enum AcceptError {
     },
 }
 
+#[derive(Default)]
+struct SuspendedClientState {
+    connection_id: u64,
+    new_transport: parking_lot::Mutex<Option<QunetTransport>>,
+    reclaim_notify: Notify,
+}
+
+impl SuspendedClientState {
+    pub fn new(connection_id: u64) -> Self {
+        Self {
+            connection_id,
+            ..Default::default()
+        }
+    }
+
+    pub async fn wait(&self, timeout: Duration) -> Option<QunetTransport> {
+        tokio::time::timeout(timeout, self.reclaim_notify.notified()).await.ok()?;
+        Some(self.new_transport.lock().take().expect("transport must be set after being notified"))
+    }
+
+    pub fn resume(&self, transport: QunetTransport) -> bool {
+        *self.new_transport.lock() = Some(transport);
+        self.reclaim_notify.notify_one();
+        true
+    }
+}
+
 pub struct Server<H: AppHandler> {
     pub(crate) _builder: ServerBuilder<H>,
     udp_listener: Option<Arc<UdpServerListener<H>>>,
@@ -91,15 +118,17 @@ pub struct Server<H: AppHandler> {
     listener_tracker: TaskTracker,
     conn_tracker: TaskTracker,
     terminate_notify: Notify,
+    schedules: AsyncMutex<JoinSet<!>>,
+    compressor: CompressionHandlerImpl<HybridBufferPool>,
 
     udp_router: DashMap<u64, RawMessageSender, BuildNoHashHasher<u64>>,
     clients: DashMap<u64, Arc<ClientState<H>>, BuildNoHashHasher<u64>>,
     connected_addrs: DashMap<SocketAddr, u64>, // this serves to detect duplicate connections from the same ip:port tuple
-    schedules: AsyncMutex<JoinSet<!>>,
-    compressor: CompressionHandlerImpl<HybridBufferPool>,
+    suspended_clients: DashMap<u64, Arc<SuspendedClientState>, BuildNoHashHasher<u64>>,
 
     // misc settings
     message_size_limit: usize,
+    suspend_timeout: Duration,
 
     // Qdb stuff
     qdb: QunetDatabase,
@@ -126,6 +155,7 @@ impl<H: AppHandler> Server<H> {
         ));
 
         let compressor = CompressionHandlerImpl::new(buffer_pool.clone());
+        let suspend_timeout = builder.max_suspend_time.unwrap_or(Duration::from_secs(60));
 
         Server {
             _builder: builder,
@@ -139,13 +169,16 @@ impl<H: AppHandler> Server<H> {
             listener_tracker: TaskTracker::new(),
             conn_tracker: TaskTracker::new(),
             terminate_notify: Notify::new(),
+            schedules: AsyncMutex::new(JoinSet::new()),
+            compressor,
 
             udp_router: DashMap::default(),
             clients: DashMap::default(),
             connected_addrs: DashMap::default(),
-            schedules: AsyncMutex::new(JoinSet::new()),
-            compressor,
+            suspended_clients: DashMap::default(),
+
             message_size_limit: 0,
+            suspend_timeout,
 
             qdb: QunetDatabase::default(),
             qdb_data: Arc::new([]),
@@ -343,7 +376,7 @@ impl<H: AppHandler> Server<H> {
         Ok(())
     }
 
-    pub(crate) async fn accept_connection(self: ServerHandle<H>, mut transport: QunetTransport) {
+    pub(crate) fn accept_connection(self: ServerHandle<H>, mut transport: QunetTransport) {
         // spawn a new task for the connection
         self.clone().conn_tracker.spawn(async move {
             let client_ver = transport.data.qunet_major_version;
@@ -423,47 +456,38 @@ impl<H: AppHandler> Server<H> {
             };
 
             let client = Arc::new(ClientState::new(client_data, &transport));
-
             self.clients.insert(client.connection_id, Arc::clone(&client));
 
+            // main entry point
             if let Err(e) =
-                Self::client_handler(&self, &mut transport, Arc::clone(&client), send_qdb).await
+                Self::client_handler(&self, transport, Arc::clone(&client), send_qdb).await
             {
-                warn!("[{}] Client connection terminated due to error: {}", address, e);
-
-                // depending on the error, we might want to send a message to the client notifying about it
-                let (error_code, error_message) = match e {
-                    TransportError::MessageTooLong => {
-                        (QunetConnectionError::StreamMessageTooLong, None)
-                    }
-
-                    TransportError::ZeroLengthMessage => {
-                        (QunetConnectionError::ZeroLengthStreamMessage, None)
-                    }
-
-                    TransportError::MessageChannelClosed => {
-                        (QunetConnectionError::InternalServerError, None)
-                    }
-
-                    _ => (QunetConnectionError::Custom, Some(Cow::Owned(e.to_string()))),
-                };
-
-                // we don't care if it fails here
-                let _ = transport
-                    .send_message(
-                        QunetMessage::ServerClose { error_code, error_message },
-                        false,
-                        &*self,
-                    )
-                    .await;
+                warn!("[{}] Failed to setup client connection: {}", address, e);
             }
 
             // always run cleanup!
-            match Self::cleanup_connection(&self, &mut transport, client).await {
+            match Self::cleanup_connection(&self, client).await {
                 Ok(()) => {}
                 Err(err) => warn!("[{}] Failed to clean up connection: {}", address, err),
             }
         });
+    }
+
+    pub(crate) async fn recover_connection(
+        &self,
+        connection_id: u64,
+        mut transport: QunetTransport,
+    ) {
+        if let Some(client) = self.suspended_clients.get(&connection_id) {
+            client.resume(transport);
+        } else {
+            debug!(
+                "[{}] Attempted to recover a connection that is not suspended",
+                transport.address()
+            );
+
+            let _ = transport.send_message(QunetMessage::ReconnectFailure, false, &()).await;
+        }
     }
 
     async fn send_handshake_error(
@@ -520,9 +544,10 @@ impl<H: AppHandler> Server<H> {
         self.message_size_limit
     }
 
+    /// This function only returns an error if the initial transport setup fails, otherwise it always returns `Ok(())`
     async fn client_handler(
         &self,
-        transport: &mut QunetTransport,
+        mut transport: QunetTransport,
         client: Arc<ClientState<H>>,
         send_qdb: bool,
     ) -> Result<(), TransportError> {
@@ -530,13 +555,126 @@ impl<H: AppHandler> Server<H> {
         transport.run_server_setup(self).await?;
 
         // send the handshake response
-        transport
+        if let Err(e) = transport
             .send_handshake_response(
                 if send_qdb { Some(self.qdb_data.as_ref()) } else { None },
                 self.qdb_uncompressed_size,
             )
-            .await?;
+            .await
+        {
+            transport.run_server_cleanup(self).await?;
+            return Err(e);
+        }
 
+        loop {
+            let res = self.client_main_loop(&mut transport, client.clone(), send_qdb).await;
+
+            let should_suspend = match res {
+                Ok(()) => {
+                    // graceful closure
+                    debug!(
+                        "[{} ({})] Connection terminated gracefully",
+                        transport.address(),
+                        transport.connection_id()
+                    );
+
+                    false
+                }
+
+                Err(err) => {
+                    debug!(
+                        "[{} ({})] Connection terminated with error: {}",
+                        transport.address(),
+                        transport.connection_id(),
+                        err
+                    );
+
+                    self.maybe_send_error_to_client(&mut transport, &err).await;
+
+                    true
+                }
+            };
+
+            // run cleanup
+            let _ = transport.run_server_cleanup(self).await;
+
+            if should_suspend {
+                let sstate = Arc::new(SuspendedClientState::default());
+                self.suspended_clients.insert(transport.connection_id(), sstate.clone());
+                self.app_handler.on_client_suspend(self, &client).await;
+
+                if let Some(new_transport) = sstate.wait(self.suspend_timeout).await {
+                    // we got reclaimed!
+                    self.app_handler.on_client_resume(self, &client).await;
+                    self.suspended_clients.remove(&client.connection_id);
+
+                    transport.kind = new_transport.kind;
+                    transport.data.closed = false;
+                    transport.data.address = new_transport.data.address;
+                    transport.data.c_sockaddr_data = new_transport.data.c_sockaddr_data;
+                    transport.data.c_sockaddr_len = new_transport.data.c_sockaddr_len;
+                    transport.run_server_setup(self).await?;
+
+                    if let Err(e) =
+                        transport.send_message(QunetMessage::ReconnectSuccess, false, &()).await
+                    {
+                        // something really weird happened
+                        transport.run_server_cleanup(self).await?;
+                        return Err(e);
+                    }
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn maybe_send_error_to_client(
+        &self,
+        transport: &mut QunetTransport,
+        error: &TransportError,
+    ) {
+        // depending on the error, we might want to send a message to the client notifying about it
+        let (error_code, error_message) = match error {
+            TransportError::MessageTooLong => (QunetConnectionError::StreamMessageTooLong, None),
+
+            TransportError::ZeroLengthMessage => {
+                (QunetConnectionError::ZeroLengthStreamMessage, None)
+            }
+
+            TransportError::MessageChannelClosed => {
+                (QunetConnectionError::InternalServerError, None)
+            }
+
+            TransportError::SuspendRequested => {
+                return;
+            }
+
+            _ => (QunetConnectionError::Custom, Some(Cow::Owned(error.to_string()))),
+        };
+
+        // we don't care if it fails here
+        let _ = tokio::time::timeout(
+            Duration::from_secs(3),
+            transport.send_message(
+                QunetMessage::ServerClose { error_code, error_message },
+                false,
+                &(),
+            ),
+        )
+        .await;
+    }
+
+    async fn client_main_loop(
+        &self,
+        transport: &mut QunetTransport,
+        client: Arc<ClientState<H>>,
+        send_qdb: bool,
+    ) -> Result<(), TransportError> {
         let notif_chan = transport.notif_chan.1.clone();
 
         let mut handshake_retx_count: u8 = 0;
@@ -596,8 +734,6 @@ impl<H: AppHandler> Server<H> {
                 },
             }
         }
-
-        debug!("[{}] Connection terminated", transport.address());
 
         Ok(())
     }
@@ -683,8 +819,13 @@ impl<H: AppHandler> Server<H> {
             }
 
             QunetMessage::ClientClose { dont_terminate } => {
-                // TODO: handle dont_terminate flag
-                transport.data.closed = true;
+                if *dont_terminate {
+                    // return an error, this will force the client to terminate with an error and suspend the connection
+                    return Err(TransportError::SuspendRequested);
+                } else {
+                    // simply set the closed flag, which causes a graceful closure
+                    transport.data.closed = true;
+                }
             }
 
             QunetMessage::ConnectionError { error_code } => {
@@ -787,17 +928,13 @@ impl<H: AppHandler> Server<H> {
     }
 
     #[inline]
-    async fn cleanup_connection(
-        &self,
-        transport: &mut QunetTransport,
-        client: Arc<ClientState<H>>,
-    ) -> Result<(), TransportError> {
+    async fn cleanup_connection(&self, client: Arc<ClientState<H>>) -> Result<(), TransportError> {
         self.app_handler.on_client_disconnect(self, &client).await;
 
         self.clients.remove(&client.connection_id);
         self.connected_addrs.remove(&client.address);
 
-        transport.run_server_cleanup(self).await
+        Ok(())
     }
 
     fn print_config(&self) {

@@ -168,10 +168,18 @@ impl<H: AppHandler> UdpServerListener<H> {
             if msg_type == MSG_HANDSHAKE_START {
                 Self::wrap_error(
                     peer,
-                    Self::handle_handshake(socket_arc.clone(), reader, peer, &server).await,
+                    Self::handle_handshake(socket_arc.clone(), reader, peer, &server),
                 );
 
                 continue;
+            } else if msg_type == MSG_CLIENT_RECONNECT {
+                let Ok(connection_id) = reader.read_u64() else {
+                    continue;
+                };
+                Self::wrap_error(
+                    peer,
+                    Self::handle_reconnect(socket_arc.clone(), connection_id, peer, &server).await,
+                );
             }
 
             // handle other messages
@@ -319,7 +327,7 @@ impl<H: AppHandler> UdpServerListener<H> {
         Ok(())
     }
 
-    async fn handle_handshake(
+    fn handle_handshake(
         socket: Arc<UdpSocket>,
         mut reader: ByteReader<'_>,
         peer: SocketAddr,
@@ -345,8 +353,27 @@ impl<H: AppHandler> UdpServerListener<H> {
             server.clone(),
         );
 
-        Server::accept_connection(server.clone(), transport).await;
+        Server::accept_connection(server.clone(), transport);
 
+        Ok(())
+    }
+
+    async fn handle_reconnect(
+        socket: Arc<UdpSocket>,
+        connection_id: u64,
+        peer: SocketAddr,
+        server: &ServerHandle<H>,
+    ) -> Result<(), ListenerError> {
+        // TODO: this causes the fragmentation limit to be forgotten about
+        let transport = QunetTransport::new_server(
+            QunetTransportKind::Udp(ClientUdpTransport::new(socket, UDP_PACKET_LIMIT)),
+            peer,
+            MAJOR_VERSION,
+            [0; 16],
+            server.clone(),
+        );
+
+        server.recover_connection(connection_id, transport).await;
         Ok(())
     }
 }

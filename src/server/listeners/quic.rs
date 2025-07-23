@@ -6,11 +6,15 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::{
+    protocol::MAJOR_VERSION,
     server::{
         ServerHandle,
         app_handler::AppHandler,
         builder::{ListenerOptions, QuicOptions},
-        listeners::listener::{BindError, ListenerError, ServerListener},
+        listeners::{
+            listener::{BindError, ListenerError, ServerListener},
+            stream::StreamFirstPacket,
+        },
     },
     transport::{QunetTransport, QunetTransportKind, quic::ClientQuicTransport},
 };
@@ -31,8 +35,7 @@ struct PendingQuicConnection {
 
 struct HandshakeOutcome {
     stream: BidirectionalStream,
-    qunet_major: u16,
-    qdb_hash: [u8; 16],
+    pkt: StreamFirstPacket,
 }
 
 impl PendingQuicConnection {
@@ -42,9 +45,9 @@ impl PendingQuicConnection {
             return Err(ListenerError::ConnectionClosed);
         };
 
-        let (qunet_major, qdb_hash) = stream::wait_for_handshake(&mut stream).await?;
+        let pkt = stream::wait_for_handshake(&mut stream).await?;
 
-        Ok(HandshakeOutcome { stream, qunet_major, qdb_hash })
+        Ok(HandshakeOutcome { stream, pkt })
     }
 }
 
@@ -106,20 +109,37 @@ impl<H: AppHandler> QuicServerListener<H> {
             let mut conn = PendingQuicConnection { conn };
 
             match tokio::time::timeout(timeout, conn.wait_for_handshake()).await {
-                Ok(Ok(outcome)) => {
-                    let transport = QunetTransport::new_server(
-                        QunetTransportKind::Quic(ClientQuicTransport::new(
-                            conn.conn,
-                            outcome.stream,
-                        )),
-                        remote_addr,
-                        outcome.qunet_major,
-                        outcome.qdb_hash,
-                        server.clone(),
-                    );
+                Ok(Ok(outcome)) => match outcome.pkt {
+                    StreamFirstPacket::HandshakeStart(qunet_major, qdb_hash) => {
+                        let transport = QunetTransport::new_server(
+                            QunetTransportKind::Quic(ClientQuicTransport::new(
+                                conn.conn,
+                                outcome.stream,
+                            )),
+                            remote_addr,
+                            qunet_major,
+                            qdb_hash,
+                            server.clone(),
+                        );
 
-                    server.accept_connection(transport).await;
-                }
+                        server.accept_connection(transport);
+                    }
+
+                    StreamFirstPacket::ClientReconnect(connection_id) => {
+                        let transport = QunetTransport::new_server(
+                            QunetTransportKind::Quic(ClientQuicTransport::new(
+                                conn.conn,
+                                outcome.stream,
+                            )),
+                            remote_addr,
+                            MAJOR_VERSION,
+                            [0; 16],
+                            server.clone(),
+                        );
+
+                        server.recover_connection(connection_id, transport).await;
+                    }
+                },
 
                 Ok(Err(err)) => {
                     warn!("Client {} (QUIC) failed to complete handshake: {err}", remote_addr);

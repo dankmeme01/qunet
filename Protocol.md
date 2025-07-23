@@ -110,7 +110,8 @@ Message types:
 * 11 - [ConnectionError](#connectionerror)
 * 12 - [QdbChunkRequest](#qdbchunkrequest)
 * 13 - [QdbChunkResponse](#qdbchunkresponse)
-* 14 - [AckMessages](#ackmessages)
+* 14 - [ReconnectSuccess](#reconnectsuccess)
+* 15 - [ReconnectFailure](#reconnectfailure)
 * 64 - QdbgToggle
 * 65 - QdbgReport
 * 128-255 (`1xxxxxxx` in binary) - Data
@@ -254,12 +255,13 @@ Message structure:
 * Qdb size (`u32`) - size of the qdb chunk
 * Qdb data (byte array) - chunk of the zstd compressed qunet database data
 
-## AckMessages
+## ReconnectSuccess
 
-Message structure:
-* ACK count (`u16`)
-* For each ACK:
-* * Reliable message ID (`u16`)
+Message structure: empty
+
+## ReconnectFailure
+
+Message structure: empty
 
 ## Data
 

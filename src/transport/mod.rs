@@ -62,8 +62,8 @@ pub(crate) struct QunetTransportData {
     pub keepalive_interval: Duration,
     pub is_client: bool,
 
-    c_sockaddr_data: SocketAddrCRepr,
-    c_sockaddr_len: libc::socklen_t,
+    pub c_sockaddr_data: SocketAddrCRepr,
+    pub c_sockaddr_len: libc::socklen_t,
 }
 
 pub(crate) struct QunetTransport {
@@ -280,8 +280,7 @@ impl QunetTransport {
 
         if since_last_exchange >= self.data.idle_timeout {
             debug!("[{}] idle timeout reached, closing connection", self.data.address);
-            self.data.closed = true;
-            return Ok(());
+            return Err(TransportError::IdleTimeout);
         }
 
         match &mut self.kind {

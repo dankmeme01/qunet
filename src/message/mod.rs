@@ -173,6 +173,9 @@ pub(crate) enum QunetMessage {
         qdb_data: Arc<[u8]>,
     },
 
+    ReconnectSuccess,
+    ReconnectFailure,
+
     Data {
         kind: DataMessageKind,
         reliability: Option<ReliabilityHeader>,
@@ -359,6 +362,10 @@ impl QunetMessage {
 
                     Ok(QunetMessage::QdbChunkRequest { offset, size })
                 }
+
+                MSG_RECONNECT_SUCCESS => Ok(QunetMessage::ReconnectSuccess),
+
+                MSG_RECONNECT_FAILURE => Ok(QunetMessage::ReconnectFailure),
 
                 _ => Err(QunetMessageDecodeError::InvalidMessageType),
             }
@@ -667,6 +674,14 @@ impl QunetMessage {
                 body_writer.write_bytes(&qdb_data[offset..offset + size])?;
             }
 
+            Self::ReconnectSuccess => {
+                header_writer.write_u8(MSG_RECONNECT_SUCCESS)?;
+            }
+
+            Self::ReconnectFailure => {
+                header_writer.write_u8(MSG_RECONNECT_FAILURE)?;
+            }
+
             _ => panic!(
                 "QunetMessage::encode_control_msg: called with unexpected message: {}",
                 self.type_str()
@@ -750,6 +765,8 @@ impl QunetMessage {
             QunetMessage::ConnectionError { .. } => "ConnectionError",
             QunetMessage::QdbChunkRequest { .. } => "QdbChunkRequest",
             QunetMessage::QdbChunkResponse { .. } => "QdbChunkResponse",
+            QunetMessage::ReconnectSuccess => "ReconnectSuccess",
+            QunetMessage::ReconnectFailure => "ReconnectFailure",
             QunetMessage::Data { .. } => "Data",
         }
     }

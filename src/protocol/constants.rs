@@ -15,6 +15,8 @@ pub const MSG_CLIENT_RECONNECT: u8 = 10;
 pub const MSG_CONNECTION_ERROR: u8 = 11;
 pub const MSG_QDB_CHUNK_REQUEST: u8 = 12;
 pub const MSG_QDB_CHUNK_RESPONSE: u8 = 13;
+pub const MSG_RECONNECT_SUCCESS: u8 = 14;
+pub const MSG_RECONNECT_FAILURE: u8 = 15;
 
 pub const MSG_QDBG_TOGGLE: u8 = 64;
 pub const MSG_QDBG_REPORT: u8 = 65;
