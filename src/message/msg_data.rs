@@ -8,6 +8,10 @@ pub struct MsgData<'a> {
 }
 
 impl<'a> MsgData<'a> {
+    pub fn new(data: &'a mut BufferKind) -> Self {
+        MsgData { data }
+    }
+
     pub fn discard(self) {
         self.data.reset();
     }
