@@ -14,7 +14,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 pub use raw::{QUNET_SMALL_MESSAGE_SIZE, QunetRawMessage};
 
 use num_traits::FromPrimitive;
-use std::{ops::Deref, sync::Arc};
+use std::{borrow::Cow, ops::Deref, sync::Arc};
 use thiserror::Error;
 
 use crate::{
@@ -150,7 +150,7 @@ pub(crate) enum QunetMessage {
 
     ServerClose {
         error_code: QunetConnectionError,
-        error_message: Option<String>,
+        error_message: Option<Cow<'static, str>>,
     },
 
     ClientReconnect {

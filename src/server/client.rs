@@ -1,4 +1,4 @@
-use std::{hash::Hash, net::SocketAddr, ops::Deref};
+use std::{borrow::Cow, hash::Hash, net::SocketAddr, ops::Deref};
 
 use crate::{
     message::{BufferKind, channel},
@@ -12,6 +12,11 @@ pub enum ClientNotification {
         reliable: bool,
     },
     RetransmitHandshake,
+
+    /// Terminate the client connection without sending any data.
+    Terminate,
+    /// Disconnect the client gracefully, sending a `ServerClose` message with the given reason
+    Disconnect(Cow<'static, str>),
 }
 
 pub struct ClientState<H: AppHandler> {
@@ -63,6 +68,16 @@ impl<H: AppHandler> ClientState<H> {
 
     pub fn transport_type(&self) -> TransportType {
         self.transport_type
+    }
+
+    /// Terminates the client connection
+    pub fn terminate(&self) -> bool {
+        self.notif_tx.send(ClientNotification::Terminate)
+    }
+
+    /// Disconnects the client gracefully, sending a `ServerClose` message with the given reason.
+    pub fn disconnect(&self, reason: Cow<'static, str>) -> bool {
+        self.notif_tx.send(ClientNotification::Disconnect(reason))
     }
 }
 

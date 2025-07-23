@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     net::SocketAddr,
     ops::Deref,
     sync::{Arc, Weak},
@@ -444,7 +445,7 @@ impl<H: AppHandler> Server<H> {
                         (QunetConnectionError::InternalServerError, None)
                     }
 
-                    _ => (QunetConnectionError::Custom, Some(e.to_string())),
+                    _ => (QunetConnectionError::Custom, Some(Cow::Owned(e.to_string()))),
                 };
 
                 // we don't care if it fails here
@@ -571,32 +572,14 @@ impl<H: AppHandler> Server<H> {
                 },
 
                 notif = notif_chan.recv() => match notif {
-                    Some(notif) => match notif {
-                        ClientNotification::DataMessage{ buf, reliable } => {
-                            transport.send_message(QunetMessage::new_data(buf), reliable, self).await
-                        }
-
-                        ClientNotification::RetransmitHandshake => {
-                            handshake_retx_count += 1;
-
-                            // prevent malicious clients from spamming handshake retransmits, silently drop connection
-                            if handshake_retx_count > 5 {
-                                return Ok(());
-                            }
-
-                            transport
-                                .send_handshake_response(
-                                    if send_qdb {
-                                        Some(self.qdb_data.as_ref())
-                                    } else {
-                                        None
-                                    },
-                                    self.qdb_uncompressed_size,
-                                )
-                                .await
-                        }
-                    }
-
+                    Some(notif) => {
+                        self.handle_client_notification(
+                            transport,
+                            notif,
+                            &mut handshake_retx_count,
+                            send_qdb,
+                        ).await
+                    },
                     None => return Err(TransportError::MessageChannelClosed),
                 }
             };
@@ -617,6 +600,61 @@ impl<H: AppHandler> Server<H> {
         debug!("[{}] Connection terminated", transport.address());
 
         Ok(())
+    }
+
+    #[inline]
+    async fn handle_client_notification(
+        &self,
+        transport: &mut QunetTransport,
+        notif: ClientNotification,
+        handshake_retx_count: &mut u8,
+        send_qdb: bool,
+    ) -> Result<(), TransportError> {
+        match notif {
+            ClientNotification::DataMessage { buf, reliable } => {
+                transport.send_message(QunetMessage::new_data(buf), reliable, self).await
+            }
+
+            ClientNotification::RetransmitHandshake => {
+                *handshake_retx_count += 1;
+
+                // prevent malicious clients from spamming handshake retransmits, silently drop connection
+                if *handshake_retx_count > 5 {
+                    return Ok(());
+                }
+
+                transport
+                    .send_handshake_response(
+                        if send_qdb { Some(self.qdb_data.as_ref()) } else { None },
+                        self.qdb_uncompressed_size,
+                    )
+                    .await
+            }
+
+            ClientNotification::Terminate => {
+                // TODO: fully terminate, not suspend
+                transport.data.closed = true;
+                Ok(())
+            }
+
+            ClientNotification::Disconnect(reason) => {
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(1),
+                    transport.send_message(
+                        QunetMessage::ServerClose {
+                            error_code: QunetConnectionError::Custom,
+                            error_message: Some(reason),
+                        },
+                        false,
+                        &(),
+                    ),
+                )
+                .await;
+
+                transport.data.closed = true;
+                Ok(())
+            }
+        }
     }
 
     #[inline]
