@@ -286,7 +286,8 @@ impl<H: EventHandler> Client<H> {
                 }
 
                 Err(e) => {
-                    warn!("Failed to connect to {addr}: {e}");
+                    self._set_state(ConnectionState::Disconnected);
+                    self.event_handler.on_connection_error(&self, e).await;
                 }
             }
         });
@@ -333,9 +334,8 @@ impl<H: EventHandler> Client<H> {
                 }
 
                 Err(e) => {
-                    warn!("Failed to connect to {fqdn}: {e}");
-                    // TODO: post event handler stuff idk
                     self._set_state(ConnectionState::Disconnected);
+                    self.event_handler.on_connection_error(&self, e).await;
                 }
             }
         });

@@ -1,5 +1,5 @@
 use crate::{
-    client::{Client, ClientHandle},
+    client::{Client, ClientHandle, ConnectionError},
     message::MsgData,
 };
 
@@ -18,6 +18,15 @@ pub trait EventHandler: Send + Sync + Sized + 'static {
     /// Returning an error from this callback shuts down the entire client with `ClientOutcome::CustomError`
     fn post_setup(&self, client: &Client<Self>) -> impl Future<Output = HandlerResult<()>> + Send {
         async move { Ok(()) }
+    }
+
+    /// This callback is invoked when the client fails to connect to a server.
+    fn on_connection_error(
+        &self,
+        client: &ClientHandle<Self>,
+        err: ConnectionError,
+    ) -> impl Future<Output = ()> + Send {
+        async move {}
     }
 
     /// This callback is invoked when the client successfully connects to a server.
