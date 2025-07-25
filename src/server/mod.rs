@@ -363,8 +363,8 @@ impl<H: AppHandler> Server<H> {
 
         trace!("waiting for all listeners to terminate");
         self.listener_tracker.wait().await;
-        trace!("waiting for all connections to terminate");
-        self.conn_tracker.wait().await;
+        trace!("waiting 1s to let connections terminate");
+        let _ = tokio::time::timeout(Duration::from_secs(1), self.conn_tracker.wait()).await;
 
         trace!("cleaning up and running post-shutdown hook");
         self.clients.clear();
