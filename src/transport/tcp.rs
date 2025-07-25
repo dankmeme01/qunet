@@ -68,7 +68,9 @@ impl ClientTcpTransport {
         )
         .await?;
 
-        transport_data.update_exchange_time();
+        if !transport_data.is_client {
+            transport_data.update_exchange_time();
+        }
 
         Ok(msg)
     }
@@ -78,7 +80,9 @@ impl ClientTcpTransport {
         transport_data: &mut QunetTransportData,
         msg: QunetMessage,
     ) -> Result<(), TransportError> {
-        transport_data.update_exchange_time();
+        if transport_data.is_client {
+            transport_data.update_exchange_time();
+        }
 
         match tokio::time::timeout(
             Duration::from_secs(30),
