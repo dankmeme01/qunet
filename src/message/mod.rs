@@ -78,11 +78,13 @@ pub(crate) enum Protocol {
     Quic = 3,
 }
 
+#[allow(unused)] // TODO: use
 pub(crate) struct PongProtocol {
     pub protocol: Protocol,
     pub port: u16,
 }
 
+#[allow(unused)]
 impl PongProtocol {
     pub fn as_tcp(&self) -> Option<u16> {
         if self.protocol == Protocol::Tcp { Some(self.port) } else { None }
@@ -112,6 +114,7 @@ pub(crate) enum QunetMessage {
         omit_protocols: bool,
     },
 
+    #[allow(unused)] // Handled internally by transports.
     Pong {
         ping_id: u32,
         protocols: heapless::Vec<PongProtocol, 4>,
@@ -134,6 +137,7 @@ pub(crate) enum QunetMessage {
         qdb_hash: [u8; 16],
     },
 
+    #[allow(unused)] // Handled internally by transports.
     HandshakeFinishPartial {
         connection_id: u64,
         qdb: Option<HandshakeQdbData>,
@@ -153,6 +157,7 @@ pub(crate) enum QunetMessage {
         error_message: Option<Cow<'static, str>>,
     },
 
+    #[allow(unused)] // Handled internally by transports.
     ClientReconnect {
         connection_id: u64,
     },

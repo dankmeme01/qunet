@@ -23,6 +23,7 @@ impl ClientQuicTransport {
         }
     }
 
+    #[allow(unused)] // Used in client implementation
     pub async fn connect(
         addr: SocketAddr,
         hostname: &str,

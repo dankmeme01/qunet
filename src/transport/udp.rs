@@ -1,7 +1,7 @@
 use std::io::IoSlice;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::net::UdpSocket;
 use tracing::{debug, debug_span};
@@ -39,6 +39,7 @@ impl ClientUdpTransport {
         }
     }
 
+    #[allow(unused)] // Used in client implementation
     pub async fn connect(_addr: SocketAddr) -> Result<Self, TransportError> {
         Err(TransportError::NotImplemented(
             "UDP transport currently cannot be used for client connections",

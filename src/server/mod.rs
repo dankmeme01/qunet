@@ -2,7 +2,7 @@ use std::{
     borrow::Cow,
     net::SocketAddr,
     ops::Deref,
-    sync::{Arc, OnceLock, Weak},
+    sync::{Arc, Weak},
     time::Duration,
 };
 
@@ -81,19 +81,11 @@ pub enum AcceptError {
 
 #[derive(Default)]
 struct SuspendedClientState {
-    connection_id: u64,
     new_transport: parking_lot::Mutex<Option<QunetTransport>>,
     reclaim_notify: Notify,
 }
 
 impl SuspendedClientState {
-    pub fn new(connection_id: u64) -> Self {
-        Self {
-            connection_id,
-            ..Default::default()
-        }
-    }
-
     pub async fn wait(&self, timeout: Duration) -> Option<QunetTransport> {
         tokio::time::timeout(timeout, self.reclaim_notify.notified()).await.ok()?;
         Some(self.new_transport.lock().take().expect("transport must be set after being notified"))

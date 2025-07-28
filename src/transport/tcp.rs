@@ -1,8 +1,4 @@
-use std::{
-    io,
-    net::SocketAddr,
-    time::{Duration, Instant},
-};
+use std::{io, net::SocketAddr, time::Duration};
 
 use tokio::{
     io::AsyncWriteExt,
@@ -11,14 +7,12 @@ use tokio::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
     },
 };
-use tracing::debug;
 
+use super::stream;
 use crate::{
     message::QunetMessage,
     transport::{QunetTransportData, TransportError},
 };
-
-use super::stream;
 
 pub(crate) struct ClientTcpTransport {
     sock_write: OwnedWriteHalf,
@@ -39,6 +33,7 @@ impl ClientTcpTransport {
         }
     }
 
+    #[allow(unused)] // Used in client implementation
     pub async fn connect(addr: SocketAddr) -> Result<Self, io::Error> {
         let socket = TcpStream::connect(addr).await?;
 
