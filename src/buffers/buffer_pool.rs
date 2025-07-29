@@ -9,7 +9,8 @@ use std::{
 
 use parking_lot::Mutex;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tracing::warn;
+
+use crate::message::BufferKind;
 
 struct BufferPoolInner {
     storage: Mutex<Vec<Box<[u8]>>>,
@@ -180,30 +181,6 @@ impl BufferPool {
         }
     }
 
-    pub fn get_busy_loop_unchecked(&self) -> PooledBuffer {
-        loop {
-            let bufs = self.inner.allocated_buffers.load(Ordering::Relaxed);
-            let buf = if bufs >= self.max_buffers {
-                self.try_get_no_grow()
-            } else {
-                self.try_get()
-            };
-
-            match buf {
-                Some(buf) => break buf,
-                None => {
-                    #[cfg(debug_assertions)]
-                    warn!(
-                        "BufferPool::get_busy_loop: no buffers available (size {}, alloocated {}/{})",
-                        self.buf_size, bufs, self.max_buffers
-                    );
-
-                    std::thread::yield_now()
-                }
-            }
-        }
-    }
-
     /// Returns the size of a single buffer in this pool.
     #[inline]
     pub fn buf_size(&self) -> usize {
@@ -305,8 +282,8 @@ impl Drop for PooledBuffer {
 
 pub trait BufPool: Send + Sync + 'static {
     fn get(&self, size: usize) -> impl Future<Output = Option<PooledBuffer>> + Send;
-    /// Same as `get`, but is synchronous. Not recommended to use in async code.
-    fn get_busy_loop(&self, size: usize) -> Option<PooledBuffer>;
+    /// Similar to `get`, but is synchronous, instead of waiting it will heap allocate a new buffer if the pool is at max capacity.
+    fn get_or_heap(&self, size: usize) -> BufferKind;
 
     /// Attempts to returns a new buffer of at least `size` bytes without blocking.
     /// If no pool is large enough or no buffers are available in the chosen pool, this will return `None`.
@@ -349,12 +326,12 @@ impl BufPool for BufferPool {
         self.try_get()
     }
 
-    fn get_busy_loop(&self, size: usize) -> Option<PooledBuffer> {
-        if size > self.buf_size {
-            return None;
+    fn get_or_heap(&self, size: usize) -> BufferKind {
+        if let Some(buffer) = self.try_get() {
+            return BufferKind::new_pooled(buffer);
         }
 
-        Some(self.get_busy_loop_unchecked())
+        BufferKind::new_heap(size)
     }
 
     fn min_buf_size(&self) -> usize {

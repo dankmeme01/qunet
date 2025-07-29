@@ -1,4 +1,7 @@
-use crate::buffers::buffer_pool::{BufPool, BufferPool, BufferPoolStats, PooledBuffer};
+use crate::{
+    buffers::buffer_pool::{BufPool, BufferPool, BufferPoolStats, PooledBuffer},
+    message::BufferKind,
+};
 
 /// A pool of `BufferPool`s. Wow.
 #[derive(Default)]
@@ -58,8 +61,12 @@ impl BufPool for MultiBufferPool {
     }
 
     #[inline]
-    fn get_busy_loop(&self, size: usize) -> Option<PooledBuffer> {
-        Some(self.get_pool_for_size(size)?.get_busy_loop_unchecked())
+    fn get_or_heap(&self, size: usize) -> BufferKind {
+        if let Some(pool) = self.get_pool_for_size(size) {
+            pool.get_or_heap(size)
+        } else {
+            BufferKind::new_heap(size)
+        }
     }
 
     #[inline]

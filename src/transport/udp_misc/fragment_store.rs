@@ -149,11 +149,7 @@ impl FragmentStore {
             total_size += frag.data.len();
         }
 
-        let mut data = match buffer_pool.get_busy_loop(total_size) {
-            Some(buf) => BufferKind::new_pooled(buf),
-
-            None => BufferKind::new_heap(total_size),
-        };
+        let mut data = buffer_pool.get_or_heap(total_size);
 
         for frag in &message.fragments {
             assert!(data.append_bytes(&frag.data), "Fragment data size mismatch");

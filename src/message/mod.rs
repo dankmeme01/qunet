@@ -231,7 +231,7 @@ impl QunetMessage {
             let mut buf = if size < QUNET_SMALL_MESSAGE_SIZE {
                 BufferKind::new_small()
             } else {
-                BufferKind::new_pooled(pool.get_busy_loop(size).unwrap())
+                pool.get_or_heap(size)
             };
 
             buf.append_bytes(rem);
@@ -418,18 +418,12 @@ impl QunetMessage {
                         small_buf[..data_len].copy_from_slice(data);
 
                         BufferKind::Small { buf: small_buf, size: data_len }
-                    } else if data_len <= buffer_pool.max_buf_size() {
-                        // request a buffer from the pool
-                        let mut buf = buffer_pool.get_busy_loop(data_len).unwrap();
-                        buf[..data_len].copy_from_slice(data);
-
-                        BufferKind::Pooled { buf, pos: 0, size: data_len }
                     } else {
-                        // heap allocate
-                        let mut heap_buf = Vec::with_capacity(data_len);
-                        heap_buf.extend_from_slice(data);
+                        // request a buffer from the pool
+                        let mut buf = buffer_pool.get_or_heap(data_len);
+                        buf.append_bytes(data);
 
-                        BufferKind::Heap(heap_buf)
+                        buf
                     }
                 }
 
