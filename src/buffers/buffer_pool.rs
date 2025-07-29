@@ -286,16 +286,16 @@ impl Drop for PooledBuffer {
     fn drop(&mut self) {
         // return the buffer to the pool
 
-        #[cfg(debug_assertions)]
-        {
-            let elapsed = self.created_at.elapsed();
-            tracing::trace!(
-                "PooledBuffer (size {}, free pool bufs: {}) returned after {:?}",
-                self.buffer.len(),
-                self.pool.semaphore.available_permits(),
-                elapsed
-            );
-        }
+        // #[cfg(debug_assertions)]
+        // {
+        //     let elapsed = self.created_at.elapsed();
+        //     tracing::trace!(
+        //         "PooledBuffer (size {}, free pool bufs: {}) returned after {:?}",
+        //         self.buffer.len(),
+        //         self.pool.semaphore.available_permits(),
+        //         elapsed
+        //     );
+        // }
 
         // safety: `self.buffer` is never used after this point
         let buf = unsafe { ManuallyDrop::take(&mut self.buffer) };
