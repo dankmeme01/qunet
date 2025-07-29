@@ -338,24 +338,10 @@ impl QunetTransport {
     }
 
     #[inline]
-    fn should_compress_data_message(&self, _message: &QunetMessage) -> Option<CompressionType> {
-        // TODO: properly benchmark these values,
-        None
+    fn should_compress_data_message(&self, message: &QunetMessage) -> Option<CompressionType> {
+        let data_buf = message.data_bytes().expect("Non data message passed to compression check");
 
-        // let data_buf = message.data_bytes().expect("Non data message passed to compression check");
-
-        // determine if it's worth compressing
-
-        // we want to be careful especially with udp game packets
-        // if data_buf.len() < 512 {
-        //     None
-        // } else if data_buf.len() < 2048 {
-        //     Some(CompressionType::Lz4)
-        // } else {
-        //     // Some(CompressionType::Zstd)
-        //     Some(CompressionType::Zstd)
-        //     // None
-        // }
+        if data_buf.len() > 1024 { Some(CompressionType::Zstd) } else { None }
     }
 
     async fn do_compress_data_message<C: CompressionHandler>(
