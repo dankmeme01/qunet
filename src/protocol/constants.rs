@@ -41,8 +41,8 @@ pub const PROTO_QUIC: u8 = 0x03;
 pub const PROTO_WEBSOCKET: u8 = 0x04;
 
 // TODO: tweak these in the future
-pub const MSG_ZSTD_COMPRESSION_LEVEL: i32 = 3;
-pub const QDB_ZSTD_COMPRESSION_LEVEL: i32 = 22;
+pub const MSG_ZSTD_COMPRESSION_LEVEL: i32 = 2;
+pub const QDB_ZSTD_COMPRESSION_LEVEL: i32 = 12;
 
 pub const DEFAULT_PORT: u16 = 4340;
 
