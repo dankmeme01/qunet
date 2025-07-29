@@ -964,13 +964,8 @@ impl<H: AppHandler> Server<H> {
 
     // Compression apis
 
-    pub(crate) async fn get_new_buffer(&self, size: usize) -> BufferKind {
-        match self.buffer_pool.get(size).await {
-            Some(buf) => BufferKind::new_pooled(buf),
-
-            // fallback for very large needs
-            None => BufferKind::new_heap(size),
-        }
+    pub(crate) fn get_new_buffer(&self, size: usize) -> BufferKind {
+        self.buffer_pool.get_or_heap(size)
     }
 
     // Public API for the application (sending packets, etc.)
@@ -1001,11 +996,11 @@ impl<H: AppHandler> Server<H> {
         });
     }
 
-    pub async fn request_buffer(&self, size: usize) -> BufferKind {
+    pub fn request_buffer(&self, size: usize) -> BufferKind {
         if size <= QUNET_SMALL_MESSAGE_SIZE {
             BufferKind::new_small()
         } else {
-            self.get_new_buffer(size).await
+            self.get_new_buffer(size)
         }
     }
 

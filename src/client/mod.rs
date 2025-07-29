@@ -185,14 +185,11 @@ impl<H: EventHandler> Client<H> {
         self.disconnect_notify.notify_waiters();
     }
 
-    pub async fn request_buffer(&self, size: usize) -> BufferKind {
+    pub fn request_buffer(&self, size: usize) -> BufferKind {
         if size <= QUNET_SMALL_MESSAGE_SIZE {
             BufferKind::new_small()
         } else {
-            match self.buffer_pool.get(size).await {
-                Some(buf) => BufferKind::new_pooled(buf),
-                None => BufferKind::new_heap(size),
-            }
+            self.buffer_pool.get_or_heap(size)
         }
     }
 
@@ -228,7 +225,7 @@ impl<H: EventHandler> Client<H> {
 
     /// Send a data message to the server
     pub async fn send_data(&self, data: &[u8]) -> bool {
-        let mut buf = self.request_buffer(data.len()).await;
+        let mut buf = self.request_buffer(data.len());
         buf.append_bytes(data);
         self.send_data_bufkind(buf)
     }
@@ -244,7 +241,7 @@ impl<H: EventHandler> Client<H> {
 
     /// Send an unreliable data message to the server
     pub async fn send_unreliable_data(&self, data: &[u8]) -> bool {
-        let mut buf = self.request_buffer(data.len()).await;
+        let mut buf = self.request_buffer(data.len());
         buf.append_bytes(data);
         self.send_unreliable_data_bufkind(buf)
     }

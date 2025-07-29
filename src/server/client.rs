@@ -43,7 +43,7 @@ impl<H: AppHandler> ClientState<H> {
     }
 
     pub async fn send_data(&self, data: &[u8], server: &Server<H>) -> bool {
-        let mut buf = server.request_buffer(data.len()).await;
+        let mut buf = server.request_buffer(data.len());
         buf.append_bytes(data);
         self.send_data_bufkind(buf)
     }
@@ -53,7 +53,7 @@ impl<H: AppHandler> ClientState<H> {
     }
 
     pub async fn send_unreliable_data(&self, data: &[u8], server: &Server<H>) -> bool {
-        let mut buf = server.request_buffer(data.len()).await;
+        let mut buf = server.request_buffer(data.len());
         buf.append_bytes(data);
         self.send_data_bufkind(buf)
     }
