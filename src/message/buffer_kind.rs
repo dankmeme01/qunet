@@ -134,6 +134,20 @@ impl BufferKind {
     pub fn reset(&mut self) {
         *self = BufferKind::Heap(Vec::new());
     }
+
+    /// Clones the buffer into a `BufferKind::Small` buffer.
+    /// If the inner data is larger than `QUNET_SMALL_MESSAGE_SIZE`, it will panic.
+    pub fn clone_into_small(&self) -> BufferKind {
+        let mut out = BufferKind::new_small();
+        if !out.append_bytes(self) {
+            panic!(
+                "tried to clone a buffer into a small buffer, but the data is too large ({} bytes)",
+                self.len()
+            );
+        }
+
+        out
+    }
 }
 
 impl Write for BufferKind {

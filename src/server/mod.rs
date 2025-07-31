@@ -792,8 +792,8 @@ impl<H: AppHandler> Server<H> {
         client: &Arc<ClientState<H>>,
         msg: &mut QunetMessage,
     ) -> Result<(), TransportError> {
-        #[cfg(debug_assertions)]
-        debug!("[{}] Received message: {:?}", transport.address(), msg.type_str());
+        // #[cfg(debug_assertions)]
+        // debug!("[{}] Received message: {:?}", transport.address(), msg.type_str());
 
         match msg {
             QunetMessage::Keepalive { timestamp } => {
@@ -1002,6 +1002,10 @@ impl<H: AppHandler> Server<H> {
         } else {
             self.get_new_buffer(size)
         }
+    }
+
+    pub fn get_buffer_pool(&self) -> Arc<HybridBufferPool> {
+        Arc::clone(&self.buffer_pool)
     }
 
     pub fn print_server_status(&self) {
