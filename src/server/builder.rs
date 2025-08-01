@@ -106,6 +106,7 @@ pub struct ServerBuilder<H: AppHandler = DefaultAppHandler> {
     pub(crate) app_handler: Option<H>,
 
     pub(crate) message_size_limit: Option<usize>,
+    pub(crate) max_messages_per_second: Option<NonZeroUsize>,
 
     pub(crate) qdb_path: Option<PathBuf>,
     pub(crate) qdb_data: Option<Vec<u8>>,
@@ -199,6 +200,18 @@ impl<H: AppHandler> ServerBuilder<H> {
         self
     }
 
+    pub fn with_message_size_limit(mut self, limit: usize) -> Self {
+        self.message_size_limit = Some(limit);
+        self
+    }
+
+    /// Note: this is not actually implemented yet
+    pub fn with_max_messages_per_second(mut self, limit: usize) -> Self {
+        // TODO: implement this
+        self.max_messages_per_second = NonZeroUsize::new(limit);
+        self
+    }
+
     pub fn with_app_handler<NewH: AppHandler>(self, app_handler: NewH) -> ServerBuilder<NewH> {
         ServerBuilder {
             udp_opts: self.udp_opts,
@@ -213,6 +226,7 @@ impl<H: AppHandler> ServerBuilder<H> {
             graceful_shutdown_timeout: self.graceful_shutdown_timeout,
             max_suspend_time: self.max_suspend_time,
             mem_options: self.mem_options,
+            max_messages_per_second: self.max_messages_per_second,
         }
     }
 
