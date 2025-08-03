@@ -273,8 +273,6 @@ impl QunetTransport {
         let since_last_exchange = now.duration_since(self.data.last_data_exchange);
 
         if since_last_exchange >= self.data.keepalive_interval {
-            debug!("[{}] keepalive interval reached, sending keepalive", self.data.address);
-
             self.send_message(QunetMessage::Keepalive { timestamp: 0 }, true, &()).await?;
         }
 

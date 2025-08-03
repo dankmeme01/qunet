@@ -436,7 +436,7 @@ impl<H: EventHandler> Client<H> {
         // control message
         match message {
             QunetMessage::KeepaliveResponse { .. } => {
-                warn!("todo: handle keepalive response");
+                // TODO: maybe do something with the data
             }
 
             QunetMessage::ServerClose { error_code, error_message } => {
