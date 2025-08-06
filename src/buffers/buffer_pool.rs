@@ -212,9 +212,8 @@ pub struct PooledBuffer {
     buffer: ManuallyDrop<Box<[u8]>>,
     pool: Arc<BufferPoolInner>,
     permit: Option<OwnedSemaphorePermit>,
-
-    #[cfg(debug_assertions)]
-    created_at: std::time::Instant,
+    // #[cfg(debug_assertions)]
+    // created_at: std::time::Instant,
 }
 
 impl PooledBuffer {
@@ -227,8 +226,8 @@ impl PooledBuffer {
             buffer: ManuallyDrop::new(buffer),
             pool,
             permit,
-            #[cfg(debug_assertions)]
-            created_at: std::time::Instant::now(),
+            // #[cfg(debug_assertions)]
+            // created_at: std::time::Instant::now(),
         }
     }
 }
