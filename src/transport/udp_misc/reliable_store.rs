@@ -170,9 +170,9 @@ impl ReliableStore {
             return Ok(());
         }
 
-        if self.remote_unacked.len() >= 16 {
-            debug!("Remote unacked queue is full, dropping oldest message");
-            self.remote_unacked.pop_front();
+        if self.remote_unacked.len() >= 64 {
+            debug!("Remote unacked queue is full, terminating connection");
+            return Err(TransportError::TooUnreliable);
         }
 
         self.remote_unacked.push_back(UnackedRemoteMessage {
@@ -264,9 +264,9 @@ impl ReliableStore {
             return Ok(());
         }
 
-        if self.local_unacked.len() >= 16 {
-            debug!("Local unacked queue is full, dropping oldest message");
-            self.local_unacked.pop_front();
+        if self.local_unacked.len() >= 32 {
+            debug!("Local unacked queue is full, terminating connection");
+            return Err(TransportError::TooUnreliable);
         }
 
         self.local_unacked.push_back(UnackedLocalMessage {
