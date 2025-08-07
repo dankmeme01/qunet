@@ -10,10 +10,8 @@ pub(crate) use meta::{
     QunetMessageMeta, ReliabilityHeader,
 };
 pub use msg_data::MsgData;
-use num_derive::{FromPrimitive, ToPrimitive};
 pub use raw::{QUNET_SMALL_MESSAGE_SIZE, QunetRawMessage};
 
-use num_traits::FromPrimitive;
 use std::{borrow::Cow, ops::Deref, sync::Arc};
 use thiserror::Error;
 
@@ -70,12 +68,31 @@ impl DataMessageKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum Protocol {
     Tcp = 1,
     Udp = 2,
     Quic = 3,
+}
+
+impl Protocol {
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(Self::Tcp),
+            2 => Some(Self::Udp),
+            3 => Some(Self::Quic),
+            _ => None,
+        }
+    }
+}
+
+impl TryFrom<u8> for Protocol {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        Protocol::from_u8(value).ok_or(())
+    }
 }
 
 #[allow(unused)] // TODO: use

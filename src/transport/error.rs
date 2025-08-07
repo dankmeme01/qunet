@@ -7,6 +7,7 @@ use crate::{
     transport::compression::{CompressError, DecompressError},
 };
 
+#[cfg(feature = "quic")]
 #[derive(Debug, Error)]
 pub enum QuicError {
     #[error("IO error: {0}")]
@@ -43,6 +44,7 @@ pub enum TransportError {
     TooManyPendingFragments,
     #[error("Error defragmenting message")]
     DefragmentationError,
+    #[cfg(feature = "quic")]
     #[error("QUIC error: {0}")]
     QuicError(#[from] QuicError),
     #[error("Not implemented: {0}")]
@@ -103,9 +105,11 @@ impl TransportError {
             | TransportError::Timeout
             | TransportError::TooUnreliable
             | TransportError::TooManyPendingFragments
-            | TransportError::QuicError(_)
             | TransportError::SuspendRequested
             | TransportError::IdleTimeout => TransportErrorOutcome::Terminate,
+
+            #[cfg(feature = "quic")]
+            TransportError::QuicError(_) => TransportErrorOutcome::Terminate,
 
             // Errors that indicate a bug in qunet
             TransportError::CompressionError(_)

@@ -30,6 +30,7 @@ pub(crate) struct TcpOptions {
     pub address: SocketAddr,
 }
 
+#[cfg(feature = "quic")]
 #[derive(Debug)]
 pub(crate) struct QuicOptions {
     pub address: SocketAddr,
@@ -113,6 +114,7 @@ pub enum CompressionMode {
 pub struct ServerBuilder<H: AppHandler = DefaultAppHandler> {
     pub(crate) udp_opts: Option<UdpOptions>,
     pub(crate) tcp_opts: Option<TcpOptions>,
+    #[cfg(feature = "quic")]
     pub(crate) quic_opts: Option<QuicOptions>,
     pub(crate) ws_opts: Option<WsOptions>,
     pub(crate) listener_opts: ListenerOptions,
@@ -161,6 +163,7 @@ impl<H: AppHandler> ServerBuilder<H> {
         self
     }
 
+    #[cfg(feature = "quic")]
     pub fn with_quic<P: AsRef<Path>, P2: AsRef<Path>>(
         mut self,
         address: SocketAddr,
@@ -236,6 +239,7 @@ impl<H: AppHandler> ServerBuilder<H> {
         ServerBuilder {
             udp_opts: self.udp_opts,
             tcp_opts: self.tcp_opts,
+            #[cfg(feature = "quic")]
             quic_opts: self.quic_opts,
             ws_opts: self.ws_opts,
             listener_opts: self.listener_opts,

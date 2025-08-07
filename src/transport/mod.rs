@@ -20,10 +20,12 @@ use crate::{
 
 use self::{
     lowlevel::{SocketAddrCRepr, socket_addr_to_c},
-    quic::ClientQuicTransport,
     tcp::ClientTcpTransport,
     udp::ClientUdpTransport,
 };
+
+#[cfg(feature = "quic")]
+use self::quic::ClientQuicTransport;
 
 use tracing::debug;
 pub(crate) use udp_misc::*;
@@ -31,13 +33,14 @@ pub(crate) use udp_misc::*;
 pub mod compression;
 mod error;
 pub mod lowlevel;
+#[cfg(feature = "quic")]
 pub mod quic;
 mod stream;
 pub mod tcp;
 pub mod udp;
 mod udp_misc;
 
-pub use error::{QuicError, TransportError, TransportErrorOutcome};
+pub use error::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportType {
@@ -49,6 +52,7 @@ pub enum TransportType {
 pub(crate) enum QunetTransportKind {
     Udp(ClientUdpTransport),
     Tcp(ClientTcpTransport),
+    #[cfg(feature = "quic")]
     Quic(ClientQuicTransport),
 }
 
@@ -175,6 +179,7 @@ impl QunetTransport {
         match &self.kind {
             QunetTransportKind::Udp(_) => "UDP",
             QunetTransportKind::Tcp(_) => "TCP",
+            #[cfg(feature = "quic")]
             QunetTransportKind::Quic(_) => "QUIC",
         }
     }
@@ -184,6 +189,7 @@ impl QunetTransport {
         match &self.kind {
             QunetTransportKind::Udp(_) => TransportType::Udp,
             QunetTransportKind::Tcp(_) => TransportType::Tcp,
+            #[cfg(feature = "quic")]
             QunetTransportKind::Quic(_) => TransportType::Quic,
         }
     }
@@ -218,6 +224,7 @@ impl QunetTransport {
                 tcp.send_handshake_response(&self.data, qdb_data, qdb_uncompressed_size).await
             }
 
+            #[cfg(feature = "quic")]
             QunetTransportKind::Quic(quic) => {
                 quic.send_handshake_response(&self.data, qdb_data, qdb_uncompressed_size).await
             }
@@ -232,6 +239,7 @@ impl QunetTransport {
         match &mut self.kind {
             QunetTransportKind::Udp(udp) => udp.run_server_setup(&self.data, server).await,
             QunetTransportKind::Tcp(tcp) => tcp.run_setup().await,
+            #[cfg(feature = "quic")]
             QunetTransportKind::Quic(quic) => quic.run_setup().await,
         }
     }
@@ -244,6 +252,7 @@ impl QunetTransport {
         match &mut self.kind {
             QunetTransportKind::Udp(udp) => udp.run_server_cleanup(&self.data, server).await,
             QunetTransportKind::Tcp(tcp) => tcp.run_cleanup().await,
+            #[cfg(feature = "quic")]
             QunetTransportKind::Quic(quic) => quic.run_cleanup().await,
         }
     }
@@ -253,6 +262,7 @@ impl QunetTransport {
         match &mut self.kind {
             QunetTransportKind::Udp(udp) => udp.receive_message(&mut self.data).await,
             QunetTransportKind::Tcp(tcp) => tcp.receive_message(&mut self.data).await,
+            #[cfg(feature = "quic")]
             QunetTransportKind::Quic(quic) => quic.receive_message(&self.data).await,
         }
     }
@@ -270,7 +280,9 @@ impl QunetTransport {
         match &self.kind {
             QunetTransportKind::Udp(udp) => Some(udp.until_timer_expiry().min(timeout)),
             QunetTransportKind::Tcp(_tcp) => Some(timeout),
-            _ => None, // quic does keepalives internally
+
+            #[cfg(feature = "quic")]
+            QunetTransportKind::Quic => None, // quic does keepalives internally
         }
     }
 
@@ -325,7 +337,10 @@ impl QunetTransport {
             QunetTransportKind::Udp(udp) => {
                 udp.send_message(&mut self.data, message, reliable).await
             }
+
             QunetTransportKind::Tcp(tcp) => tcp.send_message(&mut self.data, message).await,
+
+            #[cfg(feature = "quic")]
             QunetTransportKind::Quic(quic) => quic.send_message(&self.data, message).await,
         }
     }

@@ -21,6 +21,7 @@ pub enum ListenerError {
     AcceptError(#[from] AcceptError),
     #[error("Handshake packet is invalid")]
     MalformedHandshake,
+    #[cfg(feature = "quic")]
     #[error("QUIC connection error: {0}")]
     QuicConnectionError(#[from] s2n_quic::connection::Error),
     #[error("Connection closed by peer")]
@@ -37,6 +38,7 @@ pub(crate) trait ServerListener<H: AppHandler> {
 pub enum BindError {
     #[error("{0}")]
     Io(#[from] std::io::Error),
+    #[cfg(feature = "quic")]
     #[error("Failed to start QUIC server: {0}")]
     QuicStart(#[from] s2n_quic::provider::StartError),
     #[error("Failed to load TLS certificate: {0}")]

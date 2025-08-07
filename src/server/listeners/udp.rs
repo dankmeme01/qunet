@@ -288,6 +288,7 @@ impl<H: AppHandler> UdpServerListener<H> {
             protocol_count += 1;
         }
 
+        #[cfg(feature = "quic")]
         if let Some(listener) = &server.quic_listener {
             writer.write_u8(PROTO_QUIC);
             writer.write_u16(listener.port());

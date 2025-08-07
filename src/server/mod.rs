@@ -28,10 +28,7 @@ use crate::{
         app_handler::{AppHandler, DefaultAppHandler},
         builder::{CompressionMode, ListenerOptions, ServerBuilder},
         client::{ClientNotification, ClientState},
-        listeners::{
-            BindError, ListenerError, QuicServerListener, ServerListener, TcpServerListener,
-            UdpServerListener,
-        },
+        listeners::*,
     },
     transport::{
         QunetTransport, TransportError, TransportErrorOutcome, TransportType,
@@ -101,6 +98,7 @@ impl SuspendedClientState {
 pub struct Server<H: AppHandler> {
     udp_listener: Option<Arc<UdpServerListener<H>>>,
     tcp_listener: Option<Arc<TcpServerListener<H>>>,
+    #[cfg(feature = "quic")]
     quic_listener: Option<Arc<QuicServerListener<H>>>,
     pub(crate) buffer_pool: Arc<HybridBufferPool>,
     pub(crate) app_handler: H,
@@ -154,6 +152,7 @@ impl<H: AppHandler> Server<H> {
         let mut server = Server {
             udp_listener: None,
             tcp_listener: None,
+            #[cfg(feature = "quic")]
             quic_listener: None,
             buffer_pool,
             app_handler,
@@ -214,6 +213,7 @@ impl<H: AppHandler> Server<H> {
             self.tcp_listener = Some(Arc::new(listener));
         }
 
+        #[cfg(feature = "quic")]
         if let Some(opts) = builder.quic_opts.take() {
             let listener =
                 QuicServerListener::new(opts, self.shutdown_token.clone(), &builder.listener_opts)
@@ -284,6 +284,7 @@ impl<H: AppHandler> Server<H> {
             self.listener_tracker.spawn(async move { srv.run_listener(tcp).await });
         }
 
+        #[cfg(feature = "quic")]
         if let Some(quic) = self.quic_listener.clone() {
             let srv = self.clone();
             self.listener_tracker.spawn(async move { srv.run_listener(quic).await });
@@ -674,11 +675,9 @@ impl<H: AppHandler> Server<H> {
 
             let res = tokio::select! {
                 msg = transport.receive_message() => match msg {
-                    Ok(msg) => {
-                        match transport.decompress_message(msg, self).await {
-                            Ok(mut msg) => self.handle_client_message(transport, &client, &mut msg).await,
-                            Err(e) => Err(e),
-                        }
+                    Ok(msg) => match transport.decompress_message(msg, self).await {
+                        Ok(mut msg) => self.handle_client_message(transport, &client, &mut msg).await,
+                        Err(e) => Err(e),
                     },
 
                     Err(e) => Err(e),
@@ -941,6 +940,7 @@ impl<H: AppHandler> Server<H> {
             debug!("- {} (TCP)", tcp.address);
         }
 
+        #[cfg(feature = "quic")]
         if let Some(quic) = &builder.quic_opts {
             debug!("- {} (QUIC)", quic.address);
         }
