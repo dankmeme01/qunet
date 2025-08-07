@@ -11,7 +11,10 @@ use crate::{
     buffers::HybridBufferPool,
     message::{CompressionHeader, CompressionType, DataMessageKind, QunetMessage, channel},
     protocol::QunetHandshakeError,
-    server::{Server, ServerHandle, app_handler::AppHandler, client::ClientNotification},
+    server::{
+        Server, ServerHandle, app_handler::AppHandler, builder::CompressionMode,
+        client::ClientNotification,
+    },
     transport::compression::CompressionHandler,
 };
 
@@ -60,6 +63,7 @@ pub(crate) struct QunetTransportData {
     pub idle_timeout: Duration,
     pub last_data_exchange: Instant,
     pub keepalive_interval: Duration,
+    pub compression_mode: CompressionMode,
     pub is_client: bool,
 
     pub c_sockaddr_data: SocketAddrCRepr,
@@ -99,8 +103,9 @@ impl QunetTransport {
             initial_qdb_hash,
             server.message_size_limit(),
             server.buffer_pool.clone(),
-            server._builder.listener_opts.idle_timeout,
+            server.listener_opts.idle_timeout,
             Duration::from_secs(2u64.pow(30)), // server never sends keepalives
+            server.compression_mode,
         )
     }
 
@@ -124,6 +129,7 @@ impl QunetTransport {
             client.buffer_pool.clone(),
             Duration::from_secs(60),
             Duration::from_secs(30),
+            CompressionMode::default(),
         )
     }
 
@@ -138,6 +144,7 @@ impl QunetTransport {
         buffer_pool: Arc<HybridBufferPool>,
         idle_timeout: Duration,
         keepalive_interval: Duration,
+        compression_mode: CompressionMode,
     ) -> Self {
         let (c_sockaddr_data, c_sockaddr_len) = socket_addr_to_c(&address);
 
@@ -157,6 +164,7 @@ impl QunetTransport {
                 last_data_exchange: Instant::now(),
                 idle_timeout,
                 keepalive_interval,
+                compression_mode,
             },
             notif_chan: channel::new_channel(16),
         }
@@ -339,7 +347,17 @@ impl QunetTransport {
     fn should_compress_data_message(&self, message: &QunetMessage) -> Option<CompressionType> {
         let data_buf = message.data_bytes().expect("Non data message passed to compression check");
 
-        if data_buf.len() > 1024 { Some(CompressionType::Zstd) } else { None }
+        match self.data.compression_mode {
+            CompressionMode::None => None,
+            CompressionMode::Always => Some(CompressionType::Zstd),
+            CompressionMode::Adaptive => {
+                if data_buf.len() >= 1024 {
+                    Some(CompressionType::Zstd)
+                } else {
+                    None
+                }
+            }
+        }
     }
 
     async fn do_compress_data_message<C: CompressionHandler>(
@@ -359,7 +377,8 @@ impl QunetTransport {
 
         let compressed_buf = match comp_type {
             CompressionType::Lz4 => ch.compress_lz4(data_buf).await?,
-            CompressionType::Zstd => ch.compress_zstd(data_buf).await?,
+            CompressionType::Zstd => ch.compress_zstd(data_buf, true).await?,
+            CompressionType::ZstdNoDict => ch.compress_zstd(data_buf, false).await?,
         };
 
         let reliability = match message {
@@ -390,7 +409,8 @@ impl QunetTransport {
         let unc_size = compression_header.uncompressed_size.get() as usize;
 
         let buf = match compression_header.compression_type {
-            CompressionType::Zstd => ch.decompress_zstd(data, unc_size).await?,
+            CompressionType::Zstd => ch.decompress_zstd(data, unc_size, true).await?,
+            CompressionType::ZstdNoDict => ch.decompress_zstd(data, unc_size, false).await?,
             CompressionType::Lz4 => ch.decompress_lz4(data, unc_size).await?,
         };
 

@@ -42,7 +42,7 @@ pub(crate) struct WsOptions {
     pub address: SocketAddr,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct ListenerOptions {
     pub handshake_timeout: Duration,
     pub idle_timeout: Duration,
@@ -95,6 +95,20 @@ impl Default for MemoryUsageOptions {
     }
 }
 
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompressionMode {
+    /// No automatic compression. Packets will be sent uncompressed but compression can be applied per message.
+    None,
+
+    /// Adaptive compression mode, the server will choose whether to compress messages based on their size and content.
+    /// This is the default mode.
+    #[default]
+    Adaptive,
+
+    /// Always compress messages, regardless of their size or content.
+    Always,
+}
+
 #[derive(Default, Debug)]
 pub struct ServerBuilder<H: AppHandler = DefaultAppHandler> {
     pub(crate) udp_opts: Option<UdpOptions>,
@@ -107,6 +121,7 @@ pub struct ServerBuilder<H: AppHandler = DefaultAppHandler> {
 
     pub(crate) message_size_limit: Option<usize>,
     pub(crate) max_messages_per_second: Option<NonZeroUsize>,
+    pub(crate) compression_mode: CompressionMode,
 
     pub(crate) qdb_path: Option<PathBuf>,
     pub(crate) qdb_data: Option<Vec<u8>>,
@@ -212,6 +227,11 @@ impl<H: AppHandler> ServerBuilder<H> {
         self
     }
 
+    pub fn with_compression_mode(mut self, mode: CompressionMode) -> Self {
+        self.compression_mode = mode;
+        self
+    }
+
     pub fn with_app_handler<NewH: AppHandler>(self, app_handler: NewH) -> ServerBuilder<NewH> {
         ServerBuilder {
             udp_opts: self.udp_opts,
@@ -227,16 +247,11 @@ impl<H: AppHandler> ServerBuilder<H> {
             max_suspend_time: self.max_suspend_time,
             mem_options: self.mem_options,
             max_messages_per_second: self.max_messages_per_second,
+            compression_mode: self.compression_mode,
         }
     }
-
-    pub fn build_raw(self) -> Server<H> {
-        Server::<H>::from_builder(self)
-    }
-
     pub async fn build(self) -> Result<ServerHandle<H>, ServerOutcome> {
-        let mut server = self.build_raw();
-        server.setup().await?;
+        let server = Server::<H>::from_builder(self).await?;
 
         Ok(ServerHandle { inner: Arc::new(server) })
     }

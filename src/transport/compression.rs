@@ -97,12 +97,14 @@ pub trait CompressionHandler {
     fn compress_zstd(
         &self,
         data: &[u8],
+        use_dict: bool,
     ) -> impl Future<Output = Result<BufferKind, CompressError>> + Send;
 
     fn decompress_zstd(
         &self,
         data: &[u8],
         uncompressed_size: usize,
+        use_dict: bool,
     ) -> impl Future<Output = Result<BufferKind, DecompressError>> + Send;
 
     fn compress_lz4(
@@ -182,7 +184,11 @@ impl<P: BufPool> CompressionHandlerImpl<P> {
 }
 
 impl<P: BufPool> CompressionHandler for CompressionHandlerImpl<P> {
-    async fn compress_zstd(&self, data: &[u8]) -> Result<BufferKind, CompressError> {
+    async fn compress_zstd(
+        &self,
+        data: &[u8],
+        use_dict: bool,
+    ) -> Result<BufferKind, CompressError> {
         let needed_len = zstd_compress_bound(data.len());
 
         let mut buf = self.get_new_buffer(needed_len).await;
@@ -197,7 +203,7 @@ impl<P: BufPool> CompressionHandler for CompressionHandlerImpl<P> {
             needed_len
         );
 
-        let written = zstd_compress(data, output, self.zstd_cdict.as_ref())?;
+        let written = zstd_compress(data, output, self.zstd_cdict.as_ref().take_if(|_| use_dict))?;
 
         // safety: zstd guarantees that exactly `size` bytes are written to the output buffer
         unsafe { Self::set_buffer_kind_len(&mut buf, written) };
@@ -208,6 +214,7 @@ impl<P: BufPool> CompressionHandler for CompressionHandlerImpl<P> {
         &self,
         data: &[u8],
         uncompressed_size: usize,
+        use_dict: bool,
     ) -> Result<BufferKind, DecompressError> {
         let mut buf = self.get_new_buffer(uncompressed_size).await;
 
@@ -221,7 +228,8 @@ impl<P: BufPool> CompressionHandler for CompressionHandlerImpl<P> {
             uncompressed_size
         );
 
-        let written = zstd_decompress(data, output, self.zstd_ddict.as_ref())?;
+        let written =
+            zstd_decompress(data, output, self.zstd_ddict.as_ref().take_if(|_| use_dict))?;
 
         // safety: zstd guarantees that exactly `size` bytes are written to the output buffer
         unsafe { Self::set_buffer_kind_len(&mut buf, written) };
@@ -261,7 +269,11 @@ impl<P: BufPool> CompressionHandler for CompressionHandlerImpl<P> {
 }
 
 impl CompressionHandler for () {
-    async fn compress_zstd(&self, _data: &[u8]) -> Result<BufferKind, CompressError> {
+    async fn compress_zstd(
+        &self,
+        _data: &[u8],
+        _use_dict: bool,
+    ) -> Result<BufferKind, CompressError> {
         panic!("null CompressionHandler cannot compress data");
     }
 
@@ -269,6 +281,7 @@ impl CompressionHandler for () {
         &self,
         _data: &[u8],
         _uncompressed_size: usize,
+        _use_dict: bool,
     ) -> Result<BufferKind, DecompressError> {
         panic!("null CompressionHandler cannot decompress data");
     }

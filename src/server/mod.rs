@@ -26,7 +26,7 @@ use crate::{
     protocol::{self, *},
     server::{
         app_handler::{AppHandler, DefaultAppHandler},
-        builder::ServerBuilder,
+        builder::{CompressionMode, ListenerOptions, ServerBuilder},
         client::{ClientNotification, ClientState},
         listeners::{
             BindError, ListenerError, QuicServerListener, ServerListener, TcpServerListener,
@@ -99,7 +99,6 @@ impl SuspendedClientState {
 }
 
 pub struct Server<H: AppHandler> {
-    pub(crate) _builder: ServerBuilder<H>,
     udp_listener: Option<Arc<UdpServerListener<H>>>,
     tcp_listener: Option<Arc<TcpServerListener<H>>>,
     quic_listener: Option<Arc<QuicServerListener<H>>>,
@@ -121,6 +120,9 @@ pub struct Server<H: AppHandler> {
     // misc settings
     message_size_limit: usize,
     suspend_timeout: Duration,
+    graceful_shutdown_timeout: Duration,
+    pub(crate) listener_opts: ListenerOptions,
+    pub(crate) compression_mode: CompressionMode,
 
     // Qdb stuff
     qdb: QunetDatabase,
@@ -136,7 +138,7 @@ impl Server<DefaultAppHandler> {
 }
 
 impl<H: AppHandler> Server<H> {
-    pub(crate) fn from_builder(mut builder: ServerBuilder<H>) -> Self {
+    pub(crate) async fn from_builder(mut builder: ServerBuilder<H>) -> Result<Self, ServerOutcome> {
         let app_handler =
             builder.app_handler.take().expect("App handler must be set in the builder");
 
@@ -146,11 +148,10 @@ impl<H: AppHandler> Server<H> {
             builder.mem_options.max_mem,
         ));
 
+        // setup compressor
         let compressor = CompressionHandlerImpl::new(buffer_pool.clone());
-        let suspend_timeout = builder.max_suspend_time.unwrap_or(Duration::from_secs(60));
 
-        Server {
-            _builder: builder,
+        let mut server = Server {
             udp_listener: None,
             tcp_listener: None,
             quic_listener: None,
@@ -169,63 +170,62 @@ impl<H: AppHandler> Server<H> {
             connected_addrs: DashMap::default(),
             suspended_clients: DashMap::default(),
 
-            message_size_limit: 0,
-            suspend_timeout,
+            message_size_limit: builder.message_size_limit.unwrap_or(DEFAULT_MESSAGE_SIZE_LIMIT),
+            suspend_timeout: builder.max_suspend_time.unwrap_or(Duration::from_secs(60)),
+            graceful_shutdown_timeout: builder
+                .graceful_shutdown_timeout
+                .unwrap_or(Duration::from_secs(10)),
+            listener_opts: builder.listener_opts,
+            compression_mode: builder.compression_mode,
 
             qdb: QunetDatabase::default(),
             qdb_data: Arc::new([]),
             qdb_hash: [0; 32],
             qdb_uncompressed_size: 0,
-        }
+        };
+
+        server.setup(builder).await?;
+
+        Ok(server)
     }
 
-    pub(crate) async fn setup(&mut self) -> Result<(), ServerOutcome> {
+    async fn setup(&mut self, mut builder: ServerBuilder<H>) -> Result<(), ServerOutcome> {
         self.app_handler.pre_setup(self).await.map_err(ServerOutcome::CustomError)?;
 
-        self.print_config();
+        self.print_config(&builder);
 
         // Setup connection listeners
-        if let Some(opts) = self._builder.udp_opts.take() {
+        if let Some(opts) = builder.udp_opts.take() {
             let listener = UdpServerListener::new(
                 opts,
                 self.shutdown_token.clone(),
-                &self._builder.listener_opts,
-                &self._builder.mem_options,
+                &builder.listener_opts,
+                &builder.mem_options,
             )
             .await?;
 
             self.udp_listener = Some(Arc::new(listener));
         }
 
-        if let Some(opts) = self._builder.tcp_opts.take() {
-            let listener = TcpServerListener::new(
-                opts,
-                self.shutdown_token.clone(),
-                &self._builder.listener_opts,
-            )
-            .await?;
+        if let Some(opts) = builder.tcp_opts.take() {
+            let listener =
+                TcpServerListener::new(opts, self.shutdown_token.clone(), &builder.listener_opts)
+                    .await?;
             self.tcp_listener = Some(Arc::new(listener));
         }
 
-        if let Some(opts) = self._builder.quic_opts.take() {
-            let listener = QuicServerListener::new(
-                opts,
-                self.shutdown_token.clone(),
-                &self._builder.listener_opts,
-            )
-            .await?;
+        if let Some(opts) = builder.quic_opts.take() {
+            let listener =
+                QuicServerListener::new(opts, self.shutdown_token.clone(), &builder.listener_opts)
+                    .await?;
 
             self.quic_listener = Some(Arc::new(listener));
         }
 
-        // Setup misc settings
-        self.message_size_limit =
-            self._builder.message_size_limit.unwrap_or(DEFAULT_MESSAGE_SIZE_LIMIT);
-
         // Setup qdb stuff
-        let qdb_data = if let Some(data) = self._builder.qdb_data.take() {
+        let qdb_data = if let Some(data) = builder.qdb_data.take() {
             data.into_boxed_slice()
-        } else if let Some(path) = self._builder.qdb_path.take() {
+        } else if let Some(path) = builder.qdb_path.take() {
             std::fs::read(path).map_err(ServerOutcome::QdbReadError)?.into_boxed_slice()
         } else {
             Box::new([])
@@ -318,9 +318,7 @@ impl<H: AppHandler> Server<H> {
             }
         };
 
-        let timeout = self._builder.graceful_shutdown_timeout.unwrap_or(Duration::from_secs(10));
-
-        match tokio::time::timeout(timeout, self.graceful_shutdown()).await {
+        match tokio::time::timeout(self.graceful_shutdown_timeout, self.graceful_shutdown()).await {
             Ok(Ok(())) => info!("Shutdown successful"),
             Ok(Err(e)) => {
                 error!("Failed to shut down gracefully: {e}");
@@ -929,25 +927,25 @@ impl<H: AppHandler> Server<H> {
         Ok(())
     }
 
-    fn print_config(&self) {
+    fn print_config(&self, builder: &ServerBuilder<H>) {
         debug!("Server configuration:");
 
-        if let Some(udp) = &self._builder.udp_opts {
+        if let Some(udp) = &builder.udp_opts {
             debug!(
                 "- {} (UDP, {} binds, discovery mode: {:?})",
                 udp.address, udp.binds, udp.discovery_mode
             );
         }
 
-        if let Some(tcp) = &self._builder.tcp_opts {
+        if let Some(tcp) = &builder.tcp_opts {
             debug!("- {} (TCP)", tcp.address);
         }
 
-        if let Some(quic) = &self._builder.quic_opts {
+        if let Some(quic) = &builder.quic_opts {
             debug!("- {} (QUIC)", quic.address);
         }
 
-        if let Some(ws) = &self._builder.ws_opts {
+        if let Some(ws) = &builder.ws_opts {
             debug!("- {} (WebSocket)", ws.address);
         }
 
@@ -1035,16 +1033,21 @@ impl<H: AppHandler> Server<H> {
 }
 
 impl<H: AppHandler> CompressionHandler for Server<H> {
-    async fn compress_zstd(&self, data: &[u8]) -> Result<BufferKind, CompressError> {
-        self.compressor.compress_zstd(data).await
+    async fn compress_zstd(
+        &self,
+        data: &[u8],
+        use_dict: bool,
+    ) -> Result<BufferKind, CompressError> {
+        self.compressor.compress_zstd(data, use_dict).await
     }
 
     async fn decompress_zstd(
         &self,
         data: &[u8],
         uncompressed_size: usize,
+        use_dict: bool,
     ) -> Result<BufferKind, DecompressError> {
-        self.compressor.decompress_zstd(data, uncompressed_size).await
+        self.compressor.decompress_zstd(data, uncompressed_size, use_dict).await
     }
 
     async fn compress_lz4(&self, data: &[u8]) -> Result<BufferKind, CompressError> {

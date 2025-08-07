@@ -713,7 +713,8 @@ impl QunetMessage {
                 match compression {
                     Some(CompressionHeader { compression_type, .. }) => match compression_type {
                         CompressionType::Zstd => 0b01,
-                        CompressionType::Lz4 => 0b10,
+                        CompressionType::ZstdNoDict => 0b10,
+                        CompressionType::Lz4 => panic!("lz4 support is deprecated"),
                     },
 
                     None => 0b00,

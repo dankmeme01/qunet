@@ -267,7 +267,7 @@ Message structure: empty
 
 This is a special message type for application data. It covers values from 128 to 255, aka all values with the most significant bit being `1`. The other 7 bits are used for flags:
 
-* Bits 0 and 1 (least significant) - compression algorithm, `00` - uncompressed, `01` - zstd, `10` - lz4, `11` - reserved, must not be used
+* Bits 0 and 1 (least significant) - compression algorithm, `00` - uncompressed, `01` - zstd, `10` - zstd with no dictionary, `11` - reserved, must not be used
 * All the other bits should be set to 0 by the qunet protocol, however they **may be modified by the transport layer**. For example the UDP transport reuses some bits for fragmentation or reliability information.
 
 If compression is enabled, the **Compression** extension is included right after the qunet header byte. Structure:

@@ -9,6 +9,9 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompressionType {
     Zstd,
+    ZstdNoDict,
+    // #[deprecated]
+    #[allow(dead_code)]
     Lz4,
 }
 
@@ -88,7 +91,7 @@ impl<'a> QunetMessageMeta<'a> {
                     .ok_or(QunetMessageDecodeError::UnexpectedZero)?,
             }),
             0b10 => Some(CompressionHeader {
-                compression_type: CompressionType::Lz4,
+                compression_type: CompressionType::ZstdNoDict,
                 uncompressed_size: NonZeroU32::new(reader.read_u32()?)
                     .ok_or(QunetMessageDecodeError::UnexpectedZero)?,
             }),
