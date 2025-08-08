@@ -569,5 +569,7 @@ impl ClientUdpTransport {
         }
 
         self.send_packet(&out_buf, transport_data).await?;
+
+        Ok(())
     }
 }

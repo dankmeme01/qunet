@@ -42,6 +42,7 @@ pub(crate) async fn make_socket(
 
     let socket = Socket::new(domain, Type::DGRAM, None)?;
 
+    #[cfg(not(windows))]
     if multi {
         socket.set_reuse_port(true)?;
     }

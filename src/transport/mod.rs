@@ -18,11 +18,10 @@ use crate::{
     transport::compression::CompressionHandler,
 };
 
-use self::{
-    lowlevel::{SocketAddrCRepr, socket_addr_to_c},
-    tcp::ClientTcpTransport,
-    udp::ClientUdpTransport,
-};
+use self::{tcp::ClientTcpTransport, udp::ClientUdpTransport};
+
+#[cfg(target_os = "linux")]
+use self::lowlevel::{SocketAddrCRepr, socket_addr_to_c};
 
 #[cfg(feature = "quic")]
 use self::quic::ClientQuicTransport;
