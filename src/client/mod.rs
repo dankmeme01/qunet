@@ -25,10 +25,12 @@ use crate::{
     protocol::{DEFAULT_PORT, MAJOR_VERSION, QunetConnectionError, UDP_PACKET_LIMIT},
     transport::{
         QunetTransport, QunetTransportKind, TransportError, TransportErrorOutcome,
-        compression::CompressionHandlerImpl, quic::ClientQuicTransport, tcp::ClientTcpTransport,
-        udp::ClientUdpTransport,
+        compression::CompressionHandlerImpl, tcp::ClientTcpTransport, udp::ClientUdpTransport,
     },
 };
+
+#[cfg(feature = "quic")]
+use crate::transport::ClientQuicTransport;
 
 mod builder;
 mod event_handler;
@@ -92,6 +94,8 @@ pub enum ConnectionError {
     QuicNoCert,
     #[error("QUIC connection attempted with an IP address instead of a domain name")]
     QuicIpAddress,
+    #[error("QUIC connection attempted with QUIC disabled")]
+    QuicDisabled,
 }
 
 #[atomic_enum]
@@ -728,6 +732,7 @@ impl<H: EventHandler> Client<H> {
     ) -> Result<QunetTransport, ConnectionError> {
         let idle_timeout = Duration::from_secs(60);
 
+        #[cfg(feature = "quic")]
         if ty == ConnectionType::Quic {
             // quic connections cannot be established without a certificate store
             if self._builder.quic_cert_path.is_none() {
@@ -739,12 +744,18 @@ impl<H: EventHandler> Client<H> {
             }
         }
 
+        #[cfg(not(feature = "quic"))]
+        if ty == ConnectionType::Quic {
+            return Err(ConnectionError::QuicDisabled);
+        }
+
         let fut = async move {
             let kind = match ty {
                 ConnectionType::Tcp => {
                     QunetTransportKind::Tcp(ClientTcpTransport::connect(addr).await?)
                 }
 
+                #[cfg(feature = "quic")]
                 ConnectionType::Quic => {
                     let cert_path = self._builder.quic_cert_path.as_ref().unwrap();
 
@@ -757,6 +768,11 @@ impl<H: EventHandler> Client<H> {
                         )
                         .await?,
                     )
+                }
+
+                #[cfg(not(feature = "quic"))]
+                ConnectionType::Quic => {
+                    unreachable!()
                 }
 
                 ConnectionType::Udp => {

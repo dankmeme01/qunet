@@ -70,7 +70,9 @@ pub(crate) struct QunetTransportData {
     pub compression_mode: CompressionMode,
     pub is_client: bool,
 
+    #[cfg(target_os = "linux")]
     pub c_sockaddr_data: SocketAddrCRepr,
+    #[cfg(target_os = "linux")]
     pub c_sockaddr_len: libc::socklen_t,
 }
 
@@ -81,6 +83,7 @@ pub(crate) struct QunetTransport {
 }
 
 impl QunetTransportData {
+    #[cfg(target_os = "linux")]
     pub fn c_sockaddr(&self) -> (&SocketAddrCRepr, libc::socklen_t) {
         (&self.c_sockaddr_data, self.c_sockaddr_len)
     }
@@ -150,6 +153,7 @@ impl QunetTransport {
         keepalive_interval: Duration,
         compression_mode: CompressionMode,
     ) -> Self {
+        #[cfg(target_os = "linux")]
         let (c_sockaddr_data, c_sockaddr_len) = socket_addr_to_c(&address);
 
         Self {
@@ -163,12 +167,14 @@ impl QunetTransport {
                 initial_qdb_hash,
                 message_size_limit,
                 buffer_pool,
-                c_sockaddr_data,
-                c_sockaddr_len,
                 last_data_exchange: Instant::now(),
                 idle_timeout,
                 keepalive_interval,
                 compression_mode,
+                #[cfg(target_os = "linux")]
+                c_sockaddr_data,
+                #[cfg(target_os = "linux")]
+                c_sockaddr_len,
             },
             notif_chan: channel::new_channel(16),
         }
@@ -282,7 +288,7 @@ impl QunetTransport {
             QunetTransportKind::Tcp(_tcp) => Some(timeout),
 
             #[cfg(feature = "quic")]
-            QunetTransportKind::Quic => None, // quic does keepalives internally
+            QunetTransportKind::Quic(_) => None, // quic does keepalives internally
         }
     }
 

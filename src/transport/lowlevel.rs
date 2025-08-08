@@ -3,6 +3,7 @@
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
+#[cfg(target_os = "linux")]
 fn ip_v4_addr_to_c(addr: &Ipv4Addr) -> libc::in_addr {
     // `s_addr` is stored as BE on all machines and the array is in BE order.
     // So the native endian conversion method is used so that it's never swapped.
@@ -11,10 +12,12 @@ fn ip_v4_addr_to_c(addr: &Ipv4Addr) -> libc::in_addr {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn ip_v6_addr_to_c(addr: &Ipv6Addr) -> libc::in6_addr {
     libc::in6_addr { s6_addr: addr.octets() }
 }
 
+#[cfg(target_os = "linux")]
 fn socket_addr_v4_to_c(addr: &SocketAddrV4) -> libc::sockaddr_in {
     libc::sockaddr_in {
         sin_family: libc::AF_INET as libc::sa_family_t,
@@ -24,6 +27,7 @@ fn socket_addr_v4_to_c(addr: &SocketAddrV4) -> libc::sockaddr_in {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn socket_addr_v6_to_c(addr: &SocketAddrV6) -> libc::sockaddr_in6 {
     libc::sockaddr_in6 {
         sin6_family: libc::AF_INET6 as libc::sa_family_t,
@@ -34,12 +38,14 @@ fn socket_addr_v6_to_c(addr: &SocketAddrV6) -> libc::sockaddr_in6 {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[repr(C)]
 pub union SocketAddrCRepr {
     v4: libc::sockaddr_in,
     v6: libc::sockaddr_in6,
 }
 
+#[cfg(target_os = "linux")]
 pub fn socket_addr_to_c(addr: &SocketAddr) -> (SocketAddrCRepr, libc::socklen_t) {
     match addr {
         SocketAddr::V4(a) => {
