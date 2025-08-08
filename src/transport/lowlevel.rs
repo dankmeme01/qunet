@@ -1,6 +1,7 @@
 //! Low-level socket and serialization utilities.
 //! Sockaddr utils are partly taken from the Rust std source code
 
+#[cfg(target_os = "linux")]
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 #[cfg(target_os = "linux")]

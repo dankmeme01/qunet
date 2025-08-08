@@ -3,7 +3,8 @@
     associated_type_defaults,
     generic_const_exprs,
     sync_unsafe_cell,
-    never_type
+    never_type,
+    io_slice_as_bytes
 )]
 
 pub mod buffers;
