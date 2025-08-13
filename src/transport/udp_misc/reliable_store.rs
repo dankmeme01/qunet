@@ -338,9 +338,9 @@ impl ReliableStore {
 
         let ack_delay = self.calc_ack_deadline();
 
-        let sum = rtt.max(ack_delay).as_secs_f64();
+        let sum = (rtt + ack_delay).as_secs_f64();
 
-        Duration::from_secs_f64(sum * 2.5 + (nth_attempt as f64 * 0.075))
+        Duration::from_secs_f64(sum * 1.5 + (nth_attempt as f64 * 0.075))
     }
 
     #[inline]
