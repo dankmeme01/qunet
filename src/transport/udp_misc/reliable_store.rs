@@ -345,7 +345,7 @@ impl ReliableStore {
 
     #[inline]
     const fn calc_ack_deadline(&self) -> Duration {
-        Duration::from_millis(125)
+        Duration::from_millis(100)
     }
 
     fn process_acks(&mut self, acks: &[u16]) {
