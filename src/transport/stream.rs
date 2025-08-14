@@ -20,10 +20,7 @@ pub async fn receive_message<S: AsyncReadExt + Unpin>(
     transport_data: &QunetTransportData,
     stream: &mut S,
 ) -> Result<QunetMessage, TransportError> {
-    // TODO: maybe refactor this to add another position variable,
-    // then reset buffer positions to 0 if there is no leftover data
-    // this will probably improve performance by avoiding unnecessary memmoves,
-    // but will make things more complex if partial messages are received (though this is rare)
+    // TODO: refactor to use CircularByteBuffer
 
     loop {
         // first, try to parse a message from the buffer
@@ -43,7 +40,6 @@ pub async fn receive_message<S: AsyncReadExt + Unpin>(
 
                 let do_shift = |buffer: &mut Vec<u8>, buffer_pos: &mut usize| {
                     // shift leftover bytes in the buffer
-                    // TODO: we could elide the memmove by adding another pos field
                     let leftover_bytes = *buffer_pos - total_len;
                     if leftover_bytes > 0 {
                         buffer.copy_within(total_len..*buffer_pos, 0);
