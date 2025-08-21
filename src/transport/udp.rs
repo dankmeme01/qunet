@@ -529,15 +529,22 @@ impl ClientUdpTransport {
 
         self.socket
             .async_io(Interest::WRITABLE, || unsafe {
-                let header = libc::msghdr {
-                    msg_name: sockaddr as *const _ as *mut libc::c_void,
-                    msg_namelen: socklen as libc::socklen_t,
-                    msg_iov: data.as_ptr() as *mut libc::iovec,
-                    msg_iovlen: data.len() as libc::size_t,
-                    msg_control: std::ptr::null_mut(),
-                    msg_controllen: 0,
-                    msg_flags: 0,
-                };
+                let mut header: libc::msghdr = std::mem::zeroed();
+
+                header.msg_name = sockaddr as *const _ as *mut libc::c_void;
+                header.msg_namelen = socklen as libc::socklen_t;
+                header.msg_iov = data.as_ptr() as *mut libc::iovec;
+                #[cfg(target_env = "gnu")]
+                {
+                    header.msg_iovlen = data.len() as libc::size_t;
+                }
+                #[cfg(target_env = "musl")]
+                {
+                    header.msg_iovlen = data.len() as i32;
+                }
+                header.msg_control = std::ptr::null_mut();
+                header.msg_controllen = 0;
+                header.msg_flags = 0;
 
                 let status =
                     libc::sendmsg(self.socket.as_raw_fd(), &header as *const libc::msghdr, 0);
