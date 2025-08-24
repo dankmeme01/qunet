@@ -107,6 +107,22 @@ impl<'a> QunetMessageMeta<'a> {
             reader.skip_bytes(8)?;
         }
 
+        let reliability_header = if udp && bits.get_bit(MSG_DATA_BIT_RELIABILITY) {
+            let message_id = reader.read_u16()?;
+            let ack_count = reader.read_u16()?.min(8);
+
+            let mut acks = heapless::Vec::new();
+
+            for _ in 0..ack_count {
+                let ack_id = reader.read_u16()?;
+                let _ = acks.push(ack_id);
+            }
+
+            Some(ReliabilityHeader { message_id, acks })
+        } else {
+            None
+        };
+
         let fragmentation_header = if udp && bits.get_bit(MSG_DATA_BIT_FRAGMENTATION) {
             let message_id = reader.read_u16()?;
             let mut fragment_index = reader.read_u16()?;
@@ -120,22 +136,6 @@ impl<'a> QunetMessageMeta<'a> {
                 fragment_index,
                 last_fragment,
             })
-        } else {
-            None
-        };
-
-        let reliability_header = if udp && bits.get_bit(MSG_DATA_BIT_RELIABILITY) {
-            let message_id = reader.read_u16()?;
-            let ack_count = reader.read_u16()?.min(8);
-
-            let mut acks = heapless::Vec::new();
-
-            for _ in 0..ack_count {
-                let ack_id = reader.read_u16()?;
-                let _ = acks.push(ack_id);
-            }
-
-            Some(ReliabilityHeader { message_id, acks })
         } else {
             None
         };
