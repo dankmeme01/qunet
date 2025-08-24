@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, time::Duration};
 
 use std::time::Instant;
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::{
     message::{QunetMessage, ReliabilityHeader},
@@ -151,7 +151,7 @@ impl ReliableStore {
             self.next_remote_id = 1; // wrap around to 1
         }
 
-        debug!("Received a reliable message with ID {id}");
+        trace!("Received a reliable message with ID {id}");
 
         self.push_remote_unacked_with_id(id, false)
     }
