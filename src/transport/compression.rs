@@ -94,29 +94,22 @@ pub fn lz4_compress(data: &[u8], output: &mut [u8]) -> Result<usize, CompressErr
 // Trait for servers / clients that hold a compression dictionary/context
 
 pub trait CompressionHandler {
-    fn compress_zstd(
-        &self,
-        data: &[u8],
-        use_dict: bool,
-    ) -> impl Future<Output = Result<BufferKind, CompressError>> + Send;
+    fn compress_zstd(&self, data: &[u8], use_dict: bool) -> Result<BufferKind, CompressError>;
 
     fn decompress_zstd(
         &self,
         data: &[u8],
         uncompressed_size: usize,
         use_dict: bool,
-    ) -> impl Future<Output = Result<BufferKind, DecompressError>> + Send;
+    ) -> Result<BufferKind, DecompressError>;
 
-    fn compress_lz4(
-        &self,
-        data: &[u8],
-    ) -> impl Future<Output = Result<BufferKind, CompressError>> + Send;
+    fn compress_lz4(&self, data: &[u8]) -> Result<BufferKind, CompressError>;
 
     fn decompress_lz4(
         &self,
         data: &[u8],
         uncompressed_size: usize,
-    ) -> impl Future<Output = Result<BufferKind, DecompressError>> + Send;
+    ) -> Result<BufferKind, DecompressError>;
 }
 
 // A compression handler that works with a buffer pool and optional dictionaries
@@ -146,13 +139,9 @@ impl<P: BufPool> CompressionHandlerImpl<P> {
 }
 
 impl<P: BufPool> CompressionHandlerImpl<P> {
-    async fn get_new_buffer(&self, size: usize) -> BufferKind {
-        match self.buffer_pool.get(size).await {
-            Some(buf) => BufferKind::new_pooled(buf),
-
-            // fallback for very large needs
-            None => BufferKind::new_heap(size),
-        }
+    #[inline]
+    fn get_new_buffer(&self, size: usize) -> BufferKind {
+        self.buffer_pool.get_or_heap(size)
     }
 
     /// Safety: this function assumes the buffer will only be used for writing.
@@ -184,14 +173,10 @@ impl<P: BufPool> CompressionHandlerImpl<P> {
 }
 
 impl<P: BufPool> CompressionHandler for CompressionHandlerImpl<P> {
-    async fn compress_zstd(
-        &self,
-        data: &[u8],
-        use_dict: bool,
-    ) -> Result<BufferKind, CompressError> {
+    fn compress_zstd(&self, data: &[u8], use_dict: bool) -> Result<BufferKind, CompressError> {
         let needed_len = zstd_compress_bound(data.len());
 
-        let mut buf = self.get_new_buffer(needed_len).await;
+        let mut buf = self.get_new_buffer(needed_len);
 
         // safety: the buffer is only used for writing
         let output = unsafe { Self::write_buf_from_buffer_kind(&mut buf) };
@@ -210,13 +195,13 @@ impl<P: BufPool> CompressionHandler for CompressionHandlerImpl<P> {
         Ok(buf)
     }
 
-    async fn decompress_zstd(
+    fn decompress_zstd(
         &self,
         data: &[u8],
         uncompressed_size: usize,
         use_dict: bool,
     ) -> Result<BufferKind, DecompressError> {
-        let mut buf = self.get_new_buffer(uncompressed_size).await;
+        let mut buf = self.get_new_buffer(uncompressed_size);
 
         // safety: the buffer is only used for writing
         let output = unsafe { Self::write_buf_from_buffer_kind(&mut buf) };
@@ -236,10 +221,10 @@ impl<P: BufPool> CompressionHandler for CompressionHandlerImpl<P> {
         Ok(buf)
     }
 
-    async fn compress_lz4(&self, data: &[u8]) -> Result<BufferKind, CompressError> {
+    fn compress_lz4(&self, data: &[u8]) -> Result<BufferKind, CompressError> {
         let needed_len = lz4_flex::block::get_maximum_output_size(data.len());
 
-        let mut buf = self.get_new_buffer(needed_len).await;
+        let mut buf = self.get_new_buffer(needed_len);
 
         // safety: the buffer is only used for writing
         let output = unsafe { Self::write_buf_from_buffer_kind(&mut buf) };
@@ -259,7 +244,7 @@ impl<P: BufPool> CompressionHandler for CompressionHandlerImpl<P> {
         Ok(buf)
     }
 
-    async fn decompress_lz4(
+    fn decompress_lz4(
         &self,
         _data: &[u8],
         _uncompressed_size: usize,
@@ -269,15 +254,11 @@ impl<P: BufPool> CompressionHandler for CompressionHandlerImpl<P> {
 }
 
 impl CompressionHandler for () {
-    async fn compress_zstd(
-        &self,
-        _data: &[u8],
-        _use_dict: bool,
-    ) -> Result<BufferKind, CompressError> {
+    fn compress_zstd(&self, _data: &[u8], _use_dict: bool) -> Result<BufferKind, CompressError> {
         panic!("null CompressionHandler cannot compress data");
     }
 
-    async fn decompress_zstd(
+    fn decompress_zstd(
         &self,
         _data: &[u8],
         _uncompressed_size: usize,
@@ -286,11 +267,11 @@ impl CompressionHandler for () {
         panic!("null CompressionHandler cannot decompress data");
     }
 
-    async fn compress_lz4(&self, _data: &[u8]) -> Result<BufferKind, CompressError> {
+    fn compress_lz4(&self, _data: &[u8]) -> Result<BufferKind, CompressError> {
         panic!("null CompressionHandler cannot compress data");
     }
 
-    async fn decompress_lz4(
+    fn decompress_lz4(
         &self,
         _data: &[u8],
         _uncompressed_size: usize,

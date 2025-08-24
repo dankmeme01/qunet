@@ -76,6 +76,9 @@ impl BufferPool {
     /// The minimum memory usage of the pool will be `buf_size * initial_buffers`.
     /// The maximum memory usage of the pool will be `buf_size * max_buffers`.
     pub fn new(buf_size: usize, initial_buffers: usize, max_buffers: usize) -> Self {
+        assert!(max_buffers > 0, "max_buffers in a buffer pool cannot be 0");
+        assert!(initial_buffers <= max_buffers, "initial_buffers must be <= max_buffers");
+
         let mut storage = Vec::with_capacity(initial_buffers);
 
         for _ in 0..initial_buffers {

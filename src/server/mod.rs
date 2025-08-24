@@ -553,6 +553,7 @@ impl<H: AppHandler> Server<H> {
             )
             .await
         {
+            warn!("failed to send handshake for {}, cleaning up", transport.connection_id());
             transport.run_server_cleanup(self).await?;
             return Err(e);
         }
@@ -587,6 +588,11 @@ impl<H: AppHandler> Server<H> {
             };
 
             // run cleanup
+            trace!(
+                "connection {} terminated, suspending: {}",
+                transport.connection_id(),
+                should_suspend
+            );
             let _ = transport.run_server_cleanup(self).await;
 
             if should_suspend {
@@ -613,6 +619,10 @@ impl<H: AppHandler> Server<H> {
                         transport.send_message(QunetMessage::ReconnectSuccess, false, &()).await
                     {
                         // something really weird happened
+                        warn!(
+                            "failed to send reconnect success for {}, cleaning up",
+                            transport.connection_id()
+                        );
                         transport.run_server_cleanup(self).await?;
                         return Err(e);
                     }
@@ -793,7 +803,7 @@ impl<H: AppHandler> Server<H> {
         msg: &mut QunetMessage,
     ) -> Result<(), TransportError> {
         // #[cfg(debug_assertions)]
-        // debug!("[{}] Received message: {:?}", transport.address(), msg.type_str());
+        // trace!(cid = transport.connection_id(), "received message: {:?}", msg.type_str());
 
         match msg {
             QunetMessage::Keepalive { timestamp } => {
@@ -1036,33 +1046,29 @@ impl<H: AppHandler> Server<H> {
 }
 
 impl<H: AppHandler> CompressionHandler for Server<H> {
-    async fn compress_zstd(
-        &self,
-        data: &[u8],
-        use_dict: bool,
-    ) -> Result<BufferKind, CompressError> {
-        self.compressor.compress_zstd(data, use_dict).await
+    fn compress_zstd(&self, data: &[u8], use_dict: bool) -> Result<BufferKind, CompressError> {
+        self.compressor.compress_zstd(data, use_dict)
     }
 
-    async fn decompress_zstd(
+    fn decompress_zstd(
         &self,
         data: &[u8],
         uncompressed_size: usize,
         use_dict: bool,
     ) -> Result<BufferKind, DecompressError> {
-        self.compressor.decompress_zstd(data, uncompressed_size, use_dict).await
+        self.compressor.decompress_zstd(data, uncompressed_size, use_dict)
     }
 
-    async fn compress_lz4(&self, data: &[u8]) -> Result<BufferKind, CompressError> {
-        self.compressor.compress_lz4(data).await
+    fn compress_lz4(&self, data: &[u8]) -> Result<BufferKind, CompressError> {
+        self.compressor.compress_lz4(data)
     }
 
-    async fn decompress_lz4(
+    fn decompress_lz4(
         &self,
         data: &[u8],
         uncompressed_size: usize,
     ) -> Result<BufferKind, DecompressError> {
-        self.compressor.decompress_lz4(data, uncompressed_size).await
+        self.compressor.decompress_lz4(data, uncompressed_size)
     }
 }
 

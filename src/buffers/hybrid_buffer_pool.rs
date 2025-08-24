@@ -51,7 +51,10 @@ impl HybridBufferPool {
 
             assert!(max_bufs >= initial_bufs);
 
-            pools.push(BufferPool::new(*buf_size, initial_bufs, max_bufs));
+            // don't create empty pools
+            if max_bufs > 0 {
+                pools.push(BufferPool::new(*buf_size, initial_bufs, max_bufs));
+            }
         }
 
         Self { pools }
