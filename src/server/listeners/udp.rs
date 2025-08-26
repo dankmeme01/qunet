@@ -263,6 +263,7 @@ impl<H: AppHandler> UdpServerListener<H> {
             writer.write_u8(MSG_PONG);
             writer.write_u32(ping_id);
             writer.write_u8(0); // no protocols
+            writer.write_u16(0); // no app data
 
             socket.send_to(writer.written(), peer).await.map_err(ListenerError::IoError)?;
 
