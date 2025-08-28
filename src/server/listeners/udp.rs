@@ -177,10 +177,13 @@ impl<H: AppHandler> UdpServerListener<H> {
                 let Ok(connection_id) = reader.read_u64() else {
                     continue;
                 };
+
                 Self::wrap_error(
                     peer,
                     Self::handle_reconnect(socket_arc.clone(), connection_id, peer, &server).await,
                 );
+
+                continue;
             }
 
             // handle other messages
