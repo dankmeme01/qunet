@@ -30,7 +30,7 @@ use crate::{
 };
 
 #[cfg(feature = "quic")]
-use crate::transport::ClientQuicTransport;
+use crate::transport::quic::ClientQuicTransport;
 
 mod builder;
 mod event_handler;
