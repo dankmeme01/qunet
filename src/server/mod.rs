@@ -600,10 +600,15 @@ impl<H: AppHandler> Server<H> {
                 self.suspended_clients.insert(transport.connection_id(), sstate.clone());
                 self.app_handler.on_client_suspend(self, &client).await;
 
-                if let Some(new_transport) = sstate.wait(self.suspend_timeout).await {
+                // wait to be recovered
+                let new_transport = sstate.wait(self.suspend_timeout).await;
+
+                // remove from suspended map
+                self.suspended_clients.remove(&client.connection_id);
+
+                if let Some(new_transport) = new_transport {
                     // we got reclaimed!
                     self.app_handler.on_client_resume(self, &client).await;
-                    self.suspended_clients.remove(&client.connection_id);
 
                     transport.kind = new_transport.kind;
                     transport.data.closed = false;
@@ -627,6 +632,11 @@ impl<H: AppHandler> Server<H> {
                         return Err(e);
                     }
                 } else {
+                    debug!(
+                        "timed out waiting for connection {} to unsuspend",
+                        transport.connection_id()
+                    );
+                    
                     break;
                 }
             } else {
