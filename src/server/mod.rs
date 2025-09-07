@@ -9,10 +9,7 @@ use std::{
 use dashmap::DashMap;
 use nohash_hasher::BuildNoHashHasher;
 use thiserror::Error;
-use tokio::{
-    sync::{Mutex as AsyncMutex, Notify},
-    task::JoinSet,
-};
+use tokio::{sync::Notify, task::JoinSet};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{debug, error, info, trace, warn};
 
@@ -107,7 +104,7 @@ pub struct Server<H: AppHandler> {
     listener_tracker: TaskTracker,
     conn_tracker: TaskTracker,
     terminate_notify: Notify,
-    schedules: AsyncMutex<JoinSet<!>>,
+    schedules: parking_lot::Mutex<JoinSet<!>>,
     compressor: CompressionHandlerImpl<HybridBufferPool>,
 
     udp_router: DashMap<u64, RawMessageSender, BuildNoHashHasher<u64>>,
@@ -161,7 +158,7 @@ impl<H: AppHandler> Server<H> {
             listener_tracker: TaskTracker::new(),
             conn_tracker: TaskTracker::new(),
             terminate_notify: Notify::new(),
-            schedules: AsyncMutex::new(JoinSet::new()),
+            schedules: parking_lot::Mutex::new(JoinSet::new()),
             compressor,
 
             udp_router: DashMap::default(),
@@ -336,6 +333,7 @@ impl<H: AppHandler> Server<H> {
         ServerOutcome::GracefulShutdown
     }
 
+    #[allow(clippy::await_holding_lock)]
     async fn graceful_shutdown(&self) -> Result<(), ServerOutcome> {
         trace!("running pre-shutdown hook");
         self.app_handler.pre_shutdown(self).await.map_err(ServerOutcome::CustomError)?;
@@ -345,11 +343,13 @@ impl<H: AppHandler> Server<H> {
         self.conn_tracker.close();
 
         trace!("aborting all schedules");
-        let mut schedules = self.schedules.lock().await;
-        schedules.abort_all();
+        {
+            let mut schedules = self.schedules.lock();
+            schedules.abort_all();
 
-        while !schedules.is_empty() {
-            schedules.join_next().await;
+            while !schedules.is_empty() {
+                schedules.join_next().await;
+            }
         }
 
         trace!("waiting for all listeners to terminate");
@@ -636,7 +636,7 @@ impl<H: AppHandler> Server<H> {
                         "timed out waiting for connection {} to unsuspend",
                         transport.connection_id()
                     );
-                    
+
                     break;
                 }
             } else {
@@ -999,14 +999,14 @@ impl<H: AppHandler> Server<H> {
         &self.app_handler
     }
 
-    pub async fn schedule<F, Fut>(self: &ServerHandle<H>, interval: Duration, mut f: F)
+    pub fn schedule<F, Fut>(self: &ServerHandle<H>, interval: Duration, mut f: F)
     where
         F: FnMut(ServerHandle<H>) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         let this = self.clone();
 
-        self.schedules.lock().await.spawn(async move {
+        self.schedules.lock().spawn(async move {
             let mut interval = tokio::time::interval(interval);
             interval.tick().await; // avoid instant tick
 
