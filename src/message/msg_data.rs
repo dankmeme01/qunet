@@ -16,6 +16,10 @@ impl<'a> MsgData<'a> {
         self.data.reset();
     }
 
+    pub fn take_buf(self) -> BufferKind {
+        self.data.take()
+    }
+
     pub fn as_bytes(&self) -> &[u8] {
         self.data.deref()
     }

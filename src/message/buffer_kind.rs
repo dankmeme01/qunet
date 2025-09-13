@@ -135,6 +135,13 @@ impl BufferKind {
         *self = BufferKind::Heap(Vec::new());
     }
 
+    /// Returns a buffer with the same contents as this one, and resets this buffer.
+    pub fn take(&mut self) -> BufferKind {
+        let mut out = BufferKind::Heap(Vec::new());
+        std::mem::swap(self, &mut out);
+        out
+    }
+
     /// Clones the buffer into a `BufferKind::Small` buffer.
     /// If the inner data is larger than `QUNET_SMALL_MESSAGE_SIZE`, it will panic.
     pub fn clone_into_small(&self) -> BufferKind {
