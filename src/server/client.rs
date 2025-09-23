@@ -1,4 +1,12 @@
-use std::{borrow::Cow, hash::Hash, net::SocketAddr, ops::Deref};
+use std::{
+    borrow::Cow,
+    hash::Hash,
+    net::SocketAddr,
+    ops::Deref,
+    sync::atomic::{AtomicBool, Ordering},
+};
+
+use tokio::sync::Notify;
 
 use crate::{
     message::{BufferKind, channel},
@@ -15,6 +23,7 @@ pub enum ClientNotification {
 
     /// Terminate the client connection without sending any data.
     Terminate,
+
     /// Disconnect the client gracefully, sending a `ServerClose` message with the given reason
     Disconnect(Cow<'static, str>),
 }
@@ -24,6 +33,8 @@ pub struct ClientState<H: AppHandler> {
     pub connection_id: u64,
     pub address: SocketAddr,
     pub notif_tx: channel::Sender<ClientNotification>,
+    pub suspended: AtomicBool,
+    pub(crate) terminate_notify: Notify,
     transport_type: TransportType,
 }
 
@@ -34,6 +45,8 @@ impl<H: AppHandler> ClientState<H> {
             connection_id: transport.connection_id(),
             address: transport.address(),
             notif_tx: transport.notif_chan.0.clone(),
+            suspended: AtomicBool::new(false),
+            terminate_notify: Notify::new(),
             transport_type: transport.transport_type(),
         }
     }
@@ -70,14 +83,23 @@ impl<H: AppHandler> ClientState<H> {
         self.transport_type
     }
 
+    pub(crate) fn set_suspended(&self, suspended: bool) {
+        self.suspended.store(suspended, Ordering::Relaxed);
+    }
+
     /// Terminates the client connection
     pub fn terminate(&self) -> bool {
+        self.terminate_notify.notify_one();
         self.notif_tx.send(ClientNotification::Terminate)
     }
 
     /// Disconnects the client gracefully, sending a `ServerClose` message with the given reason.
     pub fn disconnect(&self, reason: Cow<'static, str>) -> bool {
-        self.notif_tx.send(ClientNotification::Disconnect(reason))
+        if self.suspended.load(Ordering::Relaxed) {
+            self.terminate()
+        } else {
+            self.notif_tx.send(ClientNotification::Disconnect(reason))
+        }
     }
 }
 

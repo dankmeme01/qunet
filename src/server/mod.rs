@@ -82,7 +82,7 @@ struct SuspendedClientState {
 impl SuspendedClientState {
     pub async fn wait(&self, timeout: Duration) -> Option<QunetTransport> {
         tokio::time::timeout(timeout, self.reclaim_notify.notified()).await.ok()?;
-        Some(self.new_transport.lock().take().expect("transport must be set after being notified"))
+        self.new_transport.lock().take()
     }
 
     pub fn resume(&self, transport: QunetTransport) -> bool {
@@ -90,6 +90,10 @@ impl SuspendedClientState {
         self.reclaim_notify.notify_one();
         true
     }
+
+    // pub fn cancel_resume(&self) {
+    //     self.reclaim_notify.notify_one();
+    // }
 }
 
 pub struct Server<H: AppHandler> {
@@ -596,12 +600,18 @@ impl<H: AppHandler> Server<H> {
             let _ = transport.run_server_cleanup(self).await;
 
             if should_suspend {
+                client.set_suspended(true);
+
                 let sstate = Arc::new(SuspendedClientState::default());
                 self.suspended_clients.insert(transport.connection_id(), sstate.clone());
                 self.app_handler.on_client_suspend(self, &client).await;
 
                 // wait to be recovered
-                let new_transport = sstate.wait(self.suspend_timeout).await;
+                let new_transport = tokio::select! {
+                    res = sstate.wait(self.suspend_timeout) => res,
+
+                    _ = client.terminate_notify.notified() => None
+                };
 
                 // remove from suspended map
                 self.suspended_clients.remove(&client.connection_id);
