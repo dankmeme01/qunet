@@ -1039,6 +1039,18 @@ impl<H: AppHandler> Server<H> {
         Arc::clone(&self.buffer_pool)
     }
 
+    pub fn client_count(&self) -> usize {
+        self.clients.len()
+    }
+
+    pub fn udp_route_count(&self) -> usize {
+        self.udp_router.len()
+    }
+
+    pub fn suspended_client_count(&self) -> usize {
+        self.suspended_clients.len()
+    }
+
     pub fn print_server_status(&self) {
         info!("Server status:");
         info!(

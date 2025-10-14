@@ -85,8 +85,11 @@ impl BufferKind {
     }
 
     /// Returns a mutable slice of the buffer that can be used for writing.
-    /// For `BufferKind::Heap`, it will return unallocated memory, which must not be read from, only written to.
     /// Returns `None` if the buffer is not large enough to accommodate the requested size.
+    ///
+    /// # Safety
+    /// If the buffer is a `BufferKind::Heap`, the returned slice is uninitialized memory.
+    /// Reading from this memory is undefined behavior unless it's explicitly initialized.
     pub unsafe fn write_window(&mut self, size: usize) -> Option<&mut [u8]> {
         match self {
             BufferKind::Heap(buf) => {

@@ -89,5 +89,5 @@ pub fn uninit_box_bytes(size: usize) -> Box<[u8]> {
     std::mem::forget(vec);
 
     // safety: the pointer is valid and the size is correct
-    unsafe { Box::from_raw(std::slice::from_raw_parts_mut(ptr, real_size)) }
+    unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, real_size)) }
 }
