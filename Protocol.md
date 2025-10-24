@@ -241,6 +241,7 @@ Error codes:
 * 5 - Protocol violation: client sent a malformed zero-length stream message
 * 6 - Protocol violation: client sent a stream message that exceeds the maximum allowed length
 * 7 - Internal server error - this is not client's fault
+* 8 - Server is shutting down
 
 ## QdbChunkRequest
 
