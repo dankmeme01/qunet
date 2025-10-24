@@ -94,11 +94,11 @@ impl<H: AppHandler> ClientState<H> {
     }
 
     /// Disconnects the client gracefully, sending a `ServerClose` message with the given reason.
-    pub fn disconnect(&self, reason: Cow<'static, str>) -> bool {
+    pub fn disconnect(&self, reason: impl Into<Cow<'static, str>>) -> bool {
         if self.suspended.load(Ordering::Relaxed) {
             self.terminate()
         } else {
-            self.notif_tx.send(ClientNotification::Disconnect(reason))
+            self.notif_tx.send(ClientNotification::Disconnect(reason.into()))
         }
     }
 }
