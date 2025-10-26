@@ -241,6 +241,8 @@ impl QunetTransport {
         &mut self,
         server: &Server<H>,
     ) -> Result<(), TransportError> {
+        self.data.update_exchange_time();
+
         match &mut self.kind {
             QunetTransportKind::Udp(udp) => udp.run_server_setup(&self.data, server).await,
             QunetTransportKind::Tcp(tcp) => tcp.run_setup().await,
