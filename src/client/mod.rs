@@ -724,6 +724,7 @@ impl<H: EventHandler> Client<H> {
         Err(ConnectionError::AllAttemptsFailed)
     }
 
+    #[allow(unused)]
     async fn _try_connect(
         &self,
         addr: SocketAddr,
