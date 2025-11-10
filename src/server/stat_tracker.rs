@@ -23,6 +23,7 @@ struct Connection {
 }
 
 pub struct FinishedConnection {
+    pub id: u64,
     pub creation: SystemTime,
     pub whole_time: Duration,
     pub address: SocketAddr,
@@ -64,6 +65,7 @@ impl StatTracker {
         };
 
         let finished = FinishedConnection {
+            id: connection_id,
             creation: c.creation_sys,
             address: c.address,
             whole_time: c.creation.elapsed(),
