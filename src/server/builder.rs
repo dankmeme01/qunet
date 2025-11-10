@@ -124,6 +124,7 @@ pub struct ServerBuilder<H: AppHandler = DefaultAppHandler> {
     pub(crate) message_size_limit: Option<usize>,
     pub(crate) max_messages_per_second: Option<NonZeroUsize>,
     pub(crate) compression_mode: CompressionMode,
+    pub(crate) stat_tracker: bool,
 
     pub(crate) qdb_path: Option<PathBuf>,
     pub(crate) qdb_data: Option<Vec<u8>>,
@@ -235,6 +236,11 @@ impl<H: AppHandler> ServerBuilder<H> {
         self
     }
 
+    pub fn with_stat_tracker(mut self, enabled: bool) -> Self {
+        self.stat_tracker = enabled;
+        self
+    }
+
     pub fn with_app_handler<NewH: AppHandler>(self, app_handler: NewH) -> ServerBuilder<NewH> {
         ServerBuilder {
             udp_opts: self.udp_opts,
@@ -252,6 +258,7 @@ impl<H: AppHandler> ServerBuilder<H> {
             mem_options: self.mem_options,
             max_messages_per_second: self.max_messages_per_second,
             compression_mode: self.compression_mode,
+            stat_tracker: self.stat_tracker,
         }
     }
     pub async fn build(self) -> Result<ServerHandle<H>, ServerOutcome> {

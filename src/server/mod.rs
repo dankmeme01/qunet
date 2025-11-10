@@ -2,6 +2,7 @@ use std::{
     borrow::Cow,
     net::SocketAddr,
     ops::Deref,
+    pin::Pin,
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -9,7 +10,7 @@ use std::{
 use dashmap::DashMap;
 use nohash_hasher::BuildNoHashHasher;
 use thiserror::Error;
-use tokio::{sync::Notify, task::JoinSet};
+use tokio::{signal::unix::SignalKind, sync::Notify, task::JoinSet};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{debug, error, info, trace, warn};
 
@@ -26,6 +27,7 @@ use crate::{
         builder::{CompressionMode, ListenerOptions, ServerBuilder},
         client::{ClientNotification, ClientState},
         listeners::*,
+        stat_tracker::StatTracker,
     },
     transport::{
         QunetTransport, TransportError, TransportErrorOutcome, TransportType,
@@ -37,6 +39,7 @@ pub mod app_handler;
 pub mod builder;
 pub mod client;
 pub(crate) mod listeners;
+pub mod stat_tracker;
 
 #[derive(Error, Debug)]
 pub enum ServerOutcome {
@@ -110,6 +113,7 @@ pub struct Server<H: AppHandler> {
     terminate_notify: Notify,
     schedules: parking_lot::Mutex<JoinSet<!>>,
     compressor: CompressionHandlerImpl<HybridBufferPool>,
+    stat_tracker: Option<StatTracker>,
 
     udp_router: DashMap<u64, RawMessageSender, BuildNoHashHasher<u64>>,
     clients: DashMap<u64, Arc<ClientState<H>>, BuildNoHashHasher<u64>>,
@@ -150,6 +154,9 @@ impl<H: AppHandler> Server<H> {
         // setup compressor
         let compressor = CompressionHandlerImpl::new(buffer_pool.clone());
 
+        // setup stat tracker
+        let stat_tracker = if builder.stat_tracker { Some(StatTracker::new()) } else { None };
+
         let mut server = Server {
             udp_listener: None,
             tcp_listener: None,
@@ -164,6 +171,7 @@ impl<H: AppHandler> Server<H> {
             terminate_notify: Notify::new(),
             schedules: parking_lot::Mutex::new(JoinSet::new()),
             compressor,
+            stat_tracker,
 
             udp_router: DashMap::default(),
             clients: DashMap::default(),
@@ -305,20 +313,41 @@ impl<H: AppHandler> Server<H> {
             return ServerOutcome::CustomError(o);
         }
 
-        tokio::select! {
-            _ = self.listener_tracker.wait() => {
-                error!("All listeners have unexpectedly terminated, shutting down!");
-                return ServerOutcome::AllListenersTerminated;
-            },
+        loop {
+            let wait_for_usr1: Pin<Box<dyn Future<Output = bool>>> = if cfg!(unix) {
+                Box::pin(async move {
+                    tokio::signal::unix::signal(SignalKind::user_defined1())
+                        .unwrap()
+                        .recv()
+                        .await
+                        .is_some()
+                })
+            } else {
+                // this future will never complete
+                Box::pin(async move { std::future::pending().await })
+            };
 
-            _ = self.terminate_notify.notified() => {
-                info!("Server termination requested, trying to shut down gracefully");
-            },
+            tokio::select! {
+                _ = self.listener_tracker.wait() => {
+                    error!("All listeners have unexpectedly terminated, shutting down!");
+                    return ServerOutcome::AllListenersTerminated;
+                },
 
-            _ = tokio::signal::ctrl_c() => {
-                info!("Interrupt received, trying to shut down gracefully");
-            }
-        };
+                _ = self.terminate_notify.notified() => {
+                    info!("Server termination requested, trying to shut down gracefully");
+                    break;
+                },
+
+                _ = tokio::signal::ctrl_c() => {
+                    info!("Interrupt received, trying to shut down gracefully");
+                    break;
+                }
+
+                _ = wait_for_usr1 => {
+                    self.app_handler.on_sigusr1(&self).await;
+                }
+            };
+        }
 
         match tokio::time::timeout(self.graceful_shutdown_timeout, self.graceful_shutdown()).await {
             Ok(Ok(())) => info!("Shutdown successful"),
@@ -452,6 +481,7 @@ impl<H: AppHandler> Server<H> {
 
             let client = Arc::new(ClientState::new(client_data, &transport));
             self.clients.insert(client.connection_id, Arc::clone(&client));
+            self.with_stat_tracker(|s| s.new_connection(client.connection_id, client.address));
 
             // main entry point
             if let Err(e) =
@@ -459,6 +489,8 @@ impl<H: AppHandler> Server<H> {
             {
                 warn!("[{}] Failed to setup client connection: {}", address, e);
             }
+
+            self.with_stat_tracker(|s| s.end_connection(client.connection_id));
 
             // always run cleanup!
             match Self::cleanup_connection(&self, client).await {
@@ -546,6 +578,8 @@ impl<H: AppHandler> Server<H> {
         client: Arc<ClientState<H>>,
         send_qdb: bool,
     ) -> Result<(), TransportError> {
+        let conn_id = transport.connection_id();
+
         // run setup (udp needs this)
         transport.run_server_setup(self).await?;
 
@@ -603,8 +637,9 @@ impl<H: AppHandler> Server<H> {
                 client.set_suspended(true);
 
                 let sstate = Arc::new(SuspendedClientState::default());
-                self.suspended_clients.insert(transport.connection_id(), sstate.clone());
+                self.suspended_clients.insert(conn_id, sstate.clone());
                 self.app_handler.on_client_suspend(self, &client).await;
+                self.with_stat_tracker(|s| s.suspend_connection(conn_id));
 
                 // wait to be recovered
                 let new_transport = tokio::select! {
@@ -619,6 +654,7 @@ impl<H: AppHandler> Server<H> {
                 if let Some(new_transport) = new_transport {
                     // we got reclaimed!
                     self.app_handler.on_client_resume(self, &client).await;
+                    self.with_stat_tracker(|s| s.resume_connection(conn_id));
 
                     transport.kind = new_transport.kind;
                     transport.data.closed = false;
@@ -770,6 +806,8 @@ impl<H: AppHandler> Server<H> {
     ) -> Result<(), TransportError> {
         match notif {
             ClientNotification::DataMessage { buf, reliable } => {
+                self.with_stat_tracker(|s| s.data_downstream(transport.connection_id(), &buf));
+
                 transport.send_message(QunetMessage::new_data(buf), reliable, self).await
             }
 
@@ -827,6 +865,8 @@ impl<H: AppHandler> Server<H> {
 
         match msg {
             QunetMessage::Keepalive { timestamp } => {
+                self.with_stat_tracker(|s| s.keepalive(transport.connection_id()));
+
                 // TODO: custom data
                 transport
                     .send_message(
@@ -939,12 +979,10 @@ impl<H: AppHandler> Server<H> {
         client: &Arc<ClientState<H>>,
         msg: &mut QunetMessage,
     ) -> Result<(), TransportError> {
-        let data = match msg.data_bufkind_mut() {
-            Some(x) => x,
-            None => unreachable!(),
-        };
+        let mut data = msg.data_bufkind_take();
 
-        self.app_handler.on_client_data(self, client, MsgData { data }).await;
+        self.app_handler.on_client_data(self, client, MsgData { data: &mut data }).await;
+        self.with_stat_tracker(|s| s.data_upstream(client.connection_id, &data));
 
         Ok(())
     }
@@ -993,6 +1031,12 @@ impl<H: AppHandler> Server<H> {
         self.app_handler.on_ping(self, writer)
     }
 
+    fn with_stat_tracker(&self, f: impl FnOnce(&StatTracker)) {
+        if let Some(tracker) = &self.stat_tracker {
+            f(tracker);
+        }
+    }
+
     // Compression apis
 
     pub(crate) fn get_new_buffer(&self, size: usize) -> BufferKind {
@@ -1007,6 +1051,10 @@ impl<H: AppHandler> Server<H> {
 
     pub fn handler(&self) -> &H {
         &self.app_handler
+    }
+
+    pub fn stat_tracker(&self) -> Option<&StatTracker> {
+        self.stat_tracker.as_ref()
     }
 
     pub fn schedule<F, Fut>(self: &ServerHandle<H>, interval: Duration, mut f: F)

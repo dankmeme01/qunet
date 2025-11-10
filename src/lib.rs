@@ -6,6 +6,7 @@
     never_type,
     io_slice_as_bytes
 )]
+#![allow(clippy::new_without_default)]
 
 pub mod buffers;
 #[cfg(feature = "client")]

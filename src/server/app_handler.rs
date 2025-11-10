@@ -49,6 +49,12 @@ pub trait AppHandler: Send + Sync + Sized + 'static {
         async move { Ok(()) }
     }
 
+    /// This callback is invoked when a `SIGUSR1` signal is received by the server. Does nothing by default.
+    /// Only available on Unix platforms.
+    fn on_sigusr1(&self, server: &Server<Self>) -> impl Future<Output = ()> + Send {
+        async move {}
+    }
+
     // Client handling (connection, disconnection, data packets)
 
     /// Client data structure that is stored with every client.

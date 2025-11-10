@@ -12,6 +12,10 @@ impl<T> Sender<T> {
     pub fn send(&self, msg: T) -> bool {
         self.inner.try_send(msg).is_ok()
     }
+
+    pub async fn send_async(&self, msg: T) -> bool {
+        self.inner.send_async(msg).await.is_ok()
+    }
 }
 
 impl<T> Receiver<T> {

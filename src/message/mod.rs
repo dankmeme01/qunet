@@ -542,6 +542,15 @@ impl QunetMessage {
         }
     }
 
+    /// Convenience method that returns a `BufferKind` of a `Data` message, leaving an empty buffer in place.
+    pub fn data_bufkind_take(&mut self) -> BufferKind {
+        if let Some(buf) = self.data_bufkind_mut() {
+            buf.take()
+        } else {
+            panic!("data_bufkind_take called on non-data message")
+        }
+    }
+
     /// Convenience method that returns whether a `Data` message is compressed.
     pub fn is_data_compressed(&self) -> bool {
         if let QunetMessage::Data { compression, .. } = self {
