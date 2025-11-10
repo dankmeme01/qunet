@@ -4,7 +4,7 @@ use parking_lot::Mutex;
 use std::{
     net::SocketAddr,
     sync::atomic::{AtomicUsize, Ordering},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use crate::message::BufferKind;
@@ -17,11 +17,13 @@ pub struct Packet {
 
 struct Connection {
     creation: Instant,
+    creation_sys: SystemTime,
     address: SocketAddr,
     packets: Vec<Packet>,
 }
 
 pub struct FinishedConnection {
+    pub creation: SystemTime,
     pub whole_time: Duration,
     pub address: SocketAddr,
     pub packets: Vec<Packet>,
@@ -50,6 +52,7 @@ impl StatTracker {
         self.total_conns.fetch_add(1, Ordering::Relaxed);
         self.active_conns.entry(connection_id).or_insert_with(|| Connection {
             creation: Instant::now(),
+            creation_sys: SystemTime::now(),
             packets: Vec::new(),
             address,
         });
@@ -61,6 +64,7 @@ impl StatTracker {
         };
 
         let finished = FinishedConnection {
+            creation: c.creation_sys,
             address: c.address,
             whole_time: c.creation.elapsed(),
             packets: c.packets,
@@ -112,6 +116,12 @@ impl StatTracker {
 
     pub fn clear_past(&self) {
         self.past_conns.lock().clear();
+    }
+
+    pub fn clear_past_older_than(&self, dur: Duration) {
+        self.past_conns
+            .lock()
+            .retain(|c| (c.creation + c.whole_time).elapsed().unwrap_or_default() <= dur);
     }
 
     pub fn clear_active(&self) {
