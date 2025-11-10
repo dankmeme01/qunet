@@ -314,7 +314,8 @@ impl<H: AppHandler> Server<H> {
         }
 
         loop {
-            let wait_for_usr1: Pin<Box<dyn Future<Output = bool>>> = if cfg!(unix) {
+            let wait_for_usr1: Pin<Box<dyn Future<Output = bool> + Send + 'static>> = if cfg!(unix)
+            {
                 Box::pin(async move {
                     tokio::signal::unix::signal(SignalKind::user_defined1())
                         .unwrap()
