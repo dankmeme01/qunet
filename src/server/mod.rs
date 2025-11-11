@@ -980,10 +980,10 @@ impl<H: AppHandler> Server<H> {
         client: &Arc<ClientState<H>>,
         msg: &mut QunetMessage,
     ) -> Result<(), TransportError> {
-        let mut data = msg.data_bufkind_take();
+        let data = msg.data_bufkind_mut().unwrap();
 
-        self.with_stat_tracker(|s| s.data_upstream(client.connection_id, &data));
-        self.app_handler.on_client_data(self, client, MsgData { data: &mut data }).await;
+        self.with_stat_tracker(|s| s.data_upstream(client.connection_id, data));
+        self.app_handler.on_client_data(self, client, MsgData { data }).await;
 
         Ok(())
     }
