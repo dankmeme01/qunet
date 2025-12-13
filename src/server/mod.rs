@@ -736,12 +736,13 @@ impl<H: AppHandler> Server<H> {
         client: Arc<ClientState<H>>,
         send_qdb: bool,
     ) -> Result<(), TransportError> {
+        const NEVER: Duration = Duration::from_hours(24 * 365 * 100);
         let notif_chan = transport.notif_chan.1.clone();
 
         let mut handshake_retx_count: u8 = 0;
 
         while !transport.data.closed {
-            let timer_expiry = transport.until_timer_expiry();
+            let timer_expiry = transport.until_timer_expiry().unwrap_or(NEVER);
 
             let res = tokio::select! {
                 msg = transport.receive_message() => match msg {
@@ -753,7 +754,7 @@ impl<H: AppHandler> Server<H> {
                     Err(e) => Err(e),
                 },
 
-                _ = tokio::time::sleep(timer_expiry.unwrap()), if timer_expiry.is_some() => {
+                _ = tokio::time::sleep(NEVER), if timer_expiry != NEVER => {
                     transport.handle_timer_expiry().await
                 },
 
