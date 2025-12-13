@@ -47,10 +47,9 @@ impl ClientTcpTransport {
 
     pub async fn run_cleanup(&mut self) -> Result<(), TransportError> {
         let _ = self.sock_write.shutdown().await;
-        // TODO: idk how to shutdown read half
-
         Ok(())
     }
+
     pub async fn receive_message(
         &mut self,
         transport_data: &mut QunetTransportData,

@@ -559,7 +559,6 @@ impl ClientUdpTransport {
         Ok(())
     }
 
-    // TODO: we have an upper limit on packet size, we don't have to allocate here
     #[cfg(not(target_os = "linux"))]
     async fn send_packet_vectored(
         &self,
@@ -572,7 +571,7 @@ impl ClientUdpTransport {
         let mut out_buf = Vec::with_capacity(total_len);
 
         for slice in data {
-            super::lowlevel::append_to_vec(&mut out_buf, slice.as_slice());
+            out_buf.extend_from_slice(slice.as_slice());
         }
 
         self.send_packet(&out_buf, transport_data).await?;

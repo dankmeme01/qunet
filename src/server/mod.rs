@@ -830,7 +830,6 @@ impl<H: AppHandler> Server<H> {
             }
 
             ClientNotification::Terminate => {
-                // TODO: fully terminate, not suspend
                 transport.data.closed = true;
                 Ok(())
             }
