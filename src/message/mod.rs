@@ -543,6 +543,7 @@ impl QunetMessage {
     }
 
     /// Convenience method that returns a `BufferKind` of a `Data` message, leaving an empty buffer in place.
+    #[allow(unused)]
     pub fn data_bufkind_take(&mut self) -> BufferKind {
         if let Some(buf) = self.data_bufkind_mut() {
             buf.take()
