@@ -508,14 +508,42 @@ impl<H: AppHandler> Server<H> {
     ) {
         if let Some(client) = self.suspended_clients.get(&connection_id) {
             client.resume(transport);
-        } else {
+            return;
+        }
+
+        let addr = transport.address();
+
+        // does this connection exist at all?
+        let Some(client) = self.clients.get(&connection_id) else {
             debug!(
-                "[{}] Attempted to recover a connection that is not suspended",
-                transport.address()
+                "[{addr}] Attempted to recover a connection that is not suspended ({connection_id})",
             );
 
             let _ = transport.send_message(QunetMessage::ReconnectFailure, false, &()).await;
+
+            return;
+        };
+
+        // forcefully migrate the connection to the new transport
+        client.notif_tx.send(ClientNotification::TerminateSuspend);
+
+        if tokio::time::timeout(Duration::from_secs(5), client.suspended_notify.notified())
+            .await
+            .is_ok()
+        {
+            if let Some(sclient) = self.suspended_clients.get(&connection_id) {
+                sclient.resume(transport);
+                return;
+            }
+
+            // if the client is not in the map, it might be that someone else just reclaimed it
         }
+
+        warn!(
+            "[{addr}] Timed out waiting for a connection to suspend to handle a reconnect, will kill it ({connection_id})",
+        );
+
+        let _ = transport.send_message(QunetMessage::ReconnectFailure, false, &()).await;
     }
 
     async fn send_handshake_error(
@@ -635,10 +663,10 @@ impl<H: AppHandler> Server<H> {
             let _ = transport.run_server_cleanup(self).await;
 
             if should_suspend {
-                client.set_suspended(true);
-
                 let sstate = Arc::new(SuspendedClientState::default());
                 self.suspended_clients.insert(conn_id, sstate.clone());
+                client.set_suspended(true);
+
                 self.app_handler.on_client_suspend(self, &client).await;
                 self.with_stat_tracker(|s| s.suspend_connection(conn_id));
 
@@ -652,39 +680,42 @@ impl<H: AppHandler> Server<H> {
                 // remove from suspended map
                 self.suspended_clients.remove(&client.connection_id);
 
-                if let Some(new_transport) = new_transport {
-                    // we got reclaimed!
-                    self.app_handler.on_client_resume(self, &client).await;
-                    self.with_stat_tracker(|s| s.resume_connection(conn_id));
-
-                    transport.kind = new_transport.kind;
-                    transport.data.closed = false;
-                    transport.data.address = new_transport.data.address;
-                    #[cfg(target_os = "linux")]
-                    {
-                        transport.data.c_sockaddr_data = new_transport.data.c_sockaddr_data;
-                        transport.data.c_sockaddr_len = new_transport.data.c_sockaddr_len;
-                    }
-                    transport.run_server_setup(self).await?;
-
-                    if let Err(e) =
-                        transport.send_message(QunetMessage::ReconnectSuccess, false, &()).await
-                    {
-                        // something really weird happened
-                        warn!(
-                            "failed to send reconnect success for {}, cleaning up",
-                            transport.connection_id()
-                        );
-                        transport.run_server_cleanup(self).await?;
-                        return Err(e);
-                    }
-                } else {
+                let Some(new_transport) = new_transport else {
                     debug!(
                         "timed out waiting for connection {} to unsuspend",
                         transport.connection_id()
                     );
 
                     break;
+                };
+
+                // we got reclaimed!
+                debug!("connection {} reclaimed from suspension", transport.connection_id());
+
+                client.set_suspended(false);
+                self.app_handler.on_client_resume(self, &client).await;
+                self.with_stat_tracker(|s| s.resume_connection(conn_id));
+
+                transport.kind = new_transport.kind;
+                transport.data.closed = false;
+                transport.data.address = new_transport.data.address;
+                #[cfg(target_os = "linux")]
+                {
+                    transport.data.c_sockaddr_data = new_transport.data.c_sockaddr_data;
+                    transport.data.c_sockaddr_len = new_transport.data.c_sockaddr_len;
+                }
+                transport.run_server_setup(self).await?;
+
+                if let Err(e) =
+                    transport.send_message(QunetMessage::ReconnectSuccess, false, &()).await
+                {
+                    // something really weird happened
+                    warn!(
+                        "failed to send reconnect success for {}, cleaning up",
+                        transport.connection_id()
+                    );
+                    transport.run_server_cleanup(self).await?;
+                    return Err(e);
                 }
             } else {
                 break;
@@ -719,15 +750,9 @@ impl<H: AppHandler> Server<H> {
         };
 
         // we don't care if it fails here
-        let _ = tokio::time::timeout(
-            Duration::from_secs(3),
-            transport.send_message(
-                QunetMessage::ServerClose { error_code, error_message },
-                false,
-                &(),
-            ),
-        )
-        .await;
+        let _ = transport
+            .send_message(QunetMessage::ServerClose { error_code, error_message }, false, &())
+            .await;
     }
 
     async fn client_main_loop(
@@ -754,7 +779,7 @@ impl<H: AppHandler> Server<H> {
                     Err(e) => Err(e),
                 },
 
-                _ = tokio::time::sleep(NEVER), if timer_expiry != NEVER => {
+                _ = tokio::time::sleep(timer_expiry), if timer_expiry != NEVER => {
                     transport.handle_timer_expiry().await
                 },
 
@@ -832,6 +857,11 @@ impl<H: AppHandler> Server<H> {
             ClientNotification::Terminate => {
                 transport.data.closed = true;
                 Ok(())
+            }
+
+            ClientNotification::TerminateSuspend => {
+                transport.data.closed = true;
+                Err(TransportError::SuspendRequested)
             }
 
             ClientNotification::Disconnect(reason) => {

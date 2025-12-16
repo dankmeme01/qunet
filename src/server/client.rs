@@ -24,6 +24,9 @@ pub enum ClientNotification {
     /// Terminate the client connection without sending any data.
     Terminate,
 
+    /// Terminate the client and suspend the connection
+    TerminateSuspend,
+
     /// Disconnect the client gracefully, sending a `ServerClose` message with the given reason
     Disconnect(Cow<'static, str>),
 }
@@ -34,6 +37,7 @@ pub struct ClientState<H: AppHandler> {
     pub address: SocketAddr,
     pub notif_tx: channel::Sender<ClientNotification>,
     pub suspended: AtomicBool,
+    pub(crate) suspended_notify: Notify, // to notify anyone waiting for suspension
     pub(crate) terminate_notify: Notify,
     transport_type: TransportType,
 }
@@ -46,6 +50,7 @@ impl<H: AppHandler> ClientState<H> {
             address: transport.address(),
             notif_tx: transport.notif_chan.0.clone(),
             suspended: AtomicBool::new(false),
+            suspended_notify: Notify::new(),
             terminate_notify: Notify::new(),
             transport_type: transport.transport_type(),
         }
@@ -85,6 +90,9 @@ impl<H: AppHandler> ClientState<H> {
 
     pub(crate) fn set_suspended(&self, suspended: bool) {
         self.suspended.store(suspended, Ordering::Relaxed);
+        if suspended {
+            self.suspended_notify.notify_one();
+        }
     }
 
     /// Terminates the client connection
