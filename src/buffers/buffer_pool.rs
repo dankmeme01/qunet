@@ -7,14 +7,11 @@ use std::{
     },
 };
 
-use parking_lot::Mutex;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-
 use crate::message::BufferKind;
 
 struct BufferPoolInner {
-    storage: Mutex<Vec<Box<[u8]>>>,
-    semaphore: Arc<Semaphore>,
+    rx: flume::Receiver<Box<[u8]>>,
+    tx: flume::Sender<Box<[u8]>>,
     allocated_buffers: AtomicUsize,
 }
 
@@ -33,19 +30,11 @@ pub struct BufferPoolStats {
 }
 
 impl BufferPoolInner {
-    /// Atomically returns a buffer to the pool and returns the semaphore permit if it was acquired.
-    /// If not acquired, increments the semaphore permit count by 1.
+    /// Atomically returns a buffer to the pool
     #[inline]
-    fn return_buffer(&self, buffer: Box<[u8]>, permit: Option<OwnedSemaphorePermit>) {
-        let mut storage = self.storage.lock();
-        storage.push(buffer);
-
-        // if we have a permit, it will release on its own when dropped,
-        // if we don't have a permit, we need to manually increment the semaphore permit count
-        match permit {
-            Some(_) => {}
-            None => self.semaphore.add_permits(1),
-        }
+    fn return_buffer(&self, buffer: Box<[u8]>) {
+        // this unwrap must never fail, as BufferPool ensures we cannot create more buffers than the max
+        self.tx.try_send(buffer).unwrap();
 
         // // if less than half the buffers are actually used, automatically shrink the pool
         // let allocated = self.allocated_buffers.load(Ordering::Relaxed);
@@ -55,19 +44,21 @@ impl BufferPoolInner {
     }
 
     fn shrink(&self) {
-        // `forget_permits` returns how many permits actually were released, and we can free that many buffers
-        let released_bufs =
-            self.semaphore.forget_permits(self.allocated_buffers.load(Ordering::Relaxed));
+        let released_bufs = self.rx.drain().count();
 
         // decrease the allocated buffers count
-        self.allocated_buffers.fetch_sub(released_bufs, Ordering::SeqCst);
+        let old_bufs = self.allocated_buffers.fetch_sub(released_bufs, Ordering::AcqRel);
 
-        let mut storage = self.storage.lock();
+        // check for potential overflow, should not be possible
+        debug_assert!(old_bufs.checked_sub(released_bufs).is_some());
+    }
 
-        assert!(released_bufs <= storage.len());
+    fn try_get(&self) -> Option<Box<[u8]>> {
+        self.rx.try_recv().ok()
+    }
 
-        let to_keep = storage.len() - released_bufs;
-        storage.truncate(to_keep);
+    async fn get(&self) -> Box<[u8]> {
+        self.rx.recv_async().await.unwrap()
     }
 }
 
@@ -79,16 +70,16 @@ impl BufferPool {
         assert!(max_buffers > 0, "max_buffers in a buffer pool cannot be 0");
         assert!(initial_buffers <= max_buffers, "initial_buffers must be <= max_buffers");
 
-        let mut storage = Vec::with_capacity(initial_buffers);
+        let (tx, rx) = flume::bounded(max_buffers);
 
         for _ in 0..initial_buffers {
             let buffer = vec![0u8; buf_size].into_boxed_slice();
-            storage.push(buffer);
+            tx.try_send(buffer).unwrap();
         }
 
         let inner = BufferPoolInner {
-            storage: Mutex::new(storage),
-            semaphore: Arc::new(Semaphore::new(initial_buffers)),
+            rx,
+            tx,
             allocated_buffers: AtomicUsize::new(initial_buffers),
         };
 
@@ -99,27 +90,11 @@ impl BufferPool {
         }
     }
 
-    /// This function should only be called when a permit for the buffer is already acquired.
-    /// Using this otherwise will lead to a panic.
-    #[inline]
-    fn get_buffer(&self) -> Box<[u8]> {
-        // it is the caller's responsibility to ensure that a permit is acquired before calling this
-        // number of available permits is guaranteed to be equal to the number of buffers in storage,
-        // so we can safely pop a buffer from the storage
-        let mut storage = self.inner.storage.lock();
-
-        match storage.pop() {
-            Some(x) => x,
-            None => panic!("BufferPool::get_buffer misuse: no available buffers"),
-        }
-    }
-
     /// Allocates and returns a new buffer.
     /// It is the caller's responsibility to not call this function when the limit of buffers is reached,
     /// and to increment the `allocated_buffers` count accordingly.
     #[inline]
     fn alloc_new_buffer(&self) -> Box<[u8]> {
-        // we intentionally don't increment semaphore permits here, as it could lead to a race condition
         vec![0u8; self.buf_size].into_boxed_slice()
     }
 
@@ -129,32 +104,27 @@ impl BufferPool {
             return buffer;
         }
 
-        // if we reached here, this means the pool is at max capacity and no permits are available right now,
+        // if we reached here, this means the pool is at max capacity and no buffers are available right now,
         // we must wait
 
-        let permit = self.inner.semaphore.clone().acquire_owned().await.unwrap();
-        let buffer = self.get_buffer();
+        let buffer = self.inner.get().await;
 
-        PooledBuffer::new(buffer, self.inner.clone(), Some(permit))
+        PooledBuffer::new(buffer, self.inner.clone())
     }
 
     #[inline]
     fn try_get_no_grow(&self) -> Option<PooledBuffer> {
-        if let Ok(permit) = self.inner.semaphore.clone().try_acquire_owned() {
-            return Some(PooledBuffer::new(self.get_buffer(), self.inner.clone(), Some(permit)));
-        }
-
-        None
+        self.inner.try_get().map(|buf| PooledBuffer::new(buf, self.inner.clone()))
     }
 
     pub fn try_get(&self) -> Option<PooledBuffer> {
-        // first, try acquire a permit if there are any available
+        // first, try acquire a buffer from the pool if there are any available
         if let Some(buf) = self.try_get_no_grow() {
             return Some(buf);
         }
 
-        // if we failed to acquire a permit, see if we can grow the pool
-        let mut num_buffers = self.inner.allocated_buffers.load(Ordering::Relaxed);
+        // if we failed to acquire, see if we can grow the pool
+        let mut num_buffers = self.inner.allocated_buffers.load(Ordering::Acquire);
 
         loop {
             if num_buffers >= self.max_buffers {
@@ -162,17 +132,17 @@ impl BufferPool {
             }
 
             // try to grow the pool
-            match self.inner.allocated_buffers.compare_exchange(
+            match self.inner.allocated_buffers.compare_exchange_weak(
                 num_buffers,
                 num_buffers + 1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
+                Ordering::AcqRel,
+                Ordering::Acquire,
             ) {
                 Ok(_) => {
                     // successfully incremented the count, allocate a new buffer
                     let buffer = self.alloc_new_buffer();
 
-                    break Some(PooledBuffer::new(buffer, self.inner.clone(), None));
+                    break Some(PooledBuffer::new(buffer, self.inner.clone()));
                 }
 
                 Err(num) => {
@@ -199,7 +169,7 @@ impl BufferPool {
     pub fn stats(&self) -> BufferPoolStats {
         let allocated = self.inner.allocated_buffers.load(Ordering::Relaxed);
         let max = self.max_buffers;
-        let available = self.inner.semaphore.available_permits();
+        let available = self.inner.rx.len();
 
         BufferPoolStats {
             buf_size: self.buf_size,
@@ -212,23 +182,18 @@ impl BufferPool {
 }
 
 pub struct PooledBuffer {
+    // ManuallyDrop used because we cant move out the buffer in Drop, to avoid using an Option
     buffer: ManuallyDrop<Box<[u8]>>,
     pool: Arc<BufferPoolInner>,
-    permit: Option<OwnedSemaphorePermit>,
     // #[cfg(debug_assertions)]
     // created_at: std::time::Instant,
 }
 
 impl PooledBuffer {
-    fn new(
-        buffer: Box<[u8]>,
-        pool: Arc<BufferPoolInner>,
-        permit: Option<OwnedSemaphorePermit>,
-    ) -> Self {
+    fn new(buffer: Box<[u8]>, pool: Arc<BufferPoolInner>) -> Self {
         Self {
             buffer: ManuallyDrop::new(buffer),
             pool,
-            permit,
             // #[cfg(debug_assertions)]
             // created_at: std::time::Instant::now(),
         }
@@ -278,7 +243,7 @@ impl Drop for PooledBuffer {
 
         // safety: `self.buffer` is never used after this point
         let buf = unsafe { ManuallyDrop::take(&mut self.buffer) };
-        self.pool.return_buffer(buf, self.permit.take());
+        self.pool.return_buffer(buf);
     }
 }
 
