@@ -2,7 +2,6 @@ use std::{
     borrow::Cow,
     net::SocketAddr,
     ops::Deref,
-    pin::Pin,
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -314,16 +313,19 @@ impl<H: AppHandler> Server<H> {
         }
 
         loop {
-            let wait_for_usr1: Pin<Box<dyn Future<Output = bool> + Send + 'static>> = if cfg!(unix)
-            {
-                use tokio::signal::unix;
-                Box::pin(async move {
-                    unix::signal(unix::SignalKind::user_defined1()).unwrap().recv().await.is_some()
-                })
-            } else {    
-                // this future will never complete
-                Box::pin(async move { std::future::pending().await })
-            };
+            cfg_if::cfg_if! {
+                if #[cfg(unix)] {
+                    let wait_for_usr1 = {
+                        use tokio::signal::unix;
+                        Box::pin(async move {
+                            unix::signal(unix::SignalKind::user_defined1()).unwrap().recv().await.is_some()
+                        })
+                    };
+                } else {
+                    // this future will never complete
+                    let wait_for_usr1 = Box::pin(async move { std::future::pending().await });
+                }
+            }
 
             tokio::select! {
                 _ = self.listener_tracker.wait() => {
