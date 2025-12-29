@@ -10,7 +10,7 @@ use std::{
 use dashmap::DashMap;
 use nohash_hasher::BuildNoHashHasher;
 use thiserror::Error;
-use tokio::{signal::unix::SignalKind, sync::Notify, task::JoinSet};
+use tokio::{sync::Notify, task::JoinSet};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{debug, error, info, trace, warn};
 
@@ -316,14 +316,11 @@ impl<H: AppHandler> Server<H> {
         loop {
             let wait_for_usr1: Pin<Box<dyn Future<Output = bool> + Send + 'static>> = if cfg!(unix)
             {
+                use tokio::signal::unix;
                 Box::pin(async move {
-                    tokio::signal::unix::signal(SignalKind::user_defined1())
-                        .unwrap()
-                        .recv()
-                        .await
-                        .is_some()
+                    unix::signal(unix::SignalKind::user_defined1()).unwrap().recv().await.is_some()
                 })
-            } else {
+            } else {    
                 // this future will never complete
                 Box::pin(async move { std::future::pending().await })
             };
