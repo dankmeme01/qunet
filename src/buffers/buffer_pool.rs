@@ -7,18 +7,87 @@ use std::{
     },
 };
 
+use parking_lot::Mutex;
+use tokio::sync::Notify;
+
 use crate::message::BufferKind;
 
-struct BufferPoolInner {
-    rx: flume::Receiver<Box<[u8]>>,
-    tx: flume::Sender<Box<[u8]>>,
+type Buf = Box<[u8]>;
+
+/// MPSC-based pool of buffers
+pub struct MpscInnerPool {
+    rx: flume::Receiver<Buf>,
+    tx: flume::Sender<Buf>,
     allocated_buffers: AtomicUsize,
+    buf_size: usize,
 }
 
-pub struct BufferPool {
+/// Notify-based pool, more cache friendly because buffers are returned to the front of the queue (stack structure)
+pub struct NotifyInnerPool {
+    notify: Notify,
+    storage: Mutex<Vec<Buf>>,
+    allocated_buffers: AtomicUsize,
     buf_size: usize,
-    max_buffers: usize,
-    inner: Arc<BufferPoolInner>,
+}
+
+pub trait InnerPool: Send + Sync + 'static {
+    fn try_get(&self) -> Option<Buf>;
+    fn get(&self) -> impl Future<Output = Buf> + Send
+    where
+        Self: Sized;
+
+    /// Atomically returns a buffer to the pool
+    fn return_buffer(&self, buffer: Buf);
+
+    fn new(buf_size: usize, initial_buffers: usize, max_buffers: usize) -> Self
+    where
+        Self: Sized;
+    fn shrink(&self);
+
+    fn allocated(&self) -> usize;
+    fn available(&self) -> usize;
+    fn max_buffers(&self) -> usize;
+    fn buf_size(&self) -> usize;
+
+    fn _allocated_ref(&self) -> &AtomicUsize;
+
+    /// Tries to allocate a new buffer and increases the allocated buffers count, returns None if at max capacity.
+    fn try_grow(&self) -> Option<Buf> {
+        let allocated = self._allocated_ref();
+
+        let mut num_buffers = allocated.load(Ordering::Acquire);
+
+        loop {
+            if num_buffers >= self.max_buffers() {
+                break None;
+            }
+
+            // try to grow the pool
+            match allocated.compare_exchange_weak(
+                num_buffers,
+                num_buffers + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    // successfully incremented the count, allocate a new buffer
+                    let buffer = make_buffer(self.buf_size());
+
+                    break Some(buffer);
+                }
+
+                Err(num) => {
+                    // another thread has beaten us, let's try again if we can
+                    num_buffers = num;
+                    continue;
+                }
+            }
+        }
+    }
+}
+
+pub struct BufferPool<I: InnerPool = NotifyInnerPool> {
+    inner: Arc<I>,
 }
 
 pub struct BufferPoolStats {
@@ -29,40 +98,7 @@ pub struct BufferPoolStats {
     pub avail_buffers: usize,
 }
 
-impl BufferPoolInner {
-    /// Atomically returns a buffer to the pool
-    #[inline]
-    fn return_buffer(&self, buffer: Box<[u8]>) {
-        // this unwrap must never fail, as BufferPool ensures we cannot create more buffers than the max
-        self.tx.try_send(buffer).unwrap();
-
-        // // if less than half the buffers are actually used, automatically shrink the pool
-        // let allocated = self.allocated_buffers.load(Ordering::Relaxed);
-        // if storage.len() <= allocated / 2 {
-        //     self.shrink();
-        // }
-    }
-
-    fn shrink(&self) {
-        let released_bufs = self.rx.drain().count();
-
-        // decrease the allocated buffers count
-        let old_bufs = self.allocated_buffers.fetch_sub(released_bufs, Ordering::AcqRel);
-
-        // check for potential overflow, should not be possible
-        debug_assert!(old_bufs.checked_sub(released_bufs).is_some());
-    }
-
-    fn try_get(&self) -> Option<Box<[u8]>> {
-        self.rx.try_recv().ok()
-    }
-
-    async fn get(&self) -> Box<[u8]> {
-        self.rx.recv_async().await.unwrap()
-    }
-}
-
-impl BufferPool {
+impl<I: InnerPool> BufferPool<I> {
     /// Creates a new `BufferPool` with the specified buffer size, initial number of buffers, and maximum number of buffers.
     /// The minimum memory usage of the pool will be `buf_size * initial_buffers`.
     /// The maximum memory usage of the pool will be `buf_size * max_buffers`.
@@ -70,32 +106,9 @@ impl BufferPool {
         assert!(max_buffers > 0, "max_buffers in a buffer pool cannot be 0");
         assert!(initial_buffers <= max_buffers, "initial_buffers must be <= max_buffers");
 
-        let (tx, rx) = flume::bounded(max_buffers);
-
-        for _ in 0..initial_buffers {
-            let buffer = vec![0u8; buf_size].into_boxed_slice();
-            tx.try_send(buffer).unwrap();
-        }
-
-        let inner = BufferPoolInner {
-            rx,
-            tx,
-            allocated_buffers: AtomicUsize::new(initial_buffers),
-        };
-
         Self {
-            buf_size,
-            max_buffers,
-            inner: Arc::new(inner),
+            inner: Arc::new(I::new(buf_size, initial_buffers, max_buffers)),
         }
-    }
-
-    /// Allocates and returns a new buffer.
-    /// It is the caller's responsibility to not call this function when the limit of buffers is reached,
-    /// and to increment the `allocated_buffers` count accordingly.
-    #[inline]
-    fn alloc_new_buffer(&self) -> Box<[u8]> {
-        vec![0u8; self.buf_size].into_boxed_slice()
     }
 
     /// Like `get`, but without needing to pass the size.
@@ -123,74 +136,43 @@ impl BufferPool {
             return Some(buf);
         }
 
-        // if we failed to acquire, see if we can grow the pool
-        let mut num_buffers = self.inner.allocated_buffers.load(Ordering::Acquire);
-
-        loop {
-            if num_buffers >= self.max_buffers {
-                break None;
-            }
-
-            // try to grow the pool
-            match self.inner.allocated_buffers.compare_exchange_weak(
-                num_buffers,
-                num_buffers + 1,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    // successfully incremented the count, allocate a new buffer
-                    let buffer = self.alloc_new_buffer();
-
-                    break Some(PooledBuffer::new(buffer, self.inner.clone()));
-                }
-
-                Err(num) => {
-                    // another thread has beaten us, let's try again if we can
-                    num_buffers = num;
-                    continue;
-                }
-            }
-        }
+        // try to grow the pool
+        self.inner.try_grow().map(|buf| PooledBuffer::new(buf, self.inner.clone()))
     }
 
     /// Returns the size of a single buffer in this pool.
     #[inline]
     pub fn buf_size(&self) -> usize {
-        self.buf_size
+        self.inner.buf_size()
     }
 
     /// Returns the total heap usage of this pool. (only including buffers, not the pool itself)
     #[inline]
     pub fn heap_usage(&self) -> usize {
-        self.buf_size * self.inner.allocated_buffers.load(Ordering::Relaxed)
+        self.buf_size() * self.inner.allocated()
     }
 
     pub fn stats(&self) -> BufferPoolStats {
-        let allocated = self.inner.allocated_buffers.load(Ordering::Relaxed);
-        let max = self.max_buffers;
-        let available = self.inner.rx.len();
-
         BufferPoolStats {
-            buf_size: self.buf_size,
+            buf_size: self.inner.buf_size(),
             heap_usage: self.heap_usage(),
-            allocated_buffers: allocated,
-            max_buffers: max,
-            avail_buffers: available,
+            allocated_buffers: self.inner.allocated(),
+            max_buffers: self.inner.max_buffers(),
+            avail_buffers: self.inner.available(),
         }
     }
 }
 
 pub struct PooledBuffer {
     // ManuallyDrop used because we cant move out the buffer in Drop, to avoid using an Option
-    buffer: ManuallyDrop<Box<[u8]>>,
-    pool: Arc<BufferPoolInner>,
+    buffer: ManuallyDrop<Buf>,
+    pool: Arc<dyn InnerPool>,
     // #[cfg(debug_assertions)]
     // created_at: std::time::Instant,
 }
 
 impl PooledBuffer {
-    fn new(buffer: Box<[u8]>, pool: Arc<BufferPoolInner>) -> Self {
+    fn new(buffer: Buf, pool: Arc<dyn InnerPool>) -> Self {
         Self {
             buffer: ManuallyDrop::new(buffer),
             pool,
@@ -274,11 +256,11 @@ pub trait BufPool: Send + Sync + 'static {
     }
 }
 
-impl BufPool for BufferPool {
+impl<I: InnerPool> BufPool for BufferPool<I> {
     /// Returns a future which will return a new buffer of at least `size` bytes, as soon as one is available.
     /// If no pool is large enough, this will return `None`.
     async fn get(&self, size: usize) -> Option<PooledBuffer> {
-        if size > self.buf_size {
+        if size > self.buf_size() {
             return None;
         }
 
@@ -286,7 +268,7 @@ impl BufPool for BufferPool {
     }
 
     fn try_get(&self, size: usize) -> Option<PooledBuffer> {
-        if size > self.buf_size {
+        if size > self.buf_size() {
             return None;
         }
 
@@ -302,11 +284,11 @@ impl BufPool for BufferPool {
     }
 
     fn min_buf_size(&self) -> usize {
-        self.buf_size
+        self.buf_size()
     }
 
     fn max_buf_size(&self) -> usize {
-        self.buf_size
+        self.buf_size()
     }
 
     fn shrink(&self) {
@@ -316,4 +298,140 @@ impl BufPool for BufferPool {
     fn heap_usage(&self) -> usize {
         self.heap_usage()
     }
+}
+
+impl InnerPool for MpscInnerPool {
+    fn new(buf_size: usize, initial_buffers: usize, max_buffers: usize) -> Self {
+        let (tx, rx) = flume::bounded(max_buffers);
+
+        for _ in 0..initial_buffers {
+            tx.try_send(make_buffer(buf_size)).unwrap();
+        }
+
+        Self {
+            buf_size,
+            rx,
+            tx,
+            allocated_buffers: AtomicUsize::new(initial_buffers),
+        }
+    }
+
+    #[inline]
+    fn return_buffer(&self, buffer: Buf) {
+        // this unwrap must never fail, as BufferPool ensures we cannot create more buffers than the max
+        self.tx.try_send(buffer).unwrap();
+    }
+
+    fn shrink(&self) {
+        let released_bufs = self.rx.drain().count();
+
+        // decrease the allocated buffers count
+        let old_bufs = self.allocated_buffers.fetch_sub(released_bufs, Ordering::AcqRel);
+
+        // check for potential overflow, should not be possible
+        debug_assert!(old_bufs.checked_sub(released_bufs).is_some());
+    }
+
+    fn try_get(&self) -> Option<Buf> {
+        self.rx.try_recv().ok()
+    }
+
+    async fn get(&self) -> Buf {
+        self.rx.recv_async().await.unwrap()
+    }
+
+    fn allocated(&self) -> usize {
+        self.allocated_buffers.load(Ordering::Relaxed)
+    }
+
+    fn _allocated_ref(&self) -> &AtomicUsize {
+        &self.allocated_buffers
+    }
+
+    fn available(&self) -> usize {
+        self.rx.len()
+    }
+
+    fn buf_size(&self) -> usize {
+        self.buf_size
+    }
+
+    fn max_buffers(&self) -> usize {
+        self.tx.capacity().unwrap()
+    }
+}
+
+impl InnerPool for NotifyInnerPool {
+    fn new(buf_size: usize, initial_buffers: usize, max_buffers: usize) -> Self {
+        let mut storage = Vec::with_capacity(max_buffers);
+
+        for _ in 0..initial_buffers {
+            storage.push(make_buffer(buf_size));
+        }
+
+        Self {
+            storage: Mutex::new(storage),
+            notify: Notify::new(),
+            buf_size,
+            allocated_buffers: AtomicUsize::new(initial_buffers),
+        }
+    }
+
+    #[inline]
+    fn return_buffer(&self, buffer: Buf) {
+        self.storage.lock().push(buffer);
+        self.notify.notify_one();
+    }
+
+    fn shrink(&self) {
+        let released_bufs = {
+            let mut vec = self.storage.lock();
+            let count = vec.len();
+            vec.clear();
+            count
+        };
+
+        // decrease the allocated buffers count
+        let old_bufs = self.allocated_buffers.fetch_sub(released_bufs, Ordering::AcqRel);
+
+        // check for potential overflow, should not be possible
+        debug_assert!(old_bufs.checked_sub(released_bufs).is_some());
+    }
+
+    fn try_get(&self) -> Option<Buf> {
+        self.storage.lock().pop()
+    }
+
+    async fn get(&self) -> Buf {
+        loop {
+            if let Some(buf) = self.try_get() {
+                return buf;
+            }
+            self.notify.notified().await;
+        }
+    }
+
+    fn allocated(&self) -> usize {
+        self.allocated_buffers.load(Ordering::Relaxed)
+    }
+
+    fn _allocated_ref(&self) -> &AtomicUsize {
+        &self.allocated_buffers
+    }
+
+    fn available(&self) -> usize {
+        self.storage.lock().len()
+    }
+
+    fn buf_size(&self) -> usize {
+        self.buf_size
+    }
+
+    fn max_buffers(&self) -> usize {
+        self.storage.lock().capacity()
+    }
+}
+
+fn make_buffer(size: usize) -> Buf {
+    vec![0u8; size].into_boxed_slice()
 }

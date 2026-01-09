@@ -12,7 +12,9 @@ mod multi_buffer_pool;
 pub use binary_reader::BinaryReader;
 pub use binary_writer::BinaryWriter;
 pub use bits::Bits;
-pub use buffer_pool::{BufPool, BufferPool, BufferPoolStats, PooledBuffer};
+pub use buffer_pool::{
+    BufPool, BufferPool, BufferPoolStats, InnerPool, MpscInnerPool, NotifyInnerPool, PooledBuffer,
+};
 pub use byte_reader::{ByteReader, ByteReaderError};
 pub use byte_writer::{ByteWriter, ByteWriterError};
 pub use circular_byte_buffer::{CircularByteBuffer, NotEnoughData, WrappedRead};
@@ -24,9 +26,8 @@ pub use multi_buffer_pool::{MultiBufferPool, MultiBufferPoolStats};
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_buffer_pool() {
-        let pool = buffer_pool::BufferPool::new(1024, 8, 16);
+    async fn test_buffer_pool_inner<I: InnerPool>() {
+        let pool = BufferPool::<I>::new(1024, 8, 16);
 
         assert_eq!(pool.buf_size(), 1024);
 
@@ -53,6 +54,16 @@ mod tests {
         let result =
             tokio::time::timeout(std::time::Duration::from_millis(100), pool.get_unchecked()).await;
         assert!(result.is_ok(), "Expected to get a new buffer after dropping one");
+    }
+
+    #[tokio::test]
+    async fn test_mpsc_buffer_pool() {
+        test_buffer_pool_inner::<MpscInnerPool>().await;
+    }
+
+    #[tokio::test]
+    async fn test_notify_buffer_pool() {
+        test_buffer_pool_inner::<NotifyInnerPool>().await;
     }
 
     #[tokio::test]
