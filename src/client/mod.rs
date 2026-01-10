@@ -350,9 +350,7 @@ impl<H: EventHandler> Client<H> {
         self.event_handler.on_connected(&self).await;
 
         match self.clone().main_loop(transport).await {
-            Ok(()) => {}
-
-            Err(ClientOutcome::GracefulShutdown) => {
+            Ok(()) => {
                 debug!("Client main loop exited gracefully");
             }
 
@@ -374,7 +372,6 @@ impl<H: EventHandler> Client<H> {
         while !transport.data.closed {
             let timer_expiry = transport.until_timer_expiry();
 
-            // TODO: keepalives
             let res = tokio::select! {
                 msg = transport.receive_message() => match msg {
                     Ok(msg) => {
