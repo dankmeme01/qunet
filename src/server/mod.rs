@@ -658,9 +658,7 @@ impl<H: AppHandler> Server<H> {
                         err
                     );
 
-                    self.maybe_send_error_to_client(&mut transport, &err).await;
-
-                    true
+                    self.maybe_send_error_to_client(&mut transport, &err).await
                 }
             };
 
@@ -739,7 +737,9 @@ impl<H: AppHandler> Server<H> {
         &self,
         transport: &mut QunetTransport,
         error: &TransportError,
-    ) {
+    ) -> bool {
+        let mut suspend = true;
+
         // depending on the error, we might want to send a message to the client notifying about it
         let (error_code, error_message) = match error {
             TransportError::MessageTooLong => (QunetConnectionError::StreamMessageTooLong, None),
@@ -752,10 +752,13 @@ impl<H: AppHandler> Server<H> {
                 (QunetConnectionError::InternalServerError, None)
             }
 
-            TransportError::RateLimitExceeded => (QunetConnectionError::RateLimitExceeded, None),
+            TransportError::RateLimitExceeded => {
+                suspend = false;
+                (QunetConnectionError::RateLimitExceeded, None)
+            }
 
             TransportError::SuspendRequested => {
-                return;
+                return true;
             }
 
             _ => (QunetConnectionError::Custom, Some(Cow::Owned(error.to_string()))),
@@ -765,6 +768,8 @@ impl<H: AppHandler> Server<H> {
         let _ = transport
             .send_message(QunetMessage::ServerClose { error_code, error_message }, false, &())
             .await;
+
+        suspend
     }
 
     async fn client_main_loop(
