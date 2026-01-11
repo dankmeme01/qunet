@@ -186,7 +186,7 @@ impl<H: EventHandler> Client<H> {
     }
 
     pub fn disconnect(&self) {
-        self.disconnect_notify.notify_waiters();
+        self.disconnect_notify.notify_one();
     }
 
     pub fn request_buffer(&self, size: usize) -> BufferKind {

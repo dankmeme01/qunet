@@ -669,6 +669,11 @@ impl QunetMessage {
                 }
             }
 
+            Self::ClientClose { dont_terminate } => {
+                header_writer.write_u8(MSG_CLIENT_CLOSE)?;
+                body_writer.write_bool(*dont_terminate)?;
+            }
+
             Self::ServerClose { error_code, error_message } => {
                 header_writer.write_u8(MSG_SERVER_CLOSE)?;
                 body_writer.write_u32(*error_code as u32)?;
