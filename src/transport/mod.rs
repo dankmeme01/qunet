@@ -34,12 +34,14 @@ mod error;
 pub mod lowlevel;
 #[cfg(feature = "quic")]
 pub mod quic;
+mod rate_limiter;
 mod stream;
 pub mod tcp;
 pub mod udp;
 mod udp_misc;
 
 pub use error::*;
+pub use rate_limiter::RateLimiter;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportType {
@@ -68,6 +70,7 @@ pub(crate) struct QunetTransportData {
     pub keepalive_interval: Duration,
     pub compression_mode: CompressionMode,
     pub is_client: bool,
+    pub rate_limiter: RateLimiter,
 
     #[cfg(target_os = "linux")]
     pub c_sockaddr_data: SocketAddrCRepr,
@@ -112,6 +115,7 @@ impl QunetTransport {
             server.listener_opts.idle_timeout,
             Duration::from_secs(2u64.pow(30)), // server never sends keepalives
             server.compression_mode,
+            server.create_rate_limiter(),
         )
     }
 
@@ -136,6 +140,7 @@ impl QunetTransport {
             Duration::from_secs(60),
             Duration::from_secs(30),
             CompressionMode::default(),
+            RateLimiter::new_unlimited(),
         )
     }
 
@@ -151,6 +156,7 @@ impl QunetTransport {
         idle_timeout: Duration,
         keepalive_interval: Duration,
         compression_mode: CompressionMode,
+        rate_limiter: RateLimiter,
     ) -> Self {
         #[cfg(target_os = "linux")]
         let (c_sockaddr_data, c_sockaddr_len) = socket_addr_to_c(&address);
@@ -170,6 +176,7 @@ impl QunetTransport {
                 idle_timeout,
                 keepalive_interval,
                 compression_mode,
+                rate_limiter,
                 #[cfg(target_os = "linux")]
                 c_sockaddr_data,
                 #[cfg(target_os = "linux")]
@@ -266,6 +273,18 @@ impl QunetTransport {
 
     #[inline]
     pub async fn receive_message(&mut self) -> Result<QunetMessage, TransportError> {
+        let msg = self.receive_message_inner().await?;
+
+        // if the client exceeded the rate limit, forcibly disconnect them
+        if !self.data.rate_limiter.consume() {
+            return Err(TransportError::RateLimitExceeded);
+        }
+
+        Ok(msg)
+    }
+
+    #[inline]
+    async fn receive_message_inner(&mut self) -> Result<QunetMessage, TransportError> {
         match &mut self.kind {
             QunetTransportKind::Udp(udp) => udp.receive_message(&mut self.data).await,
             QunetTransportKind::Tcp(tcp) => tcp.receive_message(&mut self.data).await,

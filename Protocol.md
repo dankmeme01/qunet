@@ -242,6 +242,7 @@ Error codes:
 * 6 - Protocol violation: client sent a stream message that exceeds the maximum allowed length
 * 7 - Internal server error - this is not client's fault
 * 8 - Server is shutting down
+* 9 - Rate limit exceeded, client is disconnected due to potential malice
 
 ## QdbChunkRequest
 

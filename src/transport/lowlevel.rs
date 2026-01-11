@@ -73,3 +73,25 @@ pub fn uninit_box_bytes(size: usize) -> Box<[u8]> {
     // safety: the pointer is valid and the size is correct
     unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, real_size)) }
 }
+
+/// Returns a coarse monotonic timer value in nanoseconds.
+/// On Linux, is optimized for lower overhead using CLOCK_MONOTONIC_COARSE.
+#[inline(always)]
+pub fn coarse_monotonic_timer() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        unsafe {
+            let mut ts: libc::timespec = std::mem::zeroed();
+            libc::clock_gettime(libc::CLOCK_MONOTONIC_COARSE, &mut ts);
+            (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        use std::{sync::OnceLock, time::Instant};
+        static TIMER_START: OnceLock<Instant> = OnceLock::new();
+
+        let start = TIMER_START.get_or_init(Instant::now);
+        start.elapsed().as_nanos() as u64
+    }
+}

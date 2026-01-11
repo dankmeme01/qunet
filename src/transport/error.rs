@@ -51,6 +51,8 @@ pub enum TransportError {
     NotImplemented(&'static str),
     #[error("Client requested the connection to be suspended")]
     SuspendRequested,
+    #[error("Message rate limit exceeded")]
+    RateLimitExceeded,
     #[error("Connection timed out, no data received for a long time")]
     IdleTimeout,
     #[error("{0}")]
@@ -106,7 +108,8 @@ impl TransportError {
             | TransportError::TooUnreliable
             | TransportError::TooManyPendingFragments
             | TransportError::SuspendRequested
-            | TransportError::IdleTimeout => TransportErrorOutcome::Terminate,
+            | TransportError::IdleTimeout
+            | TransportError::RateLimitExceeded => TransportErrorOutcome::Terminate,
 
             #[cfg(feature = "quic")]
             TransportError::QuicError(_) => TransportErrorOutcome::Terminate,

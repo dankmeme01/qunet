@@ -29,7 +29,7 @@ use crate::{
         stat_tracker::StatTracker,
     },
     transport::{
-        QunetTransport, TransportError, TransportErrorOutcome, TransportType,
+        QunetTransport, RateLimiter, TransportError, TransportErrorOutcome, TransportType,
         compression::{CompressError, CompressionHandler, CompressionHandlerImpl, DecompressError},
     },
 };
@@ -122,6 +122,7 @@ pub struct Server<H: AppHandler> {
     // misc settings
     message_size_limit: usize,
     suspend_timeout: Duration,
+    rate_limiter_mps: u32,
     graceful_shutdown_timeout: Duration,
     pub(crate) listener_opts: ListenerOptions,
     pub(crate) compression_mode: CompressionMode,
@@ -179,6 +180,7 @@ impl<H: AppHandler> Server<H> {
 
             message_size_limit: builder.message_size_limit.unwrap_or(DEFAULT_MESSAGE_SIZE_LIMIT),
             suspend_timeout: builder.max_suspend_time.unwrap_or(Duration::from_secs(60)),
+            rate_limiter_mps: builder.max_messages_per_second.map_or(0, |x| x.get()),
             graceful_shutdown_timeout: builder
                 .graceful_shutdown_timeout
                 .unwrap_or(Duration::from_secs(10)),
@@ -599,6 +601,15 @@ impl<H: AppHandler> Server<H> {
         self.message_size_limit
     }
 
+    #[inline]
+    pub fn create_rate_limiter(&self) -> RateLimiter {
+        if self.rate_limiter_mps != 0 {
+            RateLimiter::new(self.rate_limiter_mps, self.rate_limiter_mps * 2)
+        } else {
+            RateLimiter::new_unlimited()
+        }
+    }
+
     /// This function only returns an error if the initial transport setup fails, otherwise it always returns `Ok(())`
     async fn client_handler(
         &self,
@@ -740,6 +751,8 @@ impl<H: AppHandler> Server<H> {
             TransportError::MessageChannelClosed => {
                 (QunetConnectionError::InternalServerError, None)
             }
+
+            TransportError::RateLimitExceeded => (QunetConnectionError::RateLimitExceeded, None),
 
             TransportError::SuspendRequested => {
                 return;

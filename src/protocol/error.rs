@@ -12,6 +12,7 @@ pub enum QunetConnectionError {
     StreamMessageTooLong = 6,
     InternalServerError = 7,
     ServerShutdown = 8,
+    RateLimitExceeded = 9,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +37,7 @@ impl QunetConnectionError {
             6 => Some(Self::StreamMessageTooLong),
             7 => Some(Self::InternalServerError),
             8 => Some(Self::ServerShutdown),
+            9 => Some(Self::RateLimitExceeded),
             _ => None,
         }
     }

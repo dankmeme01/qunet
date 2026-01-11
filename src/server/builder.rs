@@ -1,6 +1,6 @@
 use std::{
     net::SocketAddr,
-    num::NonZeroUsize,
+    num::NonZero,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -21,7 +21,7 @@ pub enum UdpDiscoveryMode {
 #[derive(Debug, Clone)]
 pub(crate) struct UdpOptions {
     pub address: SocketAddr,
-    pub binds: NonZeroUsize,
+    pub binds: NonZero<usize>,
     pub discovery_mode: UdpDiscoveryMode,
 }
 
@@ -122,7 +122,7 @@ pub struct ServerBuilder<H: AppHandler = DefaultAppHandler> {
     pub(crate) app_handler: Option<H>,
 
     pub(crate) message_size_limit: Option<usize>,
-    pub(crate) max_messages_per_second: Option<NonZeroUsize>,
+    pub(crate) max_messages_per_second: Option<NonZero<u32>>,
     pub(crate) compression_mode: CompressionMode,
     pub(crate) stat_tracker: bool,
 
@@ -153,7 +153,7 @@ impl<H: AppHandler> ServerBuilder<H> {
 
         self.udp_opts = Some(UdpOptions {
             address,
-            binds: NonZeroUsize::new(binds).expect("Binds value must be non-zero"),
+            binds: NonZero::<usize>::new(binds).expect("Binds value must be non-zero"),
             discovery_mode,
         });
         self
@@ -224,10 +224,8 @@ impl<H: AppHandler> ServerBuilder<H> {
         self
     }
 
-    /// Note: this is not actually implemented yet
-    pub fn with_max_messages_per_second(mut self, limit: usize) -> Self {
-        // TODO: implement this
-        self.max_messages_per_second = NonZeroUsize::new(limit);
+    pub fn with_max_messages_per_second(mut self, limit: u32) -> Self {
+        self.max_messages_per_second = NonZero::new(limit);
         self
     }
 
