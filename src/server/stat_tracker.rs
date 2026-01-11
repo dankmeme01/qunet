@@ -44,6 +44,17 @@ pub struct StatTracker {
     past_conns: Mutex<Vec<FinishedConnection>>,
 }
 
+pub struct OverallStats {
+    pub bytes_tx: usize,
+    pub bytes_rx: usize,
+    pub pkt_tx: usize,
+    pub pkt_rx: usize,
+    pub total_conns: usize,
+    pub total_suspends: usize,
+    pub total_resumes: usize,
+    pub total_keepalives: usize,
+}
+
 impl StatTracker {
     pub fn new() -> Self {
         Self::default()
@@ -137,5 +148,18 @@ impl StatTracker {
 
     pub fn take_all_past(&self) -> Vec<FinishedConnection> {
         std::mem::take(&mut *self.past_conns.lock())
+    }
+
+    pub fn get_overall_stats(&self) -> OverallStats {
+        OverallStats {
+            bytes_tx: self.bytes_tx.load(Ordering::Relaxed),
+            bytes_rx: self.bytes_rx.load(Ordering::Relaxed),
+            pkt_tx: self.pkt_tx.load(Ordering::Relaxed),
+            pkt_rx: self.pkt_rx.load(Ordering::Relaxed),
+            total_conns: self.total_conns.load(Ordering::Relaxed),
+            total_suspends: self.total_suspends.load(Ordering::Relaxed),
+            total_resumes: self.total_resumes.load(Ordering::Relaxed),
+            total_keepalives: self.total_keepalives.load(Ordering::Relaxed),
+        }
     }
 }
