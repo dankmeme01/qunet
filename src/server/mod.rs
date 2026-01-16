@@ -23,7 +23,7 @@ use crate::{
     protocol::{self, *},
     server::{
         app_handler::{AppHandler, DefaultAppHandler},
-        builder::{CompressionMode, ListenerOptions, ServerBuilder},
+        builder::{ListenerOptions, ServerBuilder, ShouldCompressFn, should_compress_adaptive},
         client::{ClientNotification, ClientState},
         listeners::*,
         stat_tracker::StatTracker,
@@ -125,7 +125,7 @@ pub struct Server<H: AppHandler> {
     rate_limiter_mps: u32,
     graceful_shutdown_timeout: Duration,
     pub(crate) listener_opts: ListenerOptions,
-    pub(crate) compression_mode: CompressionMode,
+    pub(crate) compression_func: Arc<dyn ShouldCompressFn>,
 
     // Qdb stuff
     qdb: QunetDatabase,
@@ -185,7 +185,10 @@ impl<H: AppHandler> Server<H> {
                 .graceful_shutdown_timeout
                 .unwrap_or(Duration::from_secs(10)),
             listener_opts: builder.listener_opts,
-            compression_mode: builder.compression_mode,
+            compression_func: builder
+                .compression_func
+                .clone()
+                .unwrap_or_else(|| Arc::new(should_compress_adaptive)),
 
             qdb: QunetDatabase::default(),
             qdb_data: Arc::new([]),

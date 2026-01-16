@@ -1,4 +1,4 @@
-use std::num::NonZeroU32;
+use std::{fmt::Display, num::NonZeroU32};
 
 use crate::{
     buffers::{Bits, ByteReader},
@@ -10,9 +10,17 @@ use crate::{
 pub enum CompressionType {
     Zstd,
     ZstdNoDict,
-    // #[deprecated]
-    #[allow(dead_code)]
     Lz4,
+}
+
+impl Display for CompressionType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CompressionType::Zstd => write!(f, "Zstd"),
+            CompressionType::ZstdNoDict => write!(f, "Zstd (no dict)"),
+            CompressionType::Lz4 => write!(f, "Lz4"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -95,7 +103,11 @@ impl<'a> QunetMessageMeta<'a> {
                 uncompressed_size: NonZeroU32::new(reader.read_u32()?)
                     .ok_or(QunetMessageDecodeError::UnexpectedZero)?,
             }),
-            0b11 => return Err(QunetMessageDecodeError::InvalidCompressionType),
+            0b11 => Some(CompressionHeader {
+                compression_type: CompressionType::Lz4,
+                uncompressed_size: NonZeroU32::new(reader.read_u32()?)
+                    .ok_or(QunetMessageDecodeError::UnexpectedZero)?,
+            }),
 
             _ => unreachable!(),
         };

@@ -6,9 +6,13 @@ use std::{
     time::Duration,
 };
 
-use crate::server::{
-    Server, ServerHandle, ServerOutcome,
-    app_handler::{AppHandler, DefaultAppHandler},
+use crate::{
+    message::CompressionType,
+    server::{
+        Server, ServerHandle, ServerOutcome,
+        app_handler::{AppHandler, DefaultAppHandler},
+    },
+    transport::compression::lz4_compress,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,7 +114,49 @@ pub enum CompressionMode {
     Always,
 }
 
-#[derive(Default, Debug)]
+pub trait ShouldCompressFn: Fn(&[u8]) -> Option<CompressionType> + Send + Sync + 'static {}
+
+impl<T: Fn(&[u8]) -> Option<CompressionType> + Send + Sync + 'static> ShouldCompressFn for T {}
+
+pub fn should_compress_never(_: &[u8]) -> Option<CompressionType> {
+    None
+}
+
+pub fn should_compress_always(data: &[u8]) -> Option<CompressionType> {
+    if data.len() < 128 {
+        None
+    } else if data.len() < 512 {
+        Some(CompressionType::Lz4)
+    } else {
+        Some(CompressionType::Zstd)
+    }
+}
+
+pub fn should_compress_adaptive(data: &[u8]) -> Option<CompressionType> {
+    if data.len() < 128 {
+        None
+    } else if data.len() >= 8192 {
+        Some(CompressionType::Zstd)
+    } else {
+        // in between (most packets fall here), first try compressing with lz4 as a heuristic
+        let mut temp = [0u8; 8192];
+        let lz4_size = lz4_compress(data, &mut temp).unwrap_or(data.len() + 1);
+
+        // if lz4 is not effective at all, don't compress
+        if lz4_size >= data.len() {
+            return None;
+        }
+
+        // use zstd if the packet is large enough and slightly compressible
+        if data.len() >= 256 && (lz4_size + lz4_size / 16) < data.len() {
+            Some(CompressionType::Zstd)
+        } else {
+            Some(CompressionType::Lz4)
+        }
+    }
+}
+
+#[derive(Default)]
 pub struct ServerBuilder<H: AppHandler = DefaultAppHandler> {
     pub(crate) udp_opts: Option<UdpOptions>,
     pub(crate) tcp_opts: Option<TcpOptions>,
@@ -123,7 +169,7 @@ pub struct ServerBuilder<H: AppHandler = DefaultAppHandler> {
 
     pub(crate) message_size_limit: Option<usize>,
     pub(crate) max_messages_per_second: Option<NonZero<u32>>,
-    pub(crate) compression_mode: CompressionMode,
+    pub(crate) compression_func: Option<Arc<dyn ShouldCompressFn>>,
     pub(crate) stat_tracker: bool,
 
     pub(crate) qdb_path: Option<PathBuf>,
@@ -229,8 +275,16 @@ impl<H: AppHandler> ServerBuilder<H> {
         self
     }
 
-    pub fn with_compression_mode(mut self, mode: CompressionMode) -> Self {
-        self.compression_mode = mode;
+    pub fn with_compression_mode(self, mode: CompressionMode) -> Self {
+        self.with_compression_determinator(match mode {
+            CompressionMode::None => should_compress_never,
+            CompressionMode::Adaptive => should_compress_adaptive,
+            CompressionMode::Always => should_compress_always,
+        })
+    }
+
+    pub fn with_compression_determinator<F: ShouldCompressFn>(mut self, func: F) -> Self {
+        self.compression_func = Some(Arc::new(func));
         self
     }
 
@@ -255,7 +309,7 @@ impl<H: AppHandler> ServerBuilder<H> {
             max_suspend_time: self.max_suspend_time,
             mem_options: self.mem_options,
             max_messages_per_second: self.max_messages_per_second,
-            compression_mode: self.compression_mode,
+            compression_func: self.compression_func,
             stat_tracker: self.stat_tracker,
         }
     }

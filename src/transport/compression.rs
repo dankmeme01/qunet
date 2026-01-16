@@ -22,6 +22,8 @@ pub enum CompressError {
 pub enum DecompressError {
     #[error("zstd decompression failed: {0}")]
     Zstd(&'static str),
+    #[error("lz4 decompression failed: {0}")]
+    Lz4(#[from] lz4_flex::block::DecompressError),
 }
 
 #[inline]
@@ -37,6 +39,11 @@ fn map_zstd_decompress<T>(result: Result<T, usize>) -> Result<T, DecompressError
 #[inline]
 pub fn zstd_compress_bound(size: usize) -> usize {
     zstd_safe::compress_bound(size)
+}
+
+#[inline]
+pub fn lz4_compress_bound(size: usize) -> usize {
+    lz4_flex::block::get_maximum_output_size(size)
 }
 
 /// Compresses data using Zstandard, optionally using a provided compression dictionary.
@@ -89,6 +96,10 @@ pub fn zstd_decompress(
 
 pub fn lz4_compress(data: &[u8], output: &mut [u8]) -> Result<usize, CompressError> {
     Ok(lz4_flex::compress_into(data, output)?)
+}
+
+pub fn lz4_decompress(data: &[u8], output: &mut [u8]) -> Result<usize, DecompressError> {
+    Ok(lz4_flex::block::decompress_into(data, output)?)
 }
 
 // Trait for servers / clients that hold a compression dictionary/context
@@ -170,11 +181,18 @@ impl<P: BufPool> CompressionHandlerImpl<P> {
             BufferKind::Reference(_) => unreachable!(),
         }
     }
-}
 
-impl<P: BufPool> CompressionHandler for CompressionHandlerImpl<P> {
-    fn compress_zstd(&self, data: &[u8], use_dict: bool) -> Result<BufferKind, CompressError> {
-        let needed_len = zstd_compress_bound(data.len());
+    fn compress_with<FB, FC>(
+        &self,
+        data: &[u8],
+        fbound: FB,
+        fcompress: FC,
+    ) -> Result<BufferKind, CompressError>
+    where
+        FB: FnOnce(usize) -> usize,
+        FC: FnOnce(&[u8], &mut [u8]) -> Result<usize, CompressError>,
+    {
+        let needed_len = fbound(data.len());
 
         let mut buf = self.get_new_buffer(needed_len);
 
@@ -188,19 +206,22 @@ impl<P: BufPool> CompressionHandler for CompressionHandlerImpl<P> {
             needed_len
         );
 
-        let written = zstd_compress(data, output, self.zstd_cdict.as_ref().take_if(|_| use_dict))?;
+        let written = fcompress(data, output)?;
 
-        // safety: zstd guarantees that exactly `size` bytes are written to the output buffer
+        // safety: the compressor guarantees that exactly `size` bytes are written to the output buffer
         unsafe { Self::set_buffer_kind_len(&mut buf, written) };
         Ok(buf)
     }
 
-    fn decompress_zstd(
+    fn decompress_with<FD>(
         &self,
         data: &[u8],
         uncompressed_size: usize,
-        use_dict: bool,
-    ) -> Result<BufferKind, DecompressError> {
+        fdecompress: FD,
+    ) -> Result<BufferKind, DecompressError>
+    where
+        FD: FnOnce(&[u8], &mut [u8]) -> Result<usize, DecompressError>,
+    {
         let mut buf = self.get_new_buffer(uncompressed_size);
 
         // safety: the buffer is only used for writing
@@ -213,43 +234,42 @@ impl<P: BufPool> CompressionHandler for CompressionHandlerImpl<P> {
             uncompressed_size
         );
 
-        let written =
-            zstd_decompress(data, output, self.zstd_ddict.as_ref().take_if(|_| use_dict))?;
+        let written = fdecompress(data, output)?;
 
-        // safety: zstd guarantees that exactly `size` bytes are written to the output buffer
+        // safety: decompressor guarantees that exactly `size` bytes are written to the output buffer
         unsafe { Self::set_buffer_kind_len(&mut buf, written) };
         Ok(buf)
     }
+}
+
+impl<P: BufPool> CompressionHandler for CompressionHandlerImpl<P> {
+    fn compress_zstd(&self, data: &[u8], use_dict: bool) -> Result<BufferKind, CompressError> {
+        self.compress_with(data, zstd_compress_bound, |data, output| {
+            zstd_compress(data, output, self.zstd_cdict.as_ref().take_if(|_| use_dict))
+        })
+    }
+
+    fn decompress_zstd(
+        &self,
+        data: &[u8],
+        uncompressed_size: usize,
+        use_dict: bool,
+    ) -> Result<BufferKind, DecompressError> {
+        self.decompress_with(data, uncompressed_size, |input, output| {
+            zstd_decompress(input, output, self.zstd_ddict.as_ref().take_if(|_| use_dict))
+        })
+    }
 
     fn compress_lz4(&self, data: &[u8]) -> Result<BufferKind, CompressError> {
-        let needed_len = lz4_flex::block::get_maximum_output_size(data.len());
-
-        let mut buf = self.get_new_buffer(needed_len);
-
-        // safety: the buffer is only used for writing
-        let output = unsafe { Self::write_buf_from_buffer_kind(&mut buf) };
-
-        debug_assert!(
-            output.len() >= needed_len,
-            "Output buffer is too small ({} < {})",
-            output.len(),
-            needed_len
-        );
-
-        let written = lz4_compress(data, output)?;
-
-        // safety: lz4 guarantees that exactly `size` bytes are written to the output buffer
-        unsafe { Self::set_buffer_kind_len(&mut buf, written) };
-
-        Ok(buf)
+        self.compress_with(data, lz4_compress_bound, lz4_compress)
     }
 
     fn decompress_lz4(
         &self,
-        _data: &[u8],
-        _uncompressed_size: usize,
+        data: &[u8],
+        uncompressed_size: usize,
     ) -> Result<BufferKind, DecompressError> {
-        todo!();
+        self.decompress_with(data, uncompressed_size, lz4_decompress)
     }
 }
 

@@ -12,11 +12,13 @@ use crate::{
     message::{CompressionHeader, CompressionType, DataMessageKind, QunetMessage, channel},
     protocol::QunetHandshakeError,
     server::{
-        Server, ServerHandle, app_handler::AppHandler, builder::CompressionMode,
+        Server, ServerHandle, app_handler::AppHandler, builder::ShouldCompressFn,
         client::ClientNotification,
     },
     transport::compression::CompressionHandler,
 };
+
+use tracing::trace;
 
 use self::{tcp::ClientTcpTransport, udp::ClientUdpTransport};
 
@@ -68,7 +70,7 @@ pub(crate) struct QunetTransportData {
     pub idle_timeout: Duration,
     pub last_data_exchange: Instant,
     pub keepalive_interval: Duration,
-    pub compression_mode: CompressionMode,
+    pub compression_func: Arc<dyn ShouldCompressFn>,
     pub is_client: bool,
     pub rate_limiter: RateLimiter,
 
@@ -114,7 +116,7 @@ impl QunetTransport {
             server.buffer_pool.clone(),
             server.listener_opts.idle_timeout,
             Duration::from_secs(2u64.pow(30)), // server never sends keepalives
-            server.compression_mode,
+            server.compression_func.clone(),
             server.create_rate_limiter(),
         )
     }
@@ -127,7 +129,9 @@ impl QunetTransport {
         initial_qdb_hash: [u8; 16],
         client: &Client<H>,
     ) -> Self {
-        use crate::protocol::DEFAULT_MESSAGE_SIZE_LIMIT;
+        use crate::{
+            protocol::DEFAULT_MESSAGE_SIZE_LIMIT, server::builder::should_compress_adaptive,
+        };
 
         Self::new(
             true,
@@ -139,7 +143,7 @@ impl QunetTransport {
             client.buffer_pool.clone(),
             Duration::from_secs(60),
             Duration::from_secs(30),
-            CompressionMode::default(),
+            Arc::new(should_compress_adaptive),
             RateLimiter::new_unlimited(),
         )
     }
@@ -155,7 +159,7 @@ impl QunetTransport {
         buffer_pool: Arc<HybridBufferPool>,
         idle_timeout: Duration,
         keepalive_interval: Duration,
-        compression_mode: CompressionMode,
+        compression_func: Arc<dyn ShouldCompressFn>,
         rate_limiter: RateLimiter,
     ) -> Self {
         #[cfg(target_os = "linux")]
@@ -175,7 +179,7 @@ impl QunetTransport {
                 last_data_exchange: Instant::now(),
                 idle_timeout,
                 keepalive_interval,
-                compression_mode,
+                compression_func,
                 rate_limiter,
                 #[cfg(target_os = "linux")]
                 c_sockaddr_data,
@@ -354,7 +358,7 @@ impl QunetTransport {
     ) -> Result<(), TransportError> {
         // Compress this message?
         if let QunetMessage::Data { .. } = &message
-            && let Some(comp_type) = self.should_compress_data_message(&message)
+            && let Some(comp_type) = (self.data.compression_func)(message.data_bytes().unwrap())
         {
             message = self.do_compress_data_message(message, comp_type, ch).await?;
         }
@@ -384,23 +388,6 @@ impl QunetTransport {
         self.send_message(message, false, ch).await
     }
 
-    #[inline]
-    fn should_compress_data_message(&self, message: &QunetMessage) -> Option<CompressionType> {
-        let data_buf = message.data_bytes().expect("Non data message passed to compression check");
-
-        match self.data.compression_mode {
-            CompressionMode::None => None,
-            CompressionMode::Always => Some(CompressionType::Zstd),
-            CompressionMode::Adaptive => {
-                if data_buf.len() >= 1024 {
-                    Some(CompressionType::Zstd)
-                } else {
-                    None
-                }
-            }
-        }
-    }
-
     async fn do_compress_data_message<C: CompressionHandler>(
         &mut self,
         message: QunetMessage,
@@ -409,17 +396,32 @@ impl QunetTransport {
     ) -> Result<QunetMessage, TransportError> {
         let data_buf = message.data_bytes().expect("Non data message passed to compression check");
 
-        assert!(!data_buf.is_empty(), "Data buffer must not be empty");
-
-        let compression_header = CompressionHeader {
-            compression_type: comp_type,
-            uncompressed_size: NonZeroU32::new(data_buf.len() as u32).unwrap(),
-        };
+        if data_buf.is_empty() {
+            return Ok(message);
+        }
 
         let compressed_buf = match comp_type {
             CompressionType::Lz4 => ch.compress_lz4(data_buf)?,
             CompressionType::Zstd => ch.compress_zstd(data_buf, true)?,
             CompressionType::ZstdNoDict => ch.compress_zstd(data_buf, false)?,
+        };
+
+        trace!(
+            "[{}] compressed msg ({}): {} -> {} bytes",
+            self.data.address,
+            comp_type,
+            data_buf.len(),
+            compressed_buf.len()
+        );
+
+        // discard compression if it doesn't help
+        if compressed_buf.len() >= data_buf.len() {
+            return Ok(message);
+        }
+
+        let compression_header = CompressionHeader {
+            compression_type: comp_type,
+            uncompressed_size: NonZeroU32::new(data_buf.len() as u32).unwrap(),
         };
 
         let reliability = match message {

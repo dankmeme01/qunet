@@ -5,9 +5,10 @@ mod msg_data;
 mod raw;
 
 pub use buffer_kind::BufferKind;
+pub use meta::CompressionType;
 pub(crate) use meta::{
-    CompressionHeader, CompressionType, FragmentationHeader, QunetMessageBareMeta,
-    QunetMessageMeta, ReliabilityHeader,
+    CompressionHeader, FragmentationHeader, QunetMessageBareMeta, QunetMessageMeta,
+    ReliabilityHeader,
 };
 pub use msg_data::MsgData;
 pub use raw::{QUNET_SMALL_MESSAGE_SIZE, QunetRawMessage};
@@ -746,7 +747,7 @@ impl QunetMessage {
                     Some(CompressionHeader { compression_type, .. }) => match compression_type {
                         CompressionType::Zstd => 0b01,
                         CompressionType::ZstdNoDict => 0b10,
-                        CompressionType::Lz4 => panic!("lz4 support is deprecated"),
+                        CompressionType::Lz4 => 0b11,
                     },
 
                     None => 0b00,
