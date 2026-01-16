@@ -87,11 +87,11 @@ impl<H: AppHandler> TcpServerListener<H> {
                     }
                 },
                 Ok(Err(err)) => {
-                    warn!("Client {addr} (TCP) failed to complete handshake: {err}");
+                    debug!("Client {addr} (TCP) failed to complete handshake: {err}");
                 }
 
                 Err(_) => {
-                    warn!(
+                    debug!(
                         "Client {addr} (TCP) did not complete the handshake in time, closing connection"
                     );
                 }

@@ -142,11 +142,11 @@ impl<H: AppHandler> QuicServerListener<H> {
                 },
 
                 Ok(Err(err)) => {
-                    warn!("Client {} (QUIC) failed to complete handshake: {err}", remote_addr);
+                    debug!("Client {} (QUIC) failed to complete handshake: {err}", remote_addr);
                 }
 
                 Err(_) => {
-                    warn!(
+                    debug!(
                         "Client {} (QUIC) did not complete the handshake in time, closing connection",
                         remote_addr
                     );
