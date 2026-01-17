@@ -16,7 +16,16 @@ impl RateLimiter {
         assert!(max > 0 && per_sec > 0, "per_sec and max must be greater than 0");
 
         // instead of 1 second, use 2^30 nanoseconds, so that if per_sec is a power of two, we can skip the division :)
-        let mut ns_to_refill_one = 1_073_741_824u64 / per_sec as u64;
+        let ns_to_refill_one = 1_073_741_824u64 / per_sec as u64;
+
+        Self::new_precise(ns_to_refill_one, max)
+    }
+
+    /// Create a rate limiter with a more precise refill rate
+    /// Pass how many nanoseconds it takes to refill one token
+    pub fn new_precise(mut ns_to_refill_one: u64, max: u32) -> Self {
+        assert!(max > 0, "max must be greater than 0");
+
         if ns_to_refill_one == 0 {
             ns_to_refill_one = 1;
         }
