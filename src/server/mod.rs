@@ -517,7 +517,8 @@ impl<H: AppHandler> Server<H> {
         let addr = transport.address();
 
         // does this connection exist at all?
-        let Some(client) = self.clients.get(&connection_id) else {
+        let client = self.clients.get(&connection_id).map(|x| x.clone());
+        let Some(client) = client else {
             debug!(
                 "[{addr}] Attempted to recover a connection that is not suspended ({connection_id})",
             );
