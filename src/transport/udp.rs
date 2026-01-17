@@ -161,6 +161,8 @@ impl ClientUdpTransport {
         Ok(Some(message))
     }
 
+    /// Sends a message over the transport, potentially marking as reliable.
+    /// Reliable parameter does nothing if this isn't a data message.
     pub async fn send_message(
         &mut self,
         transport_data: &mut QunetTransportData,

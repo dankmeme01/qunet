@@ -24,8 +24,9 @@ use crate::{
     message::{BufferKind, MsgData, QUNET_SMALL_MESSAGE_SIZE, QunetMessage, channel},
     protocol::{DEFAULT_PORT, MAJOR_VERSION, QunetConnectionError, UDP_PACKET_LIMIT},
     transport::{
-        QunetTransport, QunetTransportKind, TransportError, TransportErrorOutcome,
-        compression::CompressionHandlerImpl, tcp::ClientTcpTransport, udp::ClientUdpTransport,
+        QunetMessageOpts, QunetTransport, QunetTransportKind, TransportError,
+        TransportErrorOutcome, compression::CompressionHandlerImpl, tcp::ClientTcpTransport,
+        udp::ClientUdpTransport,
     },
 };
 
@@ -110,7 +111,7 @@ enum ConnectionState {
 
 struct QueuedMessage {
     buf: BufferKind,
-    reliable: bool,
+    opts: QunetMessageOpts,
 }
 
 pub struct Client<H: EventHandler> {
@@ -234,15 +235,6 @@ impl<H: EventHandler> Client<H> {
         self.send_data_bufkind(buf)
     }
 
-    pub fn send_data_bufkind(&self, data: BufferKind) -> bool {
-        if !self.connected() {
-            warn!("Cannot send data, client is not connected");
-            return false;
-        }
-
-        self.tx_msg_queue.0.send(QueuedMessage { buf: data, reliable: true })
-    }
-
     /// Send an unreliable data message to the server
     pub async fn send_unreliable_data(&self, data: &[u8]) -> bool {
         let mut buf = self.request_buffer(data.len());
@@ -250,13 +242,21 @@ impl<H: EventHandler> Client<H> {
         self.send_unreliable_data_bufkind(buf)
     }
 
+    pub fn send_data_bufkind(&self, data: BufferKind) -> bool {
+        self.send_data_bufkind_opts(data, QunetMessageOpts::default())
+    }
+
     pub fn send_unreliable_data_bufkind(&self, data: BufferKind) -> bool {
+        self.send_data_bufkind_opts(data, QunetMessageOpts::unreliable())
+    }
+
+    pub fn send_data_bufkind_opts(&self, buf: BufferKind, opts: QunetMessageOpts) -> bool {
         if !self.connected() {
             warn!("Cannot send data, client is not connected");
             return false;
         }
 
-        self.tx_msg_queue.0.send(QueuedMessage { buf: data, reliable: false })
+        self.tx_msg_queue.0.send(QueuedMessage { buf, opts })
     }
 
     fn _swap_state(&self, from: ConnectionState, to: ConnectionState) -> bool {
@@ -392,7 +392,7 @@ impl<H: EventHandler> Client<H> {
 
                 _ = self.disconnect_notify.notified() => {
                     let compressor = self.compressor.lock().await;
-                    let _ = transport.send_message(QunetMessage::ClientClose { dont_terminate: false }, false, &*compressor).await;
+                    let _ = transport.send_message(QunetMessage::ClientClose { dont_terminate: false }, None, &*compressor).await;
                     transport.data.closed = true;
                     Ok(())
                 }
@@ -400,7 +400,7 @@ impl<H: EventHandler> Client<H> {
                 msg = self.tx_msg_queue.1.recv() => match msg {
                     Some(msg) => {
                         let compressor = self.compressor.lock().await;
-                        transport.send_message(QunetMessage::new_data(msg.buf), msg.reliable, &*compressor).await
+                        transport.send_message(QunetMessage::new_data(msg.buf), Some(msg.opts), &*compressor).await
                     },
 
                     None => Err(TransportError::MessageChannelClosed),
@@ -790,7 +790,7 @@ impl<H: EventHandler> Client<H> {
                         frag_limit: UDP_PACKET_LIMIT as u16,
                         qdb_hash: [0u8; 16],
                     },
-                    false,
+                    None,
                     &*self.compressor.lock().await,
                 )
                 .await?;

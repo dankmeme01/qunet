@@ -11,13 +11,13 @@ use tokio::sync::Notify;
 use crate::{
     message::{BufferKind, channel},
     server::{Server, app_handler::AppHandler},
-    transport::{QunetTransport, TransportType},
+    transport::{QunetMessageOpts, QunetTransport, TransportType},
 };
 
 pub enum ClientNotification {
     DataMessage {
         buf: BufferKind,
-        reliable: bool,
+        opts: QunetMessageOpts,
     },
     RetransmitHandshake,
 
@@ -67,17 +67,27 @@ impl<H: AppHandler> ClientState<H> {
     }
 
     pub fn send_data_bufkind(&self, msg: BufferKind) -> bool {
-        self.notif_tx.send(ClientNotification::DataMessage { buf: msg, reliable: true })
+        self.send_data_bufkind_opts(msg, Default::default())
+    }
+
+    pub fn send_unreliable_data_bufkind(&self, msg: BufferKind) -> bool {
+        self.send_data_bufkind_opts(
+            msg,
+            QunetMessageOpts {
+                reliable: false,
+                ..Default::default()
+            },
+        )
+    }
+
+    pub fn send_data_bufkind_opts(&self, msg: BufferKind, opts: QunetMessageOpts) -> bool {
+        self.notif_tx.send(ClientNotification::DataMessage { buf: msg, opts })
     }
 
     pub async fn send_unreliable_data(&self, data: &[u8], server: &Server<H>) -> bool {
         let mut buf = server.request_buffer(data.len());
         buf.append_bytes(data);
         self.send_data_bufkind(buf)
-    }
-
-    pub fn send_unreliable_data_bufkind(&self, msg: BufferKind) -> bool {
-        self.notif_tx.send(ClientNotification::DataMessage { buf: msg, reliable: false })
     }
 
     pub fn retransmit_handshake(&self) -> bool {

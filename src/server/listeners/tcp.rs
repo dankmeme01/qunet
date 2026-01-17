@@ -2,7 +2,7 @@ use std::{marker::PhantomData, net::SocketAddr, sync::Arc, time::Duration};
 
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 use crate::{
     protocol::MAJOR_VERSION,

@@ -323,7 +323,7 @@ impl QunetTransport {
         let since_last_exchange = now.duration_since(self.data.last_data_exchange);
 
         if since_last_exchange >= self.data.keepalive_interval {
-            self.send_message(QunetMessage::Keepalive { timestamp: 0 }, true, &()).await?;
+            self.send_message(QunetMessage::Keepalive { timestamp: 0 }, None, &()).await?;
         }
 
         if since_last_exchange >= self.data.idle_timeout {
@@ -353,11 +353,14 @@ impl QunetTransport {
     pub async fn send_message<C: CompressionHandler>(
         &mut self,
         mut message: QunetMessage,
-        reliable: bool,
+        opts: Option<QunetMessageOpts>,
         ch: &C,
     ) -> Result<(), TransportError> {
+        let opts = opts.unwrap_or_default();
+
         // Compress this message?
-        if let QunetMessage::Data { .. } = &message
+        if message.is_data()
+            && !opts.uncompressed
             && let Some(comp_type) = (self.data.compression_func)(message.data_bytes().unwrap())
         {
             message = self.do_compress_data_message(message, comp_type, ch).await?;
@@ -365,7 +368,7 @@ impl QunetTransport {
 
         match &mut self.kind {
             QunetTransportKind::Udp(udp) => {
-                udp.send_message(&mut self.data, message, reliable).await
+                udp.send_message(&mut self.data, message, opts.reliable).await
             }
 
             QunetTransportKind::Tcp(tcp) => tcp.send_message(&mut self.data, message).await,
@@ -385,7 +388,7 @@ impl QunetTransport {
     ) -> Result<(), TransportError> {
         let message = QunetMessage::HandshakeFailure { error_code, reason };
 
-        self.send_message(message, false, ch).await
+        self.send_message(message, None, ch).await
     }
 
     async fn do_compress_data_message<C: CompressionHandler>(
@@ -473,4 +476,28 @@ pub fn exponential_moving_average<T: Into<f64>>(current: T, previous: T, alpha: 
     let previous = previous.into();
 
     alpha * current + (1.0 - alpha) * previous
+}
+
+#[derive(Clone, Copy)]
+pub struct QunetMessageOpts {
+    pub reliable: bool,
+    pub uncompressed: bool,
+}
+
+impl QunetMessageOpts {
+    pub fn unreliable() -> Self {
+        Self {
+            reliable: false,
+            ..Default::default()
+        }
+    }
+}
+
+impl Default for QunetMessageOpts {
+    fn default() -> Self {
+        Self {
+            reliable: true,
+            uncompressed: false,
+        }
+    }
 }

@@ -523,7 +523,7 @@ impl<H: AppHandler> Server<H> {
                 "[{addr}] Attempted to recover a connection that is not suspended ({connection_id})",
             );
 
-            let _ = transport.send_message(QunetMessage::ReconnectFailure, false, &()).await;
+            let _ = transport.send_message(QunetMessage::ReconnectFailure, None, &()).await;
 
             return;
         };
@@ -547,7 +547,7 @@ impl<H: AppHandler> Server<H> {
             "[{addr}] Timed out waiting for a connection to suspend to handle a reconnect, will kill it ({connection_id})",
         );
 
-        let _ = transport.send_message(QunetMessage::ReconnectFailure, false, &()).await;
+        let _ = transport.send_message(QunetMessage::ReconnectFailure, None, &()).await;
     }
 
     async fn send_handshake_error(
@@ -718,7 +718,7 @@ impl<H: AppHandler> Server<H> {
                 transport.run_server_setup(self).await?;
 
                 if let Err(e) =
-                    transport.send_message(QunetMessage::ReconnectSuccess, false, &()).await
+                    transport.send_message(QunetMessage::ReconnectSuccess, None, &()).await
                 {
                     // something really weird happened
                     warn!(
@@ -769,7 +769,7 @@ impl<H: AppHandler> Server<H> {
 
         // we don't care if it fails here
         let _ = transport
-            .send_message(QunetMessage::ServerClose { error_code, error_message }, false, &())
+            .send_message(QunetMessage::ServerClose { error_code, error_message }, None, &())
             .await;
 
         suspend
@@ -808,7 +808,7 @@ impl<H: AppHandler> Server<H> {
                     let _ = tokio::time::timeout(Duration::from_secs(1),
                         transport.send_message(
                             QunetMessage::ServerClose { error_code: QunetConnectionError::ServerShutdown, error_message: None },
-                        false, self)
+                            None, self)
                     ).await;
 
                     break;
@@ -852,10 +852,10 @@ impl<H: AppHandler> Server<H> {
         send_qdb: bool,
     ) -> Result<(), TransportError> {
         match notif {
-            ClientNotification::DataMessage { buf, reliable } => {
+            ClientNotification::DataMessage { buf, opts } => {
                 self.with_stat_tracker(|s| s.data_downstream(transport.connection_id(), &buf));
 
-                transport.send_message(QunetMessage::new_data(buf), reliable, self).await
+                transport.send_message(QunetMessage::new_data(buf), Some(opts), self).await
             }
 
             ClientNotification::RetransmitHandshake => {
@@ -892,7 +892,7 @@ impl<H: AppHandler> Server<H> {
                             error_code: QunetConnectionError::Custom,
                             error_message: Some(reason),
                         },
-                        false,
+                        None,
                         &(),
                     ),
                 )
@@ -925,7 +925,7 @@ impl<H: AppHandler> Server<H> {
                             timestamp: *timestamp,
                             data: None,
                         },
-                        false,
+                        None,
                         self,
                     )
                     .await?;
@@ -959,7 +959,7 @@ impl<H: AppHandler> Server<H> {
                             QunetMessage::ConnectionError {
                                 error_code: QunetConnectionError::QdbUnavailable,
                             },
-                            false,
+                            None,
                             self,
                         )
                         .await?;
@@ -971,7 +971,7 @@ impl<H: AppHandler> Server<H> {
                             QunetMessage::ConnectionError {
                                 error_code: QunetConnectionError::QdbChunkTooLong,
                             },
-                            false,
+                            None,
                             self,
                         )
                         .await?;
@@ -986,7 +986,7 @@ impl<H: AppHandler> Server<H> {
                             QunetMessage::ConnectionError {
                                 error_code: QunetConnectionError::QdbInvalidChunk,
                             },
-                            false,
+                            None,
                             self,
                         )
                         .await?;
@@ -1003,7 +1003,7 @@ impl<H: AppHandler> Server<H> {
                             size: size as u32,
                             qdb_data: self.qdb_data.clone(),
                         },
-                        false,
+                        None,
                         self,
                     )
                     .await?;
