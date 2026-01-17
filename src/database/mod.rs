@@ -1,4 +1,4 @@
-use std::io;
+use std::{fs::File, io, path::Path};
 
 use thiserror::Error;
 
@@ -120,6 +120,12 @@ impl QunetDatabase {
         }
 
         Ok(db)
+    }
+
+    pub fn from_file(path: &Path) -> Result<QunetDatabase, DecodeError> {
+        let file = File::open(path)?;
+        let mut reader = io::BufReader::new(file);
+        QunetDatabase::decode(&mut reader)
     }
 
     fn _decode_section<R: io::Read>(

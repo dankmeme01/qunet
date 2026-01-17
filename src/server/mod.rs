@@ -371,7 +371,6 @@ impl<H: AppHandler> Server<H> {
         ServerOutcome::GracefulShutdown
     }
 
-    #[allow(clippy::await_holding_lock)]
     async fn graceful_shutdown(&self) -> Result<(), ServerOutcome> {
         trace!("running pre-shutdown hook");
         self.app_handler.pre_shutdown(self).await.map_err(ServerOutcome::CustomError)?;
@@ -382,7 +381,7 @@ impl<H: AppHandler> Server<H> {
 
         trace!("aborting all schedules");
         {
-            let mut schedules = self.schedules.lock();
+            let mut schedules = std::mem::take(&mut *self.schedules.lock());
             schedules.abort_all();
 
             while !schedules.is_empty() {
