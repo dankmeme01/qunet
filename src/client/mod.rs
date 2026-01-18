@@ -137,8 +137,7 @@ impl<H: EventHandler> Client<H> {
             builder.event_handler.take().expect("Event handler must be set in the builder");
 
         // init buffer pool
-        // TODO: make this configurable?
-        let buffer_pool = Arc::new(HybridBufferPool::new(1024 * 64, 4 * 1024 * 1024));
+        let buffer_pool = Arc::new(HybridBufferPool::new(1024 * 8, 512 * 1024));
 
         let compressor = CompressionHandlerImpl::new(buffer_pool.clone());
 

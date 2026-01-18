@@ -2,7 +2,6 @@ use std::ops::Deref;
 
 use crate::buffers::PooledBuffer;
 
-// TODO: measure which size we really should aim for
 pub const QUNET_SMALL_MESSAGE_SIZE: usize = 71; // 119
 
 pub enum QunetRawMessage {

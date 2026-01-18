@@ -90,7 +90,6 @@ impl<'a> QunetMessageMeta<'a> {
         let bits = Bits::new(header_byte);
         let mut reader = ByteReader::new(&data[1..]);
 
-        // TODO: likewise maybe manual bit manipulation is faster
         let compression_header = match bits.get_multiple_bits(0, 1) {
             0b00 => None,
             0b01 => Some(CompressionHeader {

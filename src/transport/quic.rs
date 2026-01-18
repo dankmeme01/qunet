@@ -18,7 +18,7 @@ impl ClientQuicTransport {
     pub fn new(_conn: s2n_quic::Connection, stream: BidirectionalStream) -> Self {
         Self {
             stream,
-            buffer: vec![0u8; 512], // TODO: see comment in ClientTcpTransport
+            buffer: vec![0u8; 512],
             buffer_pos: 0,
         }
     }

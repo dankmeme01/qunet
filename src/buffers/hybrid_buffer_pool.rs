@@ -19,7 +19,6 @@ impl HybridBufferPool {
     /// These are very soft limits, and should only be considered as hints.
     pub fn new(initial_mem: usize, max_mem: usize) -> Self {
         // kind of arbitrary
-        // TODO: tweak these values more
         let pool_attrs = [
             (256usize, 6usize, 24usize),
             (512, 6, 24),

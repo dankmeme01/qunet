@@ -28,7 +28,7 @@ impl ClientTcpTransport {
         Self {
             sock_read,
             sock_write,
-            buffer: vec![0u8; 512], // TODO: if it's a significant performance issue, don't zero the bytes, also maybe make size configurable
+            buffer: vec![0u8; 512],
             buffer_pos: 0,
         }
     }

@@ -488,7 +488,6 @@ impl QunetMessage {
             // data message, take care of the optional compression header
             let bits = Bits::new(data[0]);
 
-            // TODO: benchmark if bits is fast enough, maybe just use manual bit manip
             let compression_num =
                 bits.get_multiple_bits(MSG_DATA_BIT_COMPRESSION_1, MSG_DATA_BIT_COMPRESSION_2);
 
