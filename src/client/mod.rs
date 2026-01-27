@@ -7,7 +7,11 @@ use std::{
 };
 
 use atomic_enum::atomic_enum;
-use hickory_resolver::{Resolver, config::*, name_server::TokioConnectionProvider};
+use hickory_resolver::{
+    Resolver,
+    config::{LookupIpStrategy, ResolverOpts},
+    name_server::TokioConnectionProvider,
+};
 use nohash_hasher::IntMap;
 use socket2::Domain;
 use thiserror::Error;
@@ -15,7 +19,7 @@ use tokio::{
     net::UdpSocket,
     sync::{Mutex, Notify},
 };
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 use crate::{
     buffers::{BufPool, ByteWriter, HybridBufferPool},
@@ -158,13 +162,12 @@ impl<H: EventHandler> Client<H> {
     pub(crate) async fn setup(&mut self) -> Result<(), ClientOutcome> {
         self.event_handler.pre_setup(self).await.map_err(ClientOutcome::CustomError)?;
 
-        self.resolver = Some(
-            Resolver::builder_with_config(
-                ResolverConfig::cloudflare(),
-                TokioConnectionProvider::default(),
-            )
-            .build(),
-        );
+        let mut opts = ResolverOpts::default();
+        opts.ip_strategy = LookupIpStrategy::Ipv4AndIpv6;
+
+        // Note here: builder_tokio automatically uses /etc/resolv.conf for us
+        // This does not happen in `builder_with_config` for some reason
+        self.resolver = Some(Resolver::builder_tokio().unwrap().with_options(opts).build());
 
         self.event_handler.post_setup(self).await.map_err(ClientOutcome::CustomError)?;
 
@@ -475,8 +478,12 @@ impl<H: EventHandler> Client<H> {
     ) -> Result<QunetTransport, ConnectionError> {
         let resolver = self.resolver.as_ref().unwrap();
 
+        trace!("looking up {hostname}");
+
         let res = resolver.lookup_ip(hostname).await?;
         let addrs: Vec<_> = res.iter().map(|ip| SocketAddr::new(ip, port)).collect();
+
+        debug!("{hostname} (A/AAAA) -> {addrs:?}");
 
         if addrs.is_empty() {
             return Err(ConnectionError::DnsNoResults);
@@ -494,6 +501,8 @@ impl<H: EventHandler> Client<H> {
     ) -> Result<QunetTransport, ConnectionError> {
         let resolver = self.resolver.as_ref().unwrap();
 
+        trace!("looking up SRV {hostname}");
+
         let res = resolver.srv_lookup(hostname).await?;
         let record = match res.iter().next() {
             Some(record) => record,
@@ -508,6 +517,8 @@ impl<H: EventHandler> Client<H> {
             })
             .collect();
 
+        trace!("{hostname} (SRV) -> {sockaddrs:?}");
+
         if sockaddrs.is_empty() {
             return Err(ConnectionError::DnsNoResults);
         }
@@ -519,10 +530,16 @@ impl<H: EventHandler> Client<H> {
 
     async fn _dns_post_query(
         &self,
-        addrs: Vec<SocketAddr>,
+        mut addrs: Vec<SocketAddr>,
         ty: ConnectionType,
         domain_name: Option<&str>,
     ) -> Result<QunetTransport, ConnectionError> {
+        // sort addresses by IP version, prefer IPv6 over IPv4
+        addrs.sort_unstable_by_key(|addr| match addr.ip() {
+            IpAddr::V6(_) => 0,
+            IpAddr::V4(_) => 1,
+        });
+
         // if connection type is Qunet, we need to try and ping the addresses, otherwise connect directly
         if ty == ConnectionType::Qunet {
             self._ping_addrs(addrs, domain_name).await
@@ -537,21 +554,15 @@ impl<H: EventHandler> Client<H> {
 
     async fn _ping_addrs(
         &self,
-        mut addrs: Vec<SocketAddr>,
+        addrs: Vec<SocketAddr>,
         domain_name: Option<&str>,
     ) -> Result<QunetTransport, ConnectionError> {
-        // sort addresses by IP version, prefer IPv6 over IPv4
-        addrs.sort_unstable_by_key(|addr| match addr.ip() {
-            IpAddr::V6(_) => 0,
-            IpAddr::V4(_) => 1,
-        });
-
         let bind_addr = "[::]:0".parse::<SocketAddr>().unwrap();
 
         let socket = socket2::Socket::new(Domain::IPV6, socket2::Type::DGRAM, None)
             .expect("Failed to create UDP socket");
 
-        socket.set_only_v6(false).expect("Failed to set IPV6_V6ONLY to false");
+        let _ = socket.set_only_v6(false);
         socket.set_nonblocking(true).expect("Failed to set socket to non-blocking");
         socket.bind(&bind_addr.into()).expect("Failed to bind UDP socket");
         let socket =
@@ -704,6 +715,8 @@ impl<H: EventHandler> Client<H> {
         domain_name: Option<&str>,
     ) -> Result<QunetTransport, ConnectionError> {
         self._set_state(ConnectionState::Connecting);
+
+        debug!("trying all until connection: {conns:?}");
 
         for (addr, ty) in conns {
             match self._try_connect(*addr, *ty, domain_name).await {
