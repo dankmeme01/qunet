@@ -330,22 +330,22 @@ impl ReliableStore {
 
     #[inline]
     fn calc_retransmission_deadline(&self, nth_attempt: usize) -> Duration {
-        let mut rtt = Duration::from_micros(self.avg_rtt_micros as u64);
-
-        if rtt.is_zero() {
-            rtt = Duration::from_millis(250);
+        let mut micros = self.avg_rtt_micros as u64;
+        if micros == 0 {
+            micros = 200_000;
         }
 
-        let ack_delay = self.calc_ack_deadline();
+        // rtt * 1.6
+        let mut base = (micros * 8) / 5;
+        base = base.max(175_000); // min 175ms
 
-        let sum = (rtt + ack_delay).as_secs_f64();
-
-        Duration::from_secs_f64(sum * 1.5 + (nth_attempt as f64 * 0.075))
+        let shift = nth_attempt.min(5);
+        Duration::from_micros(base << shift)
     }
 
     #[inline]
     const fn calc_ack_deadline(&self) -> Duration {
-        Duration::from_millis(100)
+        Duration::from_millis(75)
     }
 
     fn process_acks(&mut self, acks: &[u16]) {
