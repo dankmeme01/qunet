@@ -323,9 +323,10 @@ impl ReliableStore {
 
     /// Returns whether there are any unacked remote messages that must be acknowledged as soon as possible.
     pub fn has_urgent_outgoing_acks(&self) -> bool {
-        let lim = self.calc_ack_deadline();
+        let lim = Self::calc_ack_deadline();
+        let now = Instant::now();
 
-        self.remote_unacked.iter().any(|msg| msg.received_at.elapsed() > lim)
+        self.remote_unacked.iter().any(|msg| now.duration_since(msg.received_at) > lim)
     }
 
     #[inline]
@@ -335,8 +336,14 @@ impl ReliableStore {
             micros = 200_000;
         }
 
-        // rtt * 1.6
-        let mut base = (micros * 8) / 5;
+        // unlike in qunet-cpp, we don't have the transport RTT (only client can calculate it),
+        // we only have the ReliableStore RTT, which already includes the variable ACK delay (0 to 75 ms)
+        // for this reason we change multiplier to 1.5 and multiply ack delay by 0.8
+
+        const ACK_DELAY: u64 = ReliableStore::calc_ack_deadline().as_micros() as u64 * 8 / 10;
+
+        // rtt * 1.6 + ack_delay
+        let mut base = (micros * 3) / 2 + ACK_DELAY;
         base = base.max(175_000); // min 175ms
 
         let shift = nth_attempt.min(5);
@@ -344,7 +351,7 @@ impl ReliableStore {
     }
 
     #[inline]
-    const fn calc_ack_deadline(&self) -> Duration {
+    const fn calc_ack_deadline() -> Duration {
         Duration::from_millis(75)
     }
 
@@ -389,7 +396,7 @@ impl ReliableStore {
             return min_expiry;
         }
 
-        let ack_delay = self.calc_ack_deadline();
+        let ack_delay = Self::calc_ack_deadline();
         let now = Instant::now();
 
         for msg in &self.local_unacked {
