@@ -407,7 +407,7 @@ impl<H: AppHandler> Server<H> {
     pub(crate) fn accept_connection(self: ServerHandle<H>, mut transport: QunetTransport) {
         // spawn a new task for the connection
         self.clone().conn_tracker.spawn(async move {
-            let client_ver = transport.data.protocol_version;
+            let client_ver = transport.data.protocol_version();
             let address = transport.address();
 
             // send an error to the client if the version is not compatible
@@ -456,7 +456,7 @@ impl<H: AppHandler> Server<H> {
 
             self.connected_addrs.insert(address, connection_id);
 
-            let client_qdb_hash = &transport.data.initial_qdb_hash[..];
+            let client_qdb_hash = &transport.data.setup.initial_qdb_hash[..];
             let server_qdb_hash = &self.qdb_hash[..16];
 
             let send_qdb = client_qdb_hash != server_qdb_hash && !self.qdb_data.is_empty();

@@ -59,13 +59,34 @@ pub(crate) enum QunetTransportKind {
     Quic(ClientQuicTransport),
 }
 
-pub(crate) struct QunetTransportData {
-    pub connection_id: u64,
-    pub closed: bool,
-    pub address: SocketAddr,
+// This is for data that needs to be persistent across multiple different server transports for the same client transport,
+// for example that may happen if the user disconnects and tries reconnecting over the same transport
+#[derive(Clone)]
+pub(crate) struct QunetTransportSetupData {
     pub protocol_version: ProtocolVersion,
     pub initial_qdb_hash: [u8; 16],
     pub message_size_limit: usize,
+}
+
+impl QunetTransportSetupData {
+    pub fn new(
+        protocol_version: ProtocolVersion,
+        initial_qdb_hash: [u8; 16],
+        message_size_limit: usize,
+    ) -> Self {
+        Self {
+            protocol_version,
+            initial_qdb_hash,
+            message_size_limit,
+        }
+    }
+}
+
+pub(crate) struct QunetTransportData {
+    pub address: SocketAddr,
+    pub setup: QunetTransportSetupData,
+    pub connection_id: u64,
+    pub closed: bool,
     pub buffer_pool: Arc<HybridBufferPool>,
     pub idle_timeout: Duration,
     pub last_data_exchange: Instant,
@@ -96,6 +117,14 @@ impl QunetTransportData {
     fn update_exchange_time(&mut self) {
         self.last_data_exchange = Instant::now();
     }
+
+    pub fn message_size_limit(&self) -> usize {
+        self.setup.message_size_limit
+    }
+
+    pub fn protocol_version(&self) -> ProtocolVersion {
+        self.setup.protocol_version
+    }
 }
 
 impl QunetTransport {
@@ -106,13 +135,17 @@ impl QunetTransport {
         initial_qdb_hash: [u8; 16],
         server: ServerHandle<H>,
     ) -> Self {
+        let setup = QunetTransportSetupData::new(
+            protocol_version,
+            initial_qdb_hash,
+            server.message_size_limit(),
+        );
+
         Self::new(
             false,
             kind,
             address,
-            protocol_version,
-            initial_qdb_hash,
-            server.message_size_limit(),
+            setup,
             server.buffer_pool.clone(),
             server.listener_opts.idle_timeout,
             Duration::from_secs(2u64.pow(30)), // server never sends keepalives
@@ -133,13 +166,17 @@ impl QunetTransport {
             protocol::DEFAULT_MESSAGE_SIZE_LIMIT, server::builder::should_compress_adaptive,
         };
 
+        let setup = QunetTransportSetupData::new(
+            protocol_version,
+            initial_qdb_hash,
+            DEFAULT_MESSAGE_SIZE_LIMIT,
+        );
+
         Self::new(
             true,
             kind,
             address,
-            protocol_version,
-            initial_qdb_hash,
-            DEFAULT_MESSAGE_SIZE_LIMIT,
+            setup,
             client.buffer_pool.clone(),
             Duration::from_secs(60),
             Duration::from_secs(30),
@@ -153,9 +190,7 @@ impl QunetTransport {
         is_client: bool,
         kind: QunetTransportKind,
         address: SocketAddr,
-        protocol_version: ProtocolVersion,
-        initial_qdb_hash: [u8; 16],
-        message_size_limit: usize,
+        setup: QunetTransportSetupData,
         buffer_pool: Arc<HybridBufferPool>,
         idle_timeout: Duration,
         keepalive_interval: Duration,
@@ -172,9 +207,7 @@ impl QunetTransport {
                 address,
                 connection_id: 0,
                 closed: false,
-                protocol_version,
-                initial_qdb_hash,
-                message_size_limit,
+                setup,
                 buffer_pool,
                 last_data_exchange: Instant::now(),
                 idle_timeout,

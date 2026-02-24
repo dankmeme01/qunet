@@ -29,7 +29,7 @@ pub async fn receive_message<S: AsyncReadExt + Unpin>(
 
             if length == 0 {
                 return Err(TransportError::ZeroLengthMessage);
-            } else if length > transport_data.message_size_limit {
+            } else if length > transport_data.message_size_limit() {
                 return Err(TransportError::MessageTooLong);
             }
 
