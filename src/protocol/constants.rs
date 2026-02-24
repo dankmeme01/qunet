@@ -24,13 +24,6 @@ pub const MSG_DATA_START: u8 = 0x80;
 pub const MSG_DATA_END: u8 = 0xff;
 pub const MSG_DATA_MASK: u8 = MSG_DATA;
 
-pub const MSG_DATA_BIT_COMPRESSION_1: usize = 0; // least significant bit
-pub const MSG_DATA_BIT_COMPRESSION_2: usize = 1; // second least significant bit
-pub const MSG_DATA_BIT_RELIABILITY: usize = 4;
-pub const MSG_DATA_RELIABILITY_MASK: u8 = 1 << MSG_DATA_BIT_RELIABILITY;
-pub const MSG_DATA_BIT_FRAGMENTATION: usize = 5;
-pub const MSG_DATA_FRAGMENTATION_MASK: u8 = 1 << MSG_DATA_BIT_FRAGMENTATION;
-
 pub const MSG_DATA_LAST_FRAGMENT_MASK: u16 = 0x8000; // most significant bit of fragment index
 
 pub const PROTO_TCP: u8 = 0x01;

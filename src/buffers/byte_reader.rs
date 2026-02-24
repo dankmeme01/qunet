@@ -1,6 +1,5 @@
+use bitpiece::{BitPiece, BitStorage};
 use thiserror::Error;
-
-use crate::buffers::bits::{Bits, Integer};
 
 pub struct ByteReader<'a> {
     buffer: &'a [u8],
@@ -20,6 +19,8 @@ pub enum ByteReaderError {
     StringTooLong,
     #[error("String is not valid UTF-8")]
     InvalidUtf8,
+    #[error("Error decoding bitfield")]
+    InvalidBitfield,
 }
 
 type Result<T> = std::result::Result<T, ByteReaderError>;
@@ -160,14 +161,20 @@ impl<'a> ByteReader<'a> {
     }
 
     #[inline]
-    pub fn read_bits<T: Integer>(&mut self) -> Result<Bits<T>>
-    where
-        [(); T::SIZE]:,
-    {
-        let mut out = [0u8; T::SIZE];
-        self.read_bytes(&mut out)?;
+    pub fn read_bits<T: BitPiece>(&mut self) -> Result<T> {
+        let bytes = T::Bits::BITS.div_ceil(8);
 
-        Ok(Bits::new(T::decode(out)))
+        // little endian allows us to read up to 8 bytes into the buffer and then interpret it as a u64,
+        // only the needed bits will be set and upper part will be untouched so truncating to result type is safe
+        let mut out = [0u8; 8];
+        self.read_bytes(&mut out[..bytes])?;
+        let val = u64::from_le_bytes(out);
+
+        // this should never fail since we only read the needed amount of bytes
+        let storage =
+            <T::Bits as BitStorage>::from_u64(val).map_err(|_| ByteReaderError::InvalidBitfield)?;
+
+        T::try_from_bits(storage).ok_or(ByteReaderError::InvalidBitfield)
     }
 
     pub fn read_varint(&mut self) -> Result<i64> {

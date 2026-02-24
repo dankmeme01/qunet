@@ -1,5 +1,7 @@
 use std::io;
 
+use bitpiece::{BitPiece, BitStorage};
+
 pub struct BinaryWriter<'a, W: io::Write> {
     writer: &'a mut W,
 }
@@ -68,6 +70,16 @@ impl<'a, W: io::Write> BinaryWriter<'a, W> {
     #[inline]
     pub fn write_f64(&mut self, value: f64) -> io::Result<()> {
         self.writer.write_all(&value.to_le_bytes())
+    }
+
+    #[inline]
+    pub fn write_bits<T: BitPiece>(&mut self, value: T) -> io::Result<()> {
+        let bytes = T::Bits::BITS.div_ceil(8);
+        let bits = value.to_bits();
+        let bits_arr = bits.to_u64().to_le_bytes();
+
+        // once again little endian shenanigans, we know that the top `bytes` bytes are the actual important ones
+        self.write_bytes(&bits_arr[..bytes])
     }
 
     // https://github.com/gimli-rs/leb128/blob/master/src/lib.rs

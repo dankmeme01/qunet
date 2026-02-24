@@ -931,8 +931,8 @@ impl<H: AppHandler> Server<H> {
                     .await?;
             }
 
-            QunetMessage::ClientClose { dont_terminate } => {
-                if *dont_terminate {
+            QunetMessage::ClientClose { flags } => {
+                if flags.dont_terminate() {
                     // return an error, this will force the client to terminate with an error and suspend the connection
                     return Err(TransportError::SuspendRequested);
                 } else {

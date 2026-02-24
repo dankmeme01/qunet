@@ -25,7 +25,10 @@ use crate::{
     buffers::{BufPool, ByteWriter, HybridBufferPool},
     client::builder::ClientBuilder,
     database::QunetDatabase,
-    message::{BufferKind, MsgData, QUNET_SMALL_MESSAGE_SIZE, QunetMessage, channel},
+    message::{
+        BufferKind, ClientCloseFlags, MsgData, PingFlags, QUNET_SMALL_MESSAGE_SIZE, QunetMessage,
+        channel,
+    },
     protocol::{DEFAULT_PORT, ProtocolVersion, QunetConnectionError, UDP_PACKET_LIMIT},
     transport::{
         QunetMessageOpts, QunetTransport, QunetTransportKind, TransportError,
@@ -394,7 +397,8 @@ impl<H: EventHandler> Client<H> {
 
                 _ = self.disconnect_notify.notified() => {
                     let compressor = self.compressor.lock().await;
-                    let _ = transport.send_message(QunetMessage::ClientClose { dont_terminate: false }, None, &*compressor).await;
+                    let flags = ClientCloseFlags::default().with_dont_terminate(true);
+                    let _ = transport.send_message(QunetMessage::ClientClose { flags }, None, &*compressor).await;
                     transport.data.closed = true;
                     Ok(())
                 }
@@ -584,7 +588,10 @@ impl<H: EventHandler> Client<H> {
 
             addrmap.insert(ping_id, *addr);
 
-            let msg = QunetMessage::Ping { ping_id, omit_protocols: false };
+            let msg = QunetMessage::Ping {
+                ping_id,
+                flags: PingFlags::default(),
+            };
 
             let mut hdrwriter = ByteWriter::new(&mut hdrbuf);
             let mut bodywriter = ByteWriter::new(&mut bodybuf);

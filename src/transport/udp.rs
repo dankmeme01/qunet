@@ -9,7 +9,8 @@ use tracing::{debug, debug_span};
 use crate::{
     buffers::ByteWriter,
     message::{
-        BufferKind, DataMessageKind, QunetMessage, ReliabilityHeader, channel::RawMessageReceiver,
+        BufferKind, DataHeader, DataMessageKind, QunetMessage, ReliabilityHeader,
+        channel::RawMessageReceiver,
     },
     protocol::*,
     server::{Server, app_handler::AppHandler},
@@ -341,7 +342,8 @@ impl ClientUdpTransport {
             let prev_pos = header_writer.pos();
 
             // ... but add the fragmentation header!
-            header_buf[0] |= MSG_DATA_FRAGMENTATION_MASK;
+            let header_byte = DataHeader::from_bits(header_buf[0]);
+            header_buf[0] = header_byte.with_is_fragmented(true).to_bits();
 
             // this reinit is scuffed but needed
             let mut header_writer = ByteWriter::new(&mut header_buf);

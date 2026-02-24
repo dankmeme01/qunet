@@ -1,6 +1,5 @@
 mod binary_reader;
 mod binary_writer;
-mod bits;
 mod buffer_pool;
 mod byte_reader;
 mod byte_writer;
@@ -11,7 +10,6 @@ mod multi_buffer_pool;
 
 pub use binary_reader::BinaryReader;
 pub use binary_writer::BinaryWriter;
-pub use bits::Bits;
 pub use buffer_pool::{
     BufPool, BufferPool, BufferPoolStats, InnerPool, MpscInnerPool, NotifyInnerPool, PooledBuffer,
 };

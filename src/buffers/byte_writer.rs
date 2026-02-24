@@ -1,5 +1,6 @@
 use std::io::Write;
 
+use bitpiece::{BitPiece, BitStorage};
 use thiserror::Error;
 
 pub struct ByteWriter<'a> {
@@ -122,6 +123,21 @@ impl<'a> ByteWriter<'a> {
     #[inline]
     pub fn try_write_bool(&mut self, value: bool) -> Result<()> {
         self.try_write_u8(if value { 1 } else { 0 })
+    }
+
+    #[inline]
+    pub fn write_bits<T: BitPiece>(&mut self, value: T) {
+        self.try_write_bits(value).expect("Failed to write bits: out of bounds")
+    }
+
+    #[inline]
+    pub fn try_write_bits<T: BitPiece>(&mut self, value: T) -> Result<()> {
+        let bytes = T::Bits::BITS.div_ceil(8);
+        let bits = value.to_bits();
+        let bits_arr = bits.to_u64().to_le_bytes();
+
+        // once again little endian shenanigans, we know that the top `bytes` bytes are the actual important ones
+        self.try_write_bytes(&bits_arr[..bytes])
     }
 
     #[inline]

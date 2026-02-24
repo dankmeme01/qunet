@@ -7,7 +7,7 @@ use tracing::{debug, error, warn};
 
 use crate::{
     buffers::{BufferPool, ByteReader, ByteWriter},
-    message::{QUNET_SMALL_MESSAGE_SIZE, QunetMessage, QunetRawMessage},
+    message::{PingFlags, QUNET_SMALL_MESSAGE_SIZE, QunetMessage, QunetRawMessage},
     protocol::*,
     server::{
         Server, ServerHandle,
@@ -256,10 +256,9 @@ impl<H: AppHandler> UdpServerListener<H> {
     ) -> Result<(), ListenerError> {
         assert_eq!(reader.read_u8()?, MSG_PING);
         let ping_id = reader.read_u32()?;
-        let flags = reader.read_bits::<u8>()?;
-        let omit_protocols = flags.get_bit(0);
+        let flags = reader.read_bits::<PingFlags>()?;
 
-        if omit_protocols {
+        if flags.no_protocols() {
             let mut out_buf = [0u8; 10];
             let mut writer = ByteWriter::new(&mut out_buf);
 

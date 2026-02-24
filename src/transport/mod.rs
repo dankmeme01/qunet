@@ -404,6 +404,7 @@ impl QunetTransport {
         }
 
         let compressed_buf = match comp_type {
+            CompressionType::None => unreachable!(),
             CompressionType::Lz4 => ch.compress_lz4(data_buf)?,
             CompressionType::Zstd => ch.compress_zstd(data_buf, true)?,
             CompressionType::ZstdNoDict => ch.compress_zstd(data_buf, false)?,
@@ -455,6 +456,7 @@ impl QunetTransport {
         let unc_size = compression_header.uncompressed_size.get() as usize;
 
         let buf = match compression_header.compression_type {
+            CompressionType::None => unreachable!(),
             CompressionType::Zstd => ch.decompress_zstd(data, unc_size, true)?,
             CompressionType::ZstdNoDict => ch.decompress_zstd(data, unc_size, false)?,
             CompressionType::Lz4 => ch.decompress_lz4(data, unc_size)?,

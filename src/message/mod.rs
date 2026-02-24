@@ -1,11 +1,12 @@
+mod bitmasks;
 mod buffer_kind;
 pub mod channel;
 mod meta;
 mod msg_data;
 mod raw;
 
+pub use bitmasks::*;
 pub use buffer_kind::BufferKind;
-pub use meta::CompressionType;
 pub(crate) use meta::{
     CompressionHeader, FragmentationHeader, QunetMessageBareMeta, QunetMessageMeta,
     ReliabilityHeader,
@@ -17,9 +18,7 @@ use std::{borrow::Cow, ops::Deref, sync::Arc};
 use thiserror::Error;
 
 use crate::{
-    buffers::{
-        BinaryWriter, Bits, BufPool, ByteReader, ByteReaderError, ByteWriter, ByteWriterError,
-    },
+    buffers::{BinaryWriter, BufPool, ByteReader, ByteReaderError, ByteWriter, ByteWriterError},
     protocol::*,
 };
 
@@ -129,7 +128,7 @@ pub(crate) struct HandshakeQdbData {
 pub(crate) enum QunetMessage {
     Ping {
         ping_id: u32,
-        omit_protocols: bool,
+        flags: PingFlags,
     },
 
     #[allow(unused)] // Handled internally by transports.
@@ -167,7 +166,7 @@ pub(crate) enum QunetMessage {
     },
 
     ClientClose {
-        dont_terminate: bool,
+        flags: ClientCloseFlags,
     },
 
     ServerClose {
@@ -269,11 +268,9 @@ impl QunetMessage {
             match meta.bare.header_byte {
                 MSG_PING => {
                     let ping_id = reader.read_u32()?;
-                    let flags = reader.read_bits::<u8>()?;
+                    let flags = reader.read_bits::<PingFlags>()?;
 
-                    let omit_protocols = flags.get_bit(0);
-
-                    Ok(QunetMessage::Ping { ping_id, omit_protocols })
+                    Ok(QunetMessage::Ping { ping_id, flags })
                 }
 
                 MSG_PONG => {
@@ -360,10 +357,9 @@ impl QunetMessage {
                 }
 
                 MSG_CLIENT_CLOSE => {
-                    let flags = reader.read_bits::<u8>()?;
-                    let dont_terminate = flags.get_bit(0);
+                    let flags = reader.read_bits::<ClientCloseFlags>()?;
 
-                    Ok(QunetMessage::ClientClose { dont_terminate })
+                    Ok(QunetMessage::ClientClose { flags })
                 }
 
                 MSG_CLIENT_RECONNECT => {
@@ -488,12 +484,9 @@ impl QunetMessage {
 
         if data[0] & MSG_DATA_MASK != 0 {
             // data message, take care of the optional compression header
-            let bits = Bits::new(data[0]);
+            let hdr = DataHeader::from_bits(data[0]);
 
-            let compression_num =
-                bits.get_multiple_bits(MSG_DATA_BIT_COMPRESSION_1, MSG_DATA_BIT_COMPRESSION_2);
-
-            if compression_num == 0 {
+            if hdr.compression() == CompressionType::None {
                 // no compression, connection ID is right after the header byte
                 ByteReader::new(&data[1..]).read_u64().ok()
             } else {
@@ -616,16 +609,10 @@ impl QunetMessage {
         let mut body_writer = BinaryWriter::new(body_writer);
 
         match self {
-            Self::Ping { ping_id, omit_protocols } => {
+            Self::Ping { ping_id, flags } => {
                 header_writer.write_u8(MSG_PING)?;
                 body_writer.write_u32(*ping_id)?;
-
-                let mut flags = Bits::new(0u8);
-                if *omit_protocols {
-                    flags.set_bit(0);
-                }
-
-                body_writer.write_u8(flags.to_bits())?;
+                body_writer.write_bits(*flags)?;
             }
 
             Self::Keepalive { timestamp } => {
@@ -672,9 +659,9 @@ impl QunetMessage {
                 }
             }
 
-            Self::ClientClose { dont_terminate } => {
+            Self::ClientClose { flags } => {
                 header_writer.write_u8(MSG_CLIENT_CLOSE)?;
-                body_writer.write_bool(*dont_terminate)?;
+                body_writer.write_bits(*flags)?;
             }
 
             Self::ServerClose { error_code, error_message } => {
@@ -735,49 +722,36 @@ impl QunetMessage {
             unreachable!("encode_data_header called on non-data message: {}", self.type_str());
         };
 
-        let mut hb = Bits::new(0u8);
+        let mut hdr = DataHeader::default();
+        if omit_headers {
+            writer.write_u8(hdr.to_bits());
+            return Ok(());
+        }
 
-        // top bit is always set for data messages
-        hb.set_bit(7);
+        // set compression bits
+        if let Some(CompressionHeader { compression_type, .. }) = compression {
+            hdr.set_compression(*compression_type);
+        }
 
-        if !omit_headers {
-            // set compression bits
-            hb.set_multiple_bits(
-                MSG_DATA_BIT_COMPRESSION_1,
-                MSG_DATA_BIT_COMPRESSION_2,
-                match compression {
-                    Some(CompressionHeader { compression_type, .. }) => match compression_type {
-                        CompressionType::Zstd => 0b01,
-                        CompressionType::ZstdNoDict => 0b10,
-                        CompressionType::Lz4 => 0b11,
-                    },
-
-                    None => 0b00,
-                },
-            );
-
-            // set reliability bits
-            if reliability.is_some() {
-                hb.set_bit(MSG_DATA_BIT_RELIABILITY);
-            }
+        // set reliability bits
+        if reliability.is_some() {
+            hdr.set_is_reliable(true);
         }
 
         // write header byte
-        writer.write_u8(hb.to_bits());
+        writer.write_u8(hdr.to_bits());
 
-        if !omit_headers {
-            // write compression header
-            if let Some(CompressionHeader { uncompressed_size, .. }) = compression {
-                writer.write_u32(uncompressed_size.get());
-            }
+        // write compression header
+        if let Some(CompressionHeader { uncompressed_size, .. }) = compression {
+            writer.write_u32(uncompressed_size.get());
+        }
 
-            // write reliability header
-            if let Some(ReliabilityHeader { message_id, acks }) = reliability {
-                writer.write_u16(*message_id);
-                writer.write_u16(acks.len() as u16);
-                for ack in acks {
-                    writer.write_u16(*ack);
-                }
+        // write reliability header
+        if let Some(ReliabilityHeader { message_id, acks }) = reliability {
+            writer.write_u16(*message_id);
+            writer.write_u16(acks.len() as u16);
+            for ack in acks {
+                writer.write_u16(*ack);
             }
         }
 
