@@ -26,7 +26,7 @@ use crate::{
     client::builder::ClientBuilder,
     database::QunetDatabase,
     message::{BufferKind, MsgData, QUNET_SMALL_MESSAGE_SIZE, QunetMessage, channel},
-    protocol::{DEFAULT_PORT, MAJOR_VERSION, QunetConnectionError, UDP_PACKET_LIMIT},
+    protocol::{DEFAULT_PORT, ProtocolVersion, QunetConnectionError, UDP_PACKET_LIMIT},
     transport::{
         QunetMessageOpts, QunetTransport, QunetTransportKind, TransportError,
         TransportErrorOutcome, compression::CompressionHandlerImpl, tcp::ClientTcpTransport,
@@ -793,12 +793,12 @@ impl<H: EventHandler> Client<H> {
             };
 
             let mut transport =
-                QunetTransport::new_client(kind, addr, MAJOR_VERSION, [0u8; 16], self);
+                QunetTransport::new_client(kind, addr, ProtocolVersion::current(), [0u8; 16], self);
 
             transport
                 .send_message(
                     QunetMessage::HandshakeStart {
-                        qunet_major: MAJOR_VERSION,
+                        protocol_version: ProtocolVersion::current(),
                         frag_limit: UDP_PACKET_LIMIT as u16,
                         qdb_hash: [0u8; 16],
                     },

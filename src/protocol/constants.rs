@@ -1,7 +1,5 @@
 //! This file defines many constants of the protocol, and it must be updated in case of protocol changes.
 
-pub const MAJOR_VERSION: u16 = 1;
-
 pub const MSG_PING: u8 = 0x01;
 pub const MSG_PONG: u8 = 0x02;
 pub const MSG_KEEPALIVE: u8 = 0x03;

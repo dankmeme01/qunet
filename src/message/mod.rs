@@ -150,7 +150,7 @@ pub(crate) enum QunetMessage {
     },
 
     HandshakeStart {
-        qunet_major: u16,
+        protocol_version: ProtocolVersion,
         frag_limit: u16,
         qdb_hash: [u8; 16],
     },
@@ -316,13 +316,15 @@ impl QunetMessage {
                 }
 
                 MSG_HANDSHAKE_START => {
-                    let qunet_major = reader.read_u16()?;
+                    let major = reader.read_u16()?;
+                    let minor = reader.read_u16()?;
+
                     let frag_limit = reader.read_u16()?;
                     let mut qdb_hash = [0u8; 16];
                     reader.read_bytes(&mut qdb_hash)?;
 
                     Ok(QunetMessage::HandshakeStart {
-                        qunet_major,
+                        protocol_version: ProtocolVersion::new(major, minor),
                         frag_limit,
                         qdb_hash,
                     })
@@ -644,12 +646,13 @@ impl QunetMessage {
             }
 
             Self::HandshakeStart {
-                qunet_major,
+                protocol_version,
                 frag_limit,
                 qdb_hash,
             } => {
                 header_writer.write_u8(MSG_HANDSHAKE_START)?;
-                body_writer.write_u16(*qunet_major)?;
+                body_writer.write_u16(protocol_version.major)?;
+                body_writer.write_u16(protocol_version.minor)?;
                 body_writer.write_u16(*frag_limit)?;
                 body_writer.write_bytes(qdb_hash)?;
             }

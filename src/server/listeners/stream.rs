@@ -4,12 +4,12 @@ use tokio::io::AsyncReadExt;
 
 use crate::{
     buffers::ByteReader,
-    protocol::{HANDSHAKE_START_SIZE, MSG_CLIENT_RECONNECT, MSG_HANDSHAKE_START},
+    protocol::{HANDSHAKE_START_SIZE, MSG_CLIENT_RECONNECT, MSG_HANDSHAKE_START, ProtocolVersion},
     server::listeners::listener::ListenerError,
 };
 
 pub enum StreamFirstPacket {
-    HandshakeStart(u16, [u8; 16]),
+    HandshakeStart(ProtocolVersion, [u8; 16]),
     ClientReconnect(u64),
 }
 
@@ -48,12 +48,14 @@ pub async fn wait_for_handshake<S: AsyncReadExt + Unpin>(
         }
 
         MSG_HANDSHAKE_START => {
-            let qunet_major = reader.read_u16()?;
+            let major = reader.read_u16()?;
+            let minor = reader.read_u16()?;
+            let version = ProtocolVersion::new(major, minor);
             let _ = reader.read_u16()?; // we dont use udp frag limit in tcp
 
             let mut qdb_hash = [0u8; 16];
             reader.read_bytes(&mut qdb_hash)?;
-            Ok(StreamFirstPacket::HandshakeStart(qunet_major, qdb_hash))
+            Ok(StreamFirstPacket::HandshakeStart(version, qdb_hash))
         }
 
         _ => Err(ListenerError::MalformedHandshake),

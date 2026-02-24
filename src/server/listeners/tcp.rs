@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 
 use crate::{
-    protocol::MAJOR_VERSION,
+    protocol::ProtocolVersion,
     server::{
         ServerHandle,
         app_handler::AppHandler,
@@ -62,11 +62,11 @@ impl<H: AppHandler> TcpServerListener<H> {
 
             match tokio::time::timeout(Duration::from_secs(30), conn.wait_for_handshake()).await {
                 Ok(Ok(pkt)) => match pkt {
-                    StreamFirstPacket::HandshakeStart(qunet_major, qdb_hash) => {
+                    StreamFirstPacket::HandshakeStart(version, qdb_hash) => {
                         let transport: QunetTransport = QunetTransport::new_server(
                             QunetTransportKind::Tcp(ClientTcpTransport::new(conn.stream)),
                             conn.addr,
-                            qunet_major,
+                            version,
                             qdb_hash,
                             server.clone(),
                         );
@@ -78,7 +78,7 @@ impl<H: AppHandler> TcpServerListener<H> {
                         let transport: QunetTransport = QunetTransport::new_server(
                             QunetTransportKind::Tcp(ClientTcpTransport::new(conn.stream)),
                             conn.addr,
-                            MAJOR_VERSION,
+                            ProtocolVersion::default(),
                             [0; 16],
                             server.clone(),
                         );

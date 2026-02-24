@@ -10,7 +10,7 @@ use crate::client::{Client, EventHandler};
 use crate::{
     buffers::HybridBufferPool,
     message::{CompressionHeader, CompressionType, DataMessageKind, QunetMessage, channel},
-    protocol::QunetHandshakeError,
+    protocol::{ProtocolVersion, QunetHandshakeError},
     server::{
         Server, ServerHandle, app_handler::AppHandler, builder::ShouldCompressFn,
         client::ClientNotification,
@@ -63,7 +63,7 @@ pub(crate) struct QunetTransportData {
     pub connection_id: u64,
     pub closed: bool,
     pub address: SocketAddr,
-    pub qunet_major_version: u16,
+    pub protocol_version: ProtocolVersion,
     pub initial_qdb_hash: [u8; 16],
     pub message_size_limit: usize,
     pub buffer_pool: Arc<HybridBufferPool>,
@@ -102,7 +102,7 @@ impl QunetTransport {
     pub fn new_server<H: AppHandler>(
         kind: QunetTransportKind,
         address: SocketAddr,
-        qunet_major_version: u16,
+        protocol_version: ProtocolVersion,
         initial_qdb_hash: [u8; 16],
         server: ServerHandle<H>,
     ) -> Self {
@@ -110,7 +110,7 @@ impl QunetTransport {
             false,
             kind,
             address,
-            qunet_major_version,
+            protocol_version,
             initial_qdb_hash,
             server.message_size_limit(),
             server.buffer_pool.clone(),
@@ -125,7 +125,7 @@ impl QunetTransport {
     pub fn new_client<H: EventHandler>(
         kind: QunetTransportKind,
         address: SocketAddr,
-        qunet_major_version: u16,
+        protocol_version: ProtocolVersion,
         initial_qdb_hash: [u8; 16],
         client: &Client<H>,
     ) -> Self {
@@ -137,7 +137,7 @@ impl QunetTransport {
             true,
             kind,
             address,
-            qunet_major_version,
+            protocol_version,
             initial_qdb_hash,
             DEFAULT_MESSAGE_SIZE_LIMIT,
             client.buffer_pool.clone(),
@@ -153,7 +153,7 @@ impl QunetTransport {
         is_client: bool,
         kind: QunetTransportKind,
         address: SocketAddr,
-        qunet_major_version: u16,
+        protocol_version: ProtocolVersion,
         initial_qdb_hash: [u8; 16],
         message_size_limit: usize,
         buffer_pool: Arc<HybridBufferPool>,
@@ -172,7 +172,7 @@ impl QunetTransport {
                 address,
                 connection_id: 0,
                 closed: false,
-                qunet_major_version,
+                protocol_version,
                 initial_qdb_hash,
                 message_size_limit,
                 buffer_pool,

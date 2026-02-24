@@ -339,7 +339,10 @@ impl<H: AppHandler> UdpServerListener<H> {
         peer: SocketAddr,
         server: &ServerHandle<H>,
     ) -> Result<(), ListenerError> {
-        let major_version = reader.read_u16()?;
+        let major = reader.read_u16()?;
+        let minor = reader.read_u16()?;
+        let version = ProtocolVersion::new(major, minor);
+
         let mut frag_limit = reader.read_u16()?;
         let mut qdb_hash = [0u8; 16];
         reader.read_bytes(&mut qdb_hash)?;
@@ -354,7 +357,7 @@ impl<H: AppHandler> UdpServerListener<H> {
         let transport = QunetTransport::new_server(
             QunetTransportKind::Udp(ClientUdpTransport::new(socket, frag_limit as usize)),
             peer,
-            major_version,
+            version,
             qdb_hash,
             server.clone(),
         );
@@ -374,7 +377,7 @@ impl<H: AppHandler> UdpServerListener<H> {
         let transport = QunetTransport::new_server(
             QunetTransportKind::Udp(ClientUdpTransport::new(socket, UDP_PACKET_LIMIT)),
             peer,
-            MAJOR_VERSION,
+            ProtocolVersion::current(),
             [0; 16],
             server.clone(),
         );

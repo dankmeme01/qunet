@@ -1,5 +1,7 @@
 # Qunet protocol
 
+Current protocol version: v1.0
+
 Table of contents:
 
 * [Encoding rules](#encoding-rules)
@@ -163,7 +165,8 @@ Message structure:
 This message is sent by the client when it wants to establish a new connection.
 
 Message structure:
-* Qunet major version (`u16`)
+* Major protocol version (`u16`)
+* Minor protocol version (`u16`)
 * Qdb chunk size limit (`u16`) - preferrably leave as 0
 * Qdb hash (`[u8; 16]`) - truncated blake3 hash of the cached qunet database, all zeros if no database is cached
 

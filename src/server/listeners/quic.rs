@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::{
-    protocol::MAJOR_VERSION,
+    protocol::ProtocolVersion,
     server::{
         ServerHandle,
         app_handler::AppHandler,
@@ -110,14 +110,14 @@ impl<H: AppHandler> QuicServerListener<H> {
 
             match tokio::time::timeout(timeout, conn.wait_for_handshake()).await {
                 Ok(Ok(outcome)) => match outcome.pkt {
-                    StreamFirstPacket::HandshakeStart(qunet_major, qdb_hash) => {
+                    StreamFirstPacket::HandshakeStart(version, qdb_hash) => {
                         let transport = QunetTransport::new_server(
                             QunetTransportKind::Quic(ClientQuicTransport::new(
                                 conn.conn,
                                 outcome.stream,
                             )),
                             remote_addr,
-                            qunet_major,
+                            version,
                             qdb_hash,
                             server.clone(),
                         );
@@ -132,7 +132,7 @@ impl<H: AppHandler> QuicServerListener<H> {
                                 outcome.stream,
                             )),
                             remote_addr,
-                            MAJOR_VERSION,
+                            ProtocolVersion::default(),
                             [0; 16],
                             server.clone(),
                         );

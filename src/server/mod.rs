@@ -407,14 +407,14 @@ impl<H: AppHandler> Server<H> {
     pub(crate) fn accept_connection(self: ServerHandle<H>, mut transport: QunetTransport) {
         // spawn a new task for the connection
         self.clone().conn_tracker.spawn(async move {
-            let client_ver = transport.data.qunet_major_version;
+            let client_ver = transport.data.protocol_version;
             let address = transport.address();
 
             // send an error to the client if the version is not compatible
-            if client_ver != protocol::MAJOR_VERSION {
+            if !client_ver.is_compatible() {
                 self.send_handshake_error(
                     &mut transport,
-                    if client_ver < protocol::MAJOR_VERSION {
+                    if client_ver < ProtocolVersion::current() {
                         QunetHandshakeError::VersionTooOld
                     } else {
                         QunetHandshakeError::VersionTooNew
