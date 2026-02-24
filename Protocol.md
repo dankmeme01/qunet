@@ -362,6 +362,7 @@ HandshakeStart message structure (c -> s):
 ```
 uint8_t   type = MSG_HANDSHAKE_START (0x05)
 uint16_t  qunetMajor = 1
+uint16_t  qunetMinor = 0
 uint16_t  fragLimit = 0
 byte[16]  qdbHash = {0, 0, ...}
 ```
@@ -385,6 +386,7 @@ HandshakeStart message structure (c -> s):
 ```
 uint8_t   type = MSG_HANDSHAKE_START (0x05)
 uint16_t  qunetMajor = 1
+uint16_t  qunetMinor = 0
 uint16_t  fragLimit = 0
 byte[16]  qdbHash = {0, 0, ...}
 ```
