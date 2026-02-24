@@ -28,34 +28,38 @@ impl Display for CompressionType {
 #[bitpiece(8)]
 #[derive(Default)]
 pub struct PingFlags {
-    pub padding: B7,
+    // bit 0 - omit protocols
     pub no_protocols: bool,
+    pub padding: B7,
 }
 
 #[bitpiece(8)]
 #[derive(Default)]
 pub struct ClientCloseFlags {
-    pub padding: B7,
+    // bit 0 - don't terminate connection
     pub dont_terminate: bool,
+    pub padding: B7,
 }
 
 #[bitpiece(8)]
 pub struct DataHeader {
-    // msb - always 1
-    pub is_data: bool,
-    // reserved bit, for future header expansions
-    pub reserved_ext: bool,
+    // bits 0 and 1 - compression
+    pub compression: CompressionType,
 
-    // fragmentation and reliability (UDP only)
-    pub is_fragmented: bool,
-    // fragmentation and reliability (UDP only)
-    pub is_reliable: bool,
-
-    // currently unused bits
+    // bits 2 and 3 - currently unused
     pub padding: B2,
 
-    // compression
-    pub compression: CompressionType,
+    // bit 4 - reliability (UDP only)
+    pub is_reliable: bool,
+
+    // bit 5 - fragmentation (UDP only)
+    pub is_fragmented: bool,
+
+    // bit 6 - reserved for future header expansions
+    pub reserved_ext: bool,
+
+    // bit 7 (msb) - always 1
+    pub is_data: bool,
 }
 
 impl Default for DataHeader {
