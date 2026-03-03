@@ -3,7 +3,7 @@ use std::{marker::PhantomData, net::SocketAddr, sync::Arc};
 use socket2::{Domain, Socket, Type};
 use tokio::{net::UdpSocket, task::JoinSet};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 use crate::{
     buffers::{BufferPool, ByteReader, ByteWriter},
@@ -207,10 +207,10 @@ impl<H: AppHandler> UdpServerListener<H> {
                 };
 
                 if !server.dispatch_udp_message(conn_id, msg).await {
-                    debug!("[UDP {peer}] failed to dispatch message to connection {conn_id}");
+                    trace!("[UDP {peer}] failed to dispatch message to connection {conn_id}");
                 }
             } else {
-                debug!("[UDP {peer}] received message without connection ID, ignoring");
+                trace!("[UDP {peer}] received message without connection ID, ignoring");
             }
         }
     }
