@@ -23,6 +23,8 @@ pub(crate) struct ClientTcpTransport {
 
 impl ClientTcpTransport {
     pub fn new(socket: TcpStream) -> Self {
+        let _ = socket.set_nodelay(true);
+
         let (sock_read, sock_write) = socket.into_split();
 
         Self {
