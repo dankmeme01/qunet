@@ -3,7 +3,7 @@ use std::{
     net::SocketAddr,
     ops::Deref,
     sync::{Arc, Weak},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use dashmap::DashMap;
@@ -781,13 +781,12 @@ impl<H: AppHandler> Server<H> {
         client: Arc<ClientState<H>>,
         send_qdb: bool,
     ) -> Result<(), TransportError> {
-        const NEVER: Duration = Duration::from_hours(24 * 365 * 100);
         let notif_chan = transport.notif_chan.1.clone();
 
         let mut handshake_retx_count: u8 = 0;
 
         while !transport.data.closed {
-            let timer_expiry = transport.until_timer_expiry().unwrap_or(NEVER);
+            let (timer_deadline, poll_timer) = timer_expiry(transport);
 
             let res = tokio::select! {
                 msg = transport.receive_message() => match msg {
@@ -799,7 +798,7 @@ impl<H: AppHandler> Server<H> {
                     Err(e) => Err(e),
                 },
 
-                _ = tokio::time::sleep(timer_expiry), if timer_expiry != NEVER => {
+                _ = tokio::time::sleep_until(timer_deadline.into()), if poll_timer => {
                     transport.handle_timer_expiry().await
                 },
 
@@ -1010,7 +1009,31 @@ impl<H: AppHandler> Server<H> {
             }
 
             msg @ QunetMessage::Data { .. } => {
-                self.handle_data_message(client, msg).await?;
+                // The actual server implementation may do things that take a while, such as making a web request,
+                // fetching data from a database, etc. all leading to `handle_data_message` taking a while to complete.
+                //
+                // We want this to be within spec and not cause any issues, so we have to poll the client future,
+                // but also poll for timer expiry concurrently. This means if we need to send some ACKs (UDP), or
+                // do other work on expiry, we can do it ASAP instead of waiting for user code to complete.
+                //
+                // There is just one problem we don't handle - e.g. if we receive a burst of 2 messages that both require an ACK,
+                // we are only able to ACK the first one while processing, since we can't take the 2nd message out of the transport,
+                // until we finish processing the first. This is a tough limitation, and we leave it up to the application to avoid this.
+                let timer_fut = async {
+                    loop {
+                        let (deadline, _) = timer_expiry(transport);
+                        tokio::time::sleep_until(deadline.into()).await;
+                        transport.handle_timer_expiry().await?;
+                    }
+
+                    #[allow(unreachable_code)]
+                    Ok::<(), TransportError>(())
+                };
+
+                tokio::select! {
+                    res = timer_fut => res?,
+                    res = self.handle_data_message(client, msg) => res?,
+                }
             }
 
             _ => {
@@ -1246,5 +1269,15 @@ impl<H: AppHandler> WeakServerHandle<H> {
 impl<H: AppHandler> From<Arc<Server<H>>> for ServerHandle<H> {
     fn from(server: Arc<Server<H>>) -> Self {
         Self { inner: server }
+    }
+}
+
+fn timer_expiry(t: &QunetTransport) -> (Instant, bool) {
+    const NEVER: Duration = Duration::from_hours(24 * 365 * 100);
+    let now = Instant::now();
+
+    match t.until_timer_expiry() {
+        Some(dur) => (now + dur, true),
+        None => (now + NEVER, false),
     }
 }

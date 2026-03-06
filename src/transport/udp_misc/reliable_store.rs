@@ -337,7 +337,7 @@ impl ReliableStore {
         }
 
         // unlike in qunet-cpp, we don't have the transport RTT (only client can calculate it),
-        // we only have the ReliableStore RTT, which already includes the variable ACK delay (0 to 75 ms)
+        // we only have the ReliableStore RTT, which already includes the variable ACK delay (0 to 50 ms)
         // for this reason we change multiplier to 1.5 and multiply ack delay by 0.8
 
         const ACK_DELAY: u64 = ReliableStore::calc_ack_deadline().as_micros() as u64 * 8 / 10;
@@ -352,7 +352,7 @@ impl ReliableStore {
 
     #[inline]
     const fn calc_ack_deadline() -> Duration {
-        Duration::from_millis(75)
+        Duration::from_millis(50)
     }
 
     fn process_acks(&mut self, acks: &[u16]) {
