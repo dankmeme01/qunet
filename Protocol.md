@@ -346,7 +346,7 @@ Once all the fragments have arrived, the message can be reassambled and decoded.
 
 ## QUIC
 
-One bidirectional stream is used for the connection, and it must be opened by the client as soon as the QUIC handshake is completed. If any unidirectional streams are opened, or any additional bidirectional streams are opened, the other end may terminate the connection or simply ignore them. ALPN must include `qunet1` as the protocol, or connections may be silently dropped.
+One bidirectional stream is used for the connection, and it must be opened by the client as soon as the QUIC handshake is completed. If any unidirectional streams are opened, or any additional bidirectional streams are opened, the other end may terminate the connection or simply ignore them. ALPN must include either `qunet1` or `h3` as the protocol, or connections may be silently dropped. `h3` is recommended for higher stealth.
 
 As for the data flow inside the stream, rules identical to ones in the [TCP section](#tcp) apply.
 
