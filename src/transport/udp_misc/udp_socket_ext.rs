@@ -5,6 +5,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
+use cfg_if::cfg_if;
 use tokio::{net::UdpSocket, task::JoinHandle};
 
 use crate::{
@@ -13,28 +14,19 @@ use crate::{
 };
 
 #[cfg(target_os = "linux")]
-use crate::transport::lowlevel::socket_addr_to_c;
+use crate::transport::lowlevel::{SocketAddrCRepr, socket_addr_to_c};
 
 #[cfg(target_os = "linux")]
 const CAN_BATCH_SEND: bool = true;
 #[cfg(not(target_os = "linux"))]
 const CAN_BATCH_SEND: bool = false;
 
-#[cfg(target_os = "linux")]
-#[repr(C)]
-struct MMsgHdr {
-    msg_hdr: libc::msghdr,
-    msg_len: libc::c_uint,
-}
-
-unsafe impl Send for MMsgHdr {}
-unsafe impl Sync for MMsgHdr {}
-
 // Kind of arbitrary, taken by measuring traffic of the globed server
 // and seeing that the avg packet is ~145 bytes and stddev is 127
 const MAX_SIZE_TO_BATCH: usize = 320;
 
-type BatchedMsg = (BufferKind, SocketAddr);
+#[cfg(target_os = "linux")]
+type BatchedMsg = (BufferKind, SocketAddrCRepr, u32);
 
 /// A wrapper over a `UdpSocket` that provides extra functionality, for high performance servers and for convenience.
 /// More specifically:
@@ -45,21 +37,25 @@ pub struct UdpSocketExt {
     socket: UdpSocket,
     worker_task: OnceLock<JoinHandle<()>>,
     pool: BufferPool,
+    #[cfg(target_os = "linux")]
     tx: flume::Sender<BatchedMsg>,
 }
 
 impl UdpSocketExt {
     pub fn create(socket: UdpSocket, batching: bool) -> Arc<Self> {
+        #[cfg(target_os = "linux")]
         let (tx, rx) = flume::bounded(4096);
 
         let this = Arc::new(Self {
             socket,
             worker_task: OnceLock::new(),
             pool: BufferPool::new(MAX_SIZE_TO_BATCH, 64, 2048),
+            #[cfg(target_os = "linux")]
             tx,
         });
 
-        if CAN_BATCH_SEND && batching {
+        #[cfg(target_os = "linux")]
+        if batching {
             let _ = this.worker_task.set(tokio::spawn(this.clone().run_loop(rx)));
         }
 
@@ -71,15 +67,20 @@ impl UdpSocketExt {
     }
 
     pub async fn send_to(&self, data: &[u8], target: SocketAddr) -> io::Result<()> {
-        if self.should_batch(data.len()) {
-            let mut buf = self.pool.get_or_heap(data.len());
-            debug_assert!(buf.append_bytes(data));
+        #[cfg(target_os = "linux")]
+        {
+            if self.should_batch(data.len()) {
+                let mut buf = self.pool.get_or_heap(data.len());
+                assert!(buf.append_bytes(data));
+                tracing::debug!("enqueue buf {} from {}", buf.len(), data.len());
 
-            let _ = self.tx.send_async((buf, target)).await;
-        } else {
-            self.socket.send_to(data, target).await?;
+                let (sa, sl) = socket_addr_to_c(&target);
+                let _ = self.tx.send_async((buf, sa, sl)).await;
+                return Ok(());
+            }
         }
 
+        self.socket.send_to(data, target).await?;
         Ok(())
     }
 
@@ -88,15 +89,21 @@ impl UdpSocketExt {
         data: &mut [io::IoSlice<'_>],
         target: SocketAddr,
     ) -> io::Result<()> {
-        let total_len: usize = data.iter().map(|slice| slice.len()).sum();
+        #[cfg(target_os = "linux")]
+        {
+            let total_len: usize = data.iter().map(|slice| slice.len()).sum();
 
-        if self.should_batch(total_len) {
-            let buf = self.gather_into_buf(data, total_len);
-            let _ = self.tx.send_async((buf, target)).await;
-            Ok(())
-        } else {
-            return vectored_send(&self.socket, data, target).await;
+            if self.should_batch(total_len) {
+                let buf = self.gather_into_buf(data, total_len);
+
+                let (sa, sl) = socket_addr_to_c(&target);
+                let _ = self.tx.send_async((buf, sa, sl)).await;
+                return Ok(());
+            }
         }
+
+        vectored_send(&self.socket, data, target).await?;
+        Ok(())
     }
 
     fn gather_into_buf(&self, data: &mut [io::IoSlice<'_>], len: usize) -> BufferKind {
@@ -120,6 +127,7 @@ impl UdpSocketExt {
 
         let mut batch = Vec::with_capacity(BATCH_SIZE);
         let mut mmsg_batch: Vec<MMsgHdr> = Vec::with_capacity(BATCH_SIZE);
+        let mut tmp_iovs: Vec<IoVec> = Vec::with_capacity(BATCH_SIZE);
 
         loop {
             let timeout = tokio::time::sleep(MAX_DELAY);
@@ -142,31 +150,36 @@ impl UdpSocketExt {
                 batch.push(pkt);
             }
 
-            self.flush(&mut batch, &mut mmsg_batch).await;
+            self.flush(&mut batch, &mut mmsg_batch, &mut tmp_iovs).await;
+            batch.clear();
         }
     }
 
     #[cfg(target_os = "linux")]
-    async fn flush(&self, batch: &mut Vec<BatchedMsg>, mmsg_batch: &mut Vec<MMsgHdr>) {
+    async fn flush(
+        &self,
+        batch: &mut [BatchedMsg],
+        mmsg_batch: &mut Vec<MMsgHdr>,
+        tmp_iovs: &mut Vec<IoVec>,
+    ) {
         if batch.is_empty() {
             return;
         }
 
-        tracing::trace!("flushing batch of {} udp packets", batch.len());
+        tracing::debug!("flushing batch of {} udp packets", batch.len());
 
-        mmsg_batch.clear();
-        for (buf, target) in batch.drain(..) {
-            let mut iov = libc::iovec {
-                iov_base: buf.as_ptr() as *mut libc::c_void,
+        for (buf, sockaddr, socklen) in batch.iter() {
+            debug_assert!(tmp_iovs.len() < tmp_iovs.capacity());
+            tmp_iovs.push(IoVec {
+                iov_base: buf.as_ptr() as *mut _,
                 iov_len: buf.len(),
-            };
-
-            let (sockaddr, socklen) = socket_addr_to_c(&target);
+            });
+            let iov = tmp_iovs.last().unwrap();
 
             let header = libc::msghdr {
-                msg_name: &sockaddr as *const _ as *mut libc::c_void,
-                msg_namelen: socklen as libc::socklen_t,
-                msg_iov: &mut iov as *mut libc::iovec,
+                msg_name: sockaddr as *const SocketAddrCRepr as *mut libc::c_void,
+                msg_namelen: *socklen as libc::socklen_t,
+                msg_iov: iov as *const _ as *mut libc::iovec,
                 msg_iovlen: 1,
                 msg_control: std::ptr::null_mut(),
                 msg_controllen: 0,
@@ -190,6 +203,9 @@ impl UdpSocketExt {
                 }
             }
         }
+
+        tmp_iovs.clear();
+        mmsg_batch.clear();
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -259,6 +275,15 @@ async fn vectored_msend(socket: &UdpSocket, data: &mut [MMsgHdr]) -> io::Result<
 
     socket
         .async_io(Interest::WRITABLE, || unsafe {
+            tracing::debug!("inside msend with {}", data.len());
+            for m in data.iter() {
+                tracing::debug!(
+                    "- len {}, socklen {}",
+                    m.msg_hdr.msg_iovlen,
+                    m.msg_hdr.msg_namelen
+                );
+            }
+
             let status = libc::sendmmsg(
                 socket.as_raw_fd(),
                 data.as_mut_ptr() as *mut libc::mmsghdr,
@@ -272,4 +297,27 @@ async fn vectored_msend(socket: &UdpSocket, data: &mut [MMsgHdr]) -> io::Result<
             }
         })
         .await
+}
+
+cfg_if! {
+    if #[cfg(target_os = "linux")] {
+        #[repr(C)]
+        struct MMsgHdr {
+            msg_hdr: libc::msghdr,
+            msg_len: libc::c_uint,
+        }
+
+        unsafe impl Send for MMsgHdr {}
+        unsafe impl Sync for MMsgHdr {}
+
+        #[cfg(target_os = "linux")]
+        #[repr(C)]
+        struct IoVec {
+            iov_base: *mut libc::c_void,
+            iov_len: libc::size_t,
+        }
+
+        unsafe impl Send for IoVec {}
+        unsafe impl Sync for IoVec {}
+    }
 }
