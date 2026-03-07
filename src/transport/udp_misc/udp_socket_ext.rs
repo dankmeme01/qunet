@@ -152,6 +152,8 @@ impl UdpSocketExt {
             return;
         }
 
+        tracing::trace!("flushing batch of {} udp packets", batch.len());
+
         mmsg_batch.clear();
         for (buf, target) in batch.drain(..) {
             let mut iov = libc::iovec {
@@ -174,8 +176,19 @@ impl UdpSocketExt {
             mmsg_batch.push(MMsgHdr { msg_hdr: header, msg_len: 0 });
         }
 
-        if let Err(e) = vectored_msend(&self.socket, mmsg_batch).await {
-            tracing::error!("Error in vectored send: {e}");
+        // sendmmsg may not send everything at once, so loop until the request is satisfied
+        let mut start_idx = 0;
+        while start_idx < mmsg_batch.len() {
+            match vectored_msend(&self.socket, &mut mmsg_batch[start_idx..]).await {
+                Ok(n) => {
+                    start_idx += n;
+                }
+
+                Err(e) => {
+                    tracing::error!("Error in vectored send: {e}");
+                    break;
+                }
+            }
         }
     }
 
@@ -240,6 +253,7 @@ async fn vectored_send(
 }
 
 #[cfg(target_os = "linux")]
+/// Attempts a vectored send of multiple messages, returns how many messages were actually sent.
 async fn vectored_msend(socket: &UdpSocket, data: &mut [MMsgHdr]) -> io::Result<usize> {
     use tokio::io::Interest;
 
