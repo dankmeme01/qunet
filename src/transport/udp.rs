@@ -309,8 +309,6 @@ impl ClientUdpTransport {
         message: &QunetMessage,
         transport_data: &QunetTransportData,
     ) -> Result<(), TransportError> {
-        // TODO: rewrite a linux-only version of this function that uses sendmmsg, potentially use some static vec for that in Server?
-
         let data = message.data_bytes().expect("non-data message");
 
         // determine the maximum size of the payload for each fragment
@@ -470,8 +468,6 @@ impl ClientUdpTransport {
         chunk_size: usize,
         transport_data: &QunetTransportData,
     ) -> Result<(), TransportError> {
-        // TODO: rewrite a linux-only version of this function that uses sendmmsg, potentially use some static vec for that in Server?
-
         let mut offset = 0;
         let mut remaining = data.len();
 

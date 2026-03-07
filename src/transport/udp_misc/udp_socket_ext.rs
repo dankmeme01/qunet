@@ -71,7 +71,8 @@ impl UdpSocketExt {
         {
             if self.should_batch(data.len()) {
                 let mut buf = self.pool.get_or_heap(data.len());
-                assert!(buf.append_bytes(data));
+                let success = buf.append_bytes(data);
+                debug_assert!(success);
 
                 let (sa, sl) = socket_addr_to_c(&target);
                 let _ = self.tx.send_async((buf, sa, sl)).await;
@@ -108,7 +109,8 @@ impl UdpSocketExt {
     fn gather_into_buf(&self, data: &mut [io::IoSlice<'_>], len: usize) -> BufferKind {
         let mut buf = self.pool.get_or_heap(len);
         for slice in data {
-            debug_assert!(buf.append_bytes(slice));
+            let success = buf.append_bytes(slice);
+            debug_assert!(success);
         }
         buf
     }
