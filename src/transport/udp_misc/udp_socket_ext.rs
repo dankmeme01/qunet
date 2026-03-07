@@ -217,6 +217,28 @@ async fn vectored_send(
         .await
 }
 
+#[cfg(not(unix))]
+async fn vectored_send(
+    socket: &UdpSocket,
+    data: &mut [io::IoSlice<'_>],
+    target: SocketAddr,
+) -> io::Result<()> {
+    // assert that we have an upper limit on the packet size
+    const PACKET_LIMIT: usize = 1500;
+
+    let mut buf = [0u8; 1500];
+    let mut pos = 0;
+
+    for slice in data {
+        buf[pos..pos + slice.len()].copy_from_slice(slice);
+        pos += slice.len();
+    }
+
+    socket.send_to(&buf[..pos], target).await?;
+
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 async fn vectored_msend(socket: &UdpSocket, data: &mut [MMsgHdr]) -> io::Result<usize> {
     use tokio::io::Interest;
