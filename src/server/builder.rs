@@ -27,6 +27,7 @@ pub(crate) struct UdpOptions {
     pub address: SocketAddr,
     pub binds: NonZero<usize>,
     pub discovery_mode: UdpDiscoveryMode,
+    pub batching: bool,
 }
 
 #[derive(Debug)]
@@ -201,7 +202,17 @@ impl<H: AppHandler> ServerBuilder<H> {
             address,
             binds: NonZero::<usize>::new(binds).expect("Binds value must be non-zero"),
             discovery_mode,
+            batching: false,
         });
+        self
+    }
+
+    pub fn with_udp_batching(mut self, batching: bool) -> Self {
+        let opts = self
+            .udp_opts
+            .as_mut()
+            .expect("with_udp or with_udp_multiple must be called before with_udp_batching");
+        opts.batching = batching;
         self
     }
 

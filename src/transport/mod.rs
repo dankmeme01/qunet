@@ -22,9 +22,6 @@ use tracing::trace;
 
 use self::{tcp::ClientTcpTransport, udp::ClientUdpTransport};
 
-#[cfg(target_os = "linux")]
-use self::lowlevel::{SocketAddrCRepr, socket_addr_to_c};
-
 #[cfg(feature = "quic")]
 use self::quic::ClientQuicTransport;
 
@@ -94,11 +91,6 @@ pub(crate) struct QunetTransportData {
     pub compression_func: Arc<dyn ShouldCompressFn>,
     pub is_client: bool,
     pub rate_limiter: RateLimiter,
-
-    #[cfg(target_os = "linux")]
-    pub c_sockaddr_data: SocketAddrCRepr,
-    #[cfg(target_os = "linux")]
-    pub c_sockaddr_len: libc::socklen_t,
 }
 
 pub(crate) struct QunetTransport {
@@ -108,11 +100,6 @@ pub(crate) struct QunetTransport {
 }
 
 impl QunetTransportData {
-    #[cfg(target_os = "linux")]
-    pub fn c_sockaddr(&self) -> (&SocketAddrCRepr, libc::socklen_t) {
-        (&self.c_sockaddr_data, self.c_sockaddr_len)
-    }
-
     #[inline]
     fn update_exchange_time(&mut self) {
         self.last_data_exchange = Instant::now();
@@ -197,9 +184,6 @@ impl QunetTransport {
         compression_func: Arc<dyn ShouldCompressFn>,
         rate_limiter: RateLimiter,
     ) -> Self {
-        #[cfg(target_os = "linux")]
-        let (c_sockaddr_data, c_sockaddr_len) = socket_addr_to_c(&address);
-
         Self {
             kind,
             data: QunetTransportData {
@@ -214,10 +198,6 @@ impl QunetTransport {
                 keepalive_interval,
                 compression_func,
                 rate_limiter,
-                #[cfg(target_os = "linux")]
-                c_sockaddr_data,
-                #[cfg(target_os = "linux")]
-                c_sockaddr_len,
             },
             notif_chan: channel::new_channel(16),
         }

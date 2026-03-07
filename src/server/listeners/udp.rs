@@ -15,11 +15,11 @@ use crate::{
         builder::{ListenerOptions, MemoryUsageOptions, UdpDiscoveryMode, UdpOptions},
         listeners::listener::{BindError, ListenerError, ServerListener},
     },
-    transport::{QunetTransport, QunetTransportKind, udp::ClientUdpTransport},
+    transport::{QunetTransport, QunetTransportKind, UdpSocketExt, udp::ClientUdpTransport},
 };
 
 struct OneListener {
-    socket: Arc<UdpSocket>,
+    socket: Arc<UdpSocketExt>,
 }
 
 pub(crate) struct UdpServerListener<H: AppHandler> {
@@ -88,7 +88,9 @@ impl<H: AppHandler> UdpServerListener<H> {
             )
             .await?;
 
-            sockets.push(OneListener { socket: Arc::new(socket) });
+            sockets.push(OneListener {
+                socket: UdpSocketExt::create(socket, opts.batching),
+            });
         }
 
         Ok(UdpServerListener {
@@ -250,7 +252,7 @@ impl<H: AppHandler> UdpServerListener<H> {
     async fn handle_ping_message(
         &self,
         mut reader: ByteReader<'_>,
-        socket: &UdpSocket,
+        socket: &UdpSocketExt,
         peer: SocketAddr,
         server: &ServerHandle<H>,
     ) -> Result<(), ListenerError> {
@@ -333,7 +335,7 @@ impl<H: AppHandler> UdpServerListener<H> {
     }
 
     fn handle_handshake(
-        socket: Arc<UdpSocket>,
+        socket: Arc<UdpSocketExt>,
         mut reader: ByteReader<'_>,
         peer: SocketAddr,
         server: &ServerHandle<H>,
@@ -367,7 +369,7 @@ impl<H: AppHandler> UdpServerListener<H> {
     }
 
     async fn handle_reconnect(
-        socket: Arc<UdpSocket>,
+        socket: Arc<UdpSocketExt>,
         connection_id: u64,
         peer: SocketAddr,
         server: &ServerHandle<H>,

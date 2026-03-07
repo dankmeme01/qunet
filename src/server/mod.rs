@@ -710,11 +710,6 @@ impl<H: AppHandler> Server<H> {
                 transport.kind = new_transport.kind;
                 transport.data.closed = false;
                 transport.data.address = new_transport.data.address;
-                #[cfg(target_os = "linux")]
-                {
-                    transport.data.c_sockaddr_data = new_transport.data.c_sockaddr_data;
-                    transport.data.c_sockaddr_len = new_transport.data.c_sockaddr_len;
-                }
                 transport.run_server_setup(self).await?;
 
                 if let Err(e) =

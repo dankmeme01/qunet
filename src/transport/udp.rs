@@ -3,7 +3,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::net::UdpSocket;
 use tracing::{debug, debug_span};
 
 use crate::{
@@ -14,7 +13,7 @@ use crate::{
     },
     protocol::*,
     server::{Server, app_handler::AppHandler},
-    transport::{FragmentStore, QunetTransportData, TransportError},
+    transport::{FragmentStore, QunetTransportData, TransportError, UdpSocketExt},
 };
 
 use super::udp_misc::ReliableStore;
@@ -22,7 +21,7 @@ use super::udp_misc::ReliableStore;
 const MAX_HEADER_SIZE: usize = 1 + 4 + 20 + 8; // qunet, compression, reliability, fragmentation headers
 
 pub(crate) struct ClientUdpTransport {
-    socket: Arc<UdpSocket>,
+    socket: Arc<UdpSocketExt>,
     mtu: usize,
     receiver: Option<RawMessageReceiver>,
     rel_store: ReliableStore,
@@ -30,7 +29,7 @@ pub(crate) struct ClientUdpTransport {
 }
 
 impl ClientUdpTransport {
-    pub fn new(socket: Arc<UdpSocket>, mtu: usize) -> Self {
+    pub fn new(socket: Arc<UdpSocketExt>, mtu: usize) -> Self {
         Self {
             socket,
             mtu,
@@ -509,77 +508,22 @@ impl ClientUdpTransport {
         data: &[u8],
         transport_data: &QunetTransportData,
     ) -> Result<(), TransportError> {
-        let _ = self.socket.send_to(data, transport_data.address).await?;
-
+        self.socket.send_to(data, transport_data.address).await?;
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
     async fn send_packet_vectored(
         &self,
         data: &mut [IoSlice<'_>],
         transport_data: &QunetTransportData,
     ) -> Result<(), TransportError> {
-        use std::os::fd::AsRawFd;
-        use tokio::io::Interest;
-
         #[cfg(debug_assertions)]
         {
             let total_len = data.iter().map(|x| x.len()).sum::<usize>();
             assert!(total_len <= self.mtu, "Data exceeds MTU size: {} > {}", total_len, self.mtu);
         }
 
-        let (sockaddr, socklen) = transport_data.c_sockaddr();
-
-        self.socket
-            .async_io(Interest::WRITABLE, || unsafe {
-                let mut header: libc::msghdr = std::mem::zeroed();
-
-                header.msg_name = sockaddr as *const _ as *mut libc::c_void;
-                header.msg_namelen = socklen as libc::socklen_t;
-                header.msg_iov = data.as_ptr() as *mut libc::iovec;
-                #[cfg(target_env = "gnu")]
-                {
-                    header.msg_iovlen = data.len() as libc::size_t;
-                }
-                #[cfg(target_env = "musl")]
-                {
-                    header.msg_iovlen = data.len() as i32;
-                }
-                header.msg_control = std::ptr::null_mut();
-                header.msg_controllen = 0;
-                header.msg_flags = 0;
-
-                let status =
-                    libc::sendmsg(self.socket.as_raw_fd(), &header as *const libc::msghdr, 0);
-
-                match status {
-                    -1 => Err(std::io::Error::last_os_error()),
-                    _ => Ok(()),
-                }
-            })
-            .await?;
-
-        Ok(())
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    async fn send_packet_vectored(
-        &self,
-        data: &mut [IoSlice<'_>],
-        transport_data: &QunetTransportData,
-    ) -> Result<(), TransportError> {
-        let total_len: usize = data.iter().map(|slice| slice.len()).sum();
-        debug_assert!(total_len <= self.mtu, "Data exceeds MTU size");
-
-        let mut out_buf = Vec::with_capacity(total_len);
-
-        for slice in data {
-            out_buf.extend_from_slice(slice.as_slice());
-        }
-
-        self.send_packet(&out_buf, transport_data).await?;
-
+        self.socket.send_to_vectored(data, transport_data.address).await?;
         Ok(())
     }
 }
