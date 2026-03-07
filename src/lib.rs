@@ -4,7 +4,8 @@
     generic_const_exprs,
     sync_unsafe_cell,
     never_type,
-    io_slice_as_bytes
+    io_slice_as_bytes,
+    impl_trait_in_bindings
 )]
 #![allow(clippy::new_without_default, clippy::collapsible_if)]
 

@@ -1019,15 +1019,12 @@ impl<H: AppHandler> Server<H> {
                 // There is just one problem we don't handle - e.g. if we receive a burst of 2 messages that both require an ACK,
                 // we are only able to ACK the first one while processing, since we can't take the 2nd message out of the transport,
                 // until we finish processing the first. This is a tough limitation, and we leave it up to the application to avoid this.
-                let timer_fut = async {
+                let timer_fut: impl Future<Output = Result<(), TransportError>> = async {
                     loop {
                         let (deadline, _) = timer_expiry(transport);
                         tokio::time::sleep_until(deadline.into()).await;
                         transport.handle_timer_expiry().await?;
                     }
-
-                    #[allow(unreachable_code)]
-                    Ok::<(), TransportError>(())
                 };
 
                 tokio::select! {
