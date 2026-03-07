@@ -72,7 +72,6 @@ impl UdpSocketExt {
             if self.should_batch(data.len()) {
                 let mut buf = self.pool.get_or_heap(data.len());
                 assert!(buf.append_bytes(data));
-                tracing::debug!("enqueue buf {} from {}", buf.len(), data.len());
 
                 let (sa, sl) = socket_addr_to_c(&target);
                 let _ = self.tx.send_async((buf, sa, sl)).await;
@@ -134,14 +133,19 @@ impl UdpSocketExt {
 
             tokio::pin!(timeout);
 
-            tokio::select! {
-                biased;
+            loop {
+                tokio::select! {
+                    biased;
 
-                Ok(pkt) = rx.recv_async() => {
-                    batch.push(pkt);
+                    Ok(pkt) = rx.recv_async() => {
+                        batch.push(pkt);
+                        if batch.len() >= BATCH_SIZE {
+                            break;
+                        }
+                    }
+
+                    _ = &mut timeout => break,
                 }
-
-                _ = &mut timeout => {}
             }
 
             while batch.len() < BATCH_SIZE
@@ -166,7 +170,7 @@ impl UdpSocketExt {
             return;
         }
 
-        tracing::debug!("flushing batch of {} udp packets", batch.len());
+        tracing::trace!("flushing batch of {} udp packets", batch.len());
 
         for (buf, sockaddr, socklen) in batch.iter() {
             debug_assert!(tmp_iovs.len() < tmp_iovs.capacity());
@@ -275,15 +279,6 @@ async fn vectored_msend(socket: &UdpSocket, data: &mut [MMsgHdr]) -> io::Result<
 
     socket
         .async_io(Interest::WRITABLE, || unsafe {
-            tracing::debug!("inside msend with {}", data.len());
-            for m in data.iter() {
-                tracing::debug!(
-                    "- len {}, socklen {}",
-                    m.msg_hdr.msg_iovlen,
-                    m.msg_hdr.msg_namelen
-                );
-            }
-
             let status = libc::sendmmsg(
                 socket.as_raw_fd(),
                 data.as_mut_ptr() as *mut libc::mmsghdr,

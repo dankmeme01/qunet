@@ -577,7 +577,7 @@ impl<H: AppHandler> Server<H> {
 
     #[inline]
     pub(crate) fn create_udp_route(&self, connection_id: u64) -> RawMessageReceiver {
-        let (tx, rx) = message::channel::new_channel(16);
+        let (tx, rx) = message::channel::new_channel(32);
         self.udp_router.insert(connection_id, tx);
 
         rx
