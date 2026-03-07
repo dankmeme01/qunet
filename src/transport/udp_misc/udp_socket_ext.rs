@@ -1,7 +1,6 @@
 use std::{
     io,
     net::SocketAddr,
-    os::fd::AsRawFd,
     sync::{Arc, OnceLock},
 };
 
@@ -13,20 +12,25 @@ use crate::{
     message::BufferKind,
 };
 
-#[cfg(target_os = "linux")]
-use crate::transport::lowlevel::{SocketAddrCRepr, socket_addr_to_c};
+cfg_if! {
+    if #[cfg(unix)] {
+        use crate::transport::lowlevel::{SocketAddrCRepr, socket_addr_to_c};
+        use std::os::fd::AsRawFd;
+    }
+}
 
-#[cfg(target_os = "linux")]
-const CAN_BATCH_SEND: bool = true;
-#[cfg(not(target_os = "linux"))]
-const CAN_BATCH_SEND: bool = false;
+cfg_if! {
+    if #[cfg(target_os = "linux")] {
+        type BatchedMsg = (BufferKind, SocketAddrCRepr, u32);
+        const CAN_BATCH_SEND: bool = true;
+    } else {
+        const CAN_BATCH_SEND: bool = false;
+    }
+}
 
 // Kind of arbitrary, taken by measuring traffic of the globed server
 // and seeing that the avg packet is ~145 bytes and stddev is 127
 const MAX_SIZE_TO_BATCH: usize = 320;
-
-#[cfg(target_os = "linux")]
-type BatchedMsg = (BufferKind, SocketAddrCRepr, u32);
 
 /// A wrapper over a `UdpSocket` that provides extra functionality, for high performance servers and for convenience.
 /// More specifically:
@@ -212,11 +216,6 @@ impl UdpSocketExt {
 
         tmp_iovs.clear();
         mmsg_batch.clear();
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    async fn run_loop(self: Arc<Self>, _rx: flume::Receiver<BatchedMsg>) {
-        panic!("run_loop should never be called on non-linux platforms");
     }
 }
 
