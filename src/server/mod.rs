@@ -531,7 +531,7 @@ impl<H: AppHandler> Server<H> {
         // forcefully migrate the connection to the new transport
         client.notif_tx.send(ClientNotification::TerminateSuspend);
 
-        if tokio::time::timeout(Duration::from_secs(5), client.suspended_notify.notified())
+        if tokio::time::timeout(Duration::from_secs(5), client.suspended_sema.acquire())
             .await
             .is_ok()
         {
