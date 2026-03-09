@@ -6,7 +6,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 
 use crate::{
     message::{BufferKind, channel},
@@ -37,7 +37,7 @@ pub struct ClientState<H: AppHandler> {
     pub address: SocketAddr,
     pub notif_tx: channel::Sender<ClientNotification>,
     pub suspended: AtomicBool,
-    pub(crate) suspended_notify: Notify, // to notify anyone waiting for suspension
+    pub(crate) suspended_sema: Semaphore, // to notify anyone waiting for suspension
     pub(crate) terminate_notify: Notify,
     transport_type: TransportType,
 }
@@ -50,7 +50,7 @@ impl<H: AppHandler> ClientState<H> {
             address: transport.address(),
             notif_tx: transport.notif_chan.0.clone(),
             suspended: AtomicBool::new(false),
-            suspended_notify: Notify::new(),
+            suspended_sema: Semaphore::new(0),
             terminate_notify: Notify::new(),
             transport_type: transport.transport_type(),
         }
@@ -99,9 +99,18 @@ impl<H: AppHandler> ClientState<H> {
     }
 
     pub(crate) fn set_suspended(&self, suspended: bool) {
-        self.suspended.store(suspended, Ordering::Relaxed);
+        let was_suspended = self.suspended.swap(suspended, Ordering::Relaxed);
+        if was_suspended == suspended {
+            return;
+        }
+
         if suspended {
-            self.suspended_notify.notify_one();
+            self.suspended_sema.add_permits(1);
+        } else {
+            // clear all permits, to prevent future waits from erroneously completing instantly
+            // it should be impossible for there to be more than 1 permit, since set_suspended is a no-op if the value isn't changing
+            debug_assert!(self.suspended_sema.available_permits() <= 1);
+            let _ = self.suspended_sema.try_acquire();
         }
     }
 
