@@ -5,7 +5,8 @@ edition = "2024"
 
 [dependencies]
 blake3 = "1.8.3"
-flume = { version = "0.12.0", features = ["async", "spin"] }
+# flume = { version = "0.12.0", features = ["async", "spin"] }
+kanal = "0.1"
 hex = "0.4.3"
 libc = "0.2.182"
 nohash-hasher = "0.2.0"

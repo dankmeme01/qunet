@@ -42,13 +42,13 @@ pub struct UdpSocketExt {
     worker_task: OnceLock<JoinHandle<()>>,
     pool: BufferPool,
     #[cfg(target_os = "linux")]
-    tx: flume::Sender<BatchedMsg>,
+    tx: kanal::AsyncSender<BatchedMsg>,
 }
 
 impl UdpSocketExt {
     pub fn create(socket: UdpSocket, batching: bool) -> Arc<Self> {
         #[cfg(target_os = "linux")]
-        let (tx, rx) = flume::bounded(4096);
+        let (tx, rx) = kanal::bounded_async(2048);
 
         let this = Arc::new(Self {
             socket,
@@ -79,7 +79,7 @@ impl UdpSocketExt {
                 debug_assert!(success);
 
                 let (sa, sl) = socket_addr_to_c(&target);
-                let _ = self.tx.send_async((buf, sa, sl)).await;
+                let _ = self.tx.send((buf, sa, sl)).await;
                 return Ok(());
             }
         }
@@ -101,7 +101,7 @@ impl UdpSocketExt {
                 let buf = self.gather_into_buf(data, total_len);
 
                 let (sa, sl) = socket_addr_to_c(&target);
-                let _ = self.tx.send_async((buf, sa, sl)).await;
+                let _ = self.tx.send((buf, sa, sl)).await;
                 return Ok(());
             }
         }
@@ -124,7 +124,7 @@ impl UdpSocketExt {
     }
 
     #[cfg(target_os = "linux")]
-    async fn run_loop(self: Arc<Self>, rx: flume::Receiver<BatchedMsg>) {
+    async fn run_loop(self: Arc<Self>, rx: kanal::AsyncReceiver<BatchedMsg>) {
         use std::time::Duration;
 
         const BATCH_SIZE: usize = 64;
@@ -143,7 +143,7 @@ impl UdpSocketExt {
                 tokio::select! {
                     biased;
 
-                    Ok(pkt) = rx.recv_async() => {
+                    Ok(pkt) = rx.recv() => {
                         batch.push(pkt);
                         if batch.len() >= BATCH_SIZE {
                             break;
@@ -155,7 +155,7 @@ impl UdpSocketExt {
             }
 
             while batch.len() < BATCH_SIZE
-                && let Ok(pkt) = rx.try_recv()
+                && let Ok(Some(pkt)) = rx.try_recv()
             {
                 batch.push(pkt);
             }

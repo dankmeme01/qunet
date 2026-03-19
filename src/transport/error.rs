@@ -95,8 +95,6 @@ impl TransportError {
                     }
                 }
 
-                // TODO: handle other IO errors
-
                 TransportErrorOutcome::Terminate
             }
 

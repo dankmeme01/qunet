@@ -16,8 +16,8 @@ type Buf = Box<[u8]>;
 
 /// MPSC-based pool of buffers
 pub struct MpscInnerPool {
-    rx: flume::Receiver<Buf>,
-    tx: flume::Sender<Buf>,
+    rx: kanal::AsyncReceiver<Buf>,
+    tx: kanal::AsyncSender<Buf>,
     allocated_buffers: AtomicUsize,
     buf_size: usize,
 }
@@ -302,7 +302,7 @@ impl<I: InnerPool> BufPool for BufferPool<I> {
 
 impl InnerPool for MpscInnerPool {
     fn new(buf_size: usize, initial_buffers: usize, max_buffers: usize) -> Self {
-        let (tx, rx) = flume::bounded(max_buffers);
+        let (tx, rx) = kanal::bounded_async(max_buffers);
 
         for _ in 0..initial_buffers {
             tx.try_send(make_buffer(buf_size)).unwrap();
@@ -323,7 +323,8 @@ impl InnerPool for MpscInnerPool {
     }
 
     fn shrink(&self) {
-        let released_bufs = self.rx.drain().count();
+        let mut vec = Vec::new();
+        let released_bufs = self.rx.drain_into(&mut vec).unwrap_or(0);
 
         // decrease the allocated buffers count
         let old_bufs = self.allocated_buffers.fetch_sub(released_bufs, Ordering::AcqRel);
@@ -333,11 +334,11 @@ impl InnerPool for MpscInnerPool {
     }
 
     fn try_get(&self) -> Option<Buf> {
-        self.rx.try_recv().ok()
+        self.rx.try_recv().ok().flatten()
     }
 
     async fn get(&self) -> Buf {
-        self.rx.recv_async().await.unwrap()
+        self.rx.recv().await.unwrap()
     }
 
     fn allocated(&self) -> usize {
@@ -357,7 +358,7 @@ impl InnerPool for MpscInnerPool {
     }
 
     fn max_buffers(&self) -> usize {
-        self.tx.capacity().unwrap()
+        self.tx.capacity()
     }
 }
 

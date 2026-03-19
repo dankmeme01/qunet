@@ -1,11 +1,11 @@
 use crate::message::QunetRawMessage;
 
 pub struct Sender<T> {
-    inner: flume::Sender<T>,
+    inner: kanal::AsyncSender<T>,
 }
 
 pub struct Receiver<T> {
-    inner: flume::Receiver<T>,
+    inner: kanal::AsyncReceiver<T>,
 }
 
 impl<T> Sender<T> {
@@ -14,17 +14,23 @@ impl<T> Sender<T> {
     }
 
     pub async fn send_async(&self, msg: T) -> bool {
-        self.inner.send_async(msg).await.is_ok()
+        self.inner.send(msg).await.is_ok()
     }
 }
 
 impl<T> Receiver<T> {
     pub async fn recv(&self) -> Option<T> {
-        self.inner.recv_async().await.ok()
+        self.inner.recv().await.ok()
     }
 
-    pub fn drain(&self) -> flume::Drain<'_, T> {
-        self.inner.drain()
+    pub fn drain(&self) -> Result<Vec<T>, kanal::ReceiveError> {
+        let mut vec = Vec::new();
+        self.inner.drain_into(&mut vec)?;
+        Ok(vec)
+    }
+
+    pub fn drain_into(&self, vec: &mut Vec<T>) -> Result<usize, kanal::ReceiveError> {
+        self.inner.drain_into(vec)
     }
 }
 
@@ -44,13 +50,13 @@ pub type RawMessageSender = Sender<QunetRawMessage>;
 pub type RawMessageReceiver = Receiver<QunetRawMessage>;
 
 pub fn new_channel<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
-    let (tx, rx) = flume::bounded(cap);
+    let (tx, rx) = kanal::bounded_async(cap);
 
     (Sender { inner: tx }, Receiver { inner: rx })
 }
 
 pub fn new_channel_unbounded<T>() -> (Sender<T>, Receiver<T>) {
-    let (tx, rx) = flume::unbounded();
+    let (tx, rx) = kanal::unbounded_async();
 
     (Sender { inner: tx }, Receiver { inner: rx })
 }
