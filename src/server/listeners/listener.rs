@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use crate::{
     buffers::{ByteReaderError, ByteWriterError},
+    message::QunetMessageDecodeError,
     server::{AcceptError, ServerHandle, app_handler::AppHandler},
 };
 
@@ -21,9 +22,14 @@ pub enum ListenerError {
     AcceptError(#[from] AcceptError),
     #[error("Handshake packet is invalid")]
     MalformedHandshake,
+    #[error("Handshake message is invalid: {0}")]
+    InvalidHandshake(#[from] QunetMessageDecodeError),
     #[cfg(feature = "quic")]
     #[error("QUIC connection error: {0}")]
     QuicConnectionError(#[from] s2n_quic::connection::Error),
+    #[cfg(feature = "websocket")]
+    #[error("WebSocket error: {0}")]
+    WebSocketError(#[from] tokio_tungstenite::tungstenite::Error),
     #[error("Connection closed by peer")]
     ConnectionClosed,
 }

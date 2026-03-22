@@ -1,4 +1,5 @@
 use std::{
+    fmt::Display,
     net::SocketAddr,
     num::NonZeroU32,
     sync::Arc,
@@ -24,6 +25,8 @@ use self::{tcp::ClientTcpTransport, udp::ClientUdpTransport};
 
 #[cfg(feature = "quic")]
 use self::quic::ClientQuicTransport;
+#[cfg(feature = "websocket")]
+use self::ws::ClientWsTransport;
 
 use tracing::debug;
 pub(crate) use udp_misc::*;
@@ -31,13 +34,16 @@ pub(crate) use udp_misc::*;
 pub mod compression;
 mod error;
 pub mod lowlevel;
-#[cfg(feature = "quic")]
-pub mod quic;
 mod rate_limiter;
 mod stream;
 pub mod tcp;
 pub mod udp;
 mod udp_misc;
+
+#[cfg(feature = "quic")]
+pub mod quic;
+#[cfg(feature = "websocket")]
+pub mod ws;
 
 pub use error::*;
 pub use rate_limiter::RateLimiter;
@@ -47,6 +53,18 @@ pub enum TransportType {
     Udp,
     Tcp,
     Quic,
+    WebSocket,
+}
+
+impl Display for TransportType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Udp => write!(f, "UDP"),
+            Self::Tcp => write!(f, "TCP"),
+            Self::Quic => write!(f, "QUIC"),
+            Self::WebSocket => write!(f, "WebSocket"),
+        }
+    }
 }
 
 pub(crate) enum QunetTransportKind {
@@ -54,6 +72,8 @@ pub(crate) enum QunetTransportKind {
     Tcp(ClientTcpTransport),
     #[cfg(feature = "quic")]
     Quic(ClientQuicTransport),
+    #[cfg(feature = "websocket")]
+    Ws(ClientWsTransport),
 }
 
 // This is for data that needs to be persistent across multiple different server transports for the same client transport,
@@ -210,6 +230,8 @@ impl QunetTransport {
             QunetTransportKind::Tcp(_) => "TCP",
             #[cfg(feature = "quic")]
             QunetTransportKind::Quic(_) => "QUIC",
+            #[cfg(feature = "websocket")]
+            QunetTransportKind::Ws(_) => "WebSocket",
         }
     }
 
@@ -220,6 +242,8 @@ impl QunetTransport {
             QunetTransportKind::Tcp(_) => TransportType::Tcp,
             #[cfg(feature = "quic")]
             QunetTransportKind::Quic(_) => TransportType::Quic,
+            #[cfg(feature = "websocket")]
+            QunetTransportKind::Ws(_) => TransportType::WebSocket,
         }
     }
 
@@ -244,6 +268,10 @@ impl QunetTransport {
         qdb_data: Option<&[u8]>,
         qdb_uncompressed_size: usize,
     ) -> Result<(), TransportError> {
+        if self.data.is_client {
+            self.data.update_exchange_time();
+        }
+
         match &mut self.kind {
             QunetTransportKind::Udp(udp) => {
                 udp.send_handshake_response(&self.data, qdb_data, qdb_uncompressed_size).await
@@ -256,6 +284,11 @@ impl QunetTransport {
             #[cfg(feature = "quic")]
             QunetTransportKind::Quic(quic) => {
                 quic.send_handshake_response(&self.data, qdb_data, qdb_uncompressed_size).await
+            }
+
+            #[cfg(feature = "websocket")]
+            QunetTransportKind::Ws(ws) => {
+                ws.send_handshake_response(&self.data, qdb_data, qdb_uncompressed_size).await
             }
         }
     }
@@ -272,6 +305,8 @@ impl QunetTransport {
             QunetTransportKind::Tcp(tcp) => tcp.run_setup().await,
             #[cfg(feature = "quic")]
             QunetTransportKind::Quic(quic) => quic.run_setup().await,
+            #[cfg(feature = "websocket")]
+            QunetTransportKind::Ws(ws) => ws.run_setup().await,
         }
     }
 
@@ -285,11 +320,17 @@ impl QunetTransport {
             QunetTransportKind::Tcp(tcp) => tcp.run_cleanup().await,
             #[cfg(feature = "quic")]
             QunetTransportKind::Quic(quic) => quic.run_cleanup().await,
+            #[cfg(feature = "websocket")]
+            QunetTransportKind::Ws(ws) => ws.run_cleanup().await,
         }
     }
 
     #[inline]
     pub async fn receive_message(&mut self) -> Result<QunetMessage, TransportError> {
+        if !self.data.is_client {
+            self.data.update_exchange_time();
+        }
+
         let msg = self.receive_message_inner().await?;
 
         // if the client exceeded the rate limit, forcibly disconnect them
@@ -307,6 +348,8 @@ impl QunetTransport {
             QunetTransportKind::Tcp(tcp) => tcp.receive_message(&mut self.data).await,
             #[cfg(feature = "quic")]
             QunetTransportKind::Quic(quic) => quic.receive_message(&self.data).await,
+            #[cfg(feature = "websocket")]
+            QunetTransportKind::Ws(ws) => ws.receive_message(&self.data).await,
         }
     }
 
@@ -323,6 +366,8 @@ impl QunetTransport {
         match &self.kind {
             QunetTransportKind::Udp(udp) => Some(udp.until_timer_expiry().min(timeout)),
             QunetTransportKind::Tcp(_tcp) => Some(timeout),
+            #[cfg(feature = "websocket")]
+            QunetTransportKind::Ws(_) => Some(timeout),
 
             #[cfg(feature = "quic")]
             QunetTransportKind::Quic(_) => None, // quic does keepalives internally
@@ -369,6 +414,10 @@ impl QunetTransport {
         opts: Option<QunetMessageOpts>,
         ch: &C,
     ) -> Result<(), TransportError> {
+        if self.data.is_client {
+            self.data.update_exchange_time();
+        }
+
         let opts = opts.unwrap_or_default();
 
         // Compress this message?
@@ -388,6 +437,9 @@ impl QunetTransport {
 
             #[cfg(feature = "quic")]
             QunetTransportKind::Quic(quic) => quic.send_message(&self.data, message).await,
+
+            #[cfg(feature = "websocket")]
+            QunetTransportKind::Ws(ws) => ws.send_message(&self.data, message).await,
         }
     }
 

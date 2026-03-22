@@ -83,10 +83,6 @@ impl ClientUdpTransport {
 
         loop {
             if let Some(msg) = self.process_incoming(transport_data).await? {
-                if !transport_data.is_client {
-                    transport_data.update_exchange_time();
-                }
-
                 break Ok(msg);
             }
         }
@@ -169,10 +165,6 @@ impl ClientUdpTransport {
         mut msg: QunetMessage,
         reliable: bool,
     ) -> Result<(), TransportError> {
-        if transport_data.is_client {
-            transport_data.update_exchange_time();
-        }
-
         if !msg.is_data() {
             let mut header_buf = [0u8; MAX_HEADER_SIZE];
             let mut header_writer = ByteWriter::new(&mut header_buf);

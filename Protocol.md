@@ -289,8 +289,6 @@ Qunet currently defines three transport protocols (protocol ID is in parantheses
 * QUIC (3)
 * WebSockets (4)
 
-The recommended default port for for Qunet applications is 4340. Obviously all of the transports cannot be bound to the same port at the same time, but using port 4340 for UDP (and keeping pings enabled) will be helpful for clients trying to connect.
-
 The next sections describe protocol-specific quirks.
 
 ## TCP

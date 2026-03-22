@@ -43,6 +43,7 @@ pub(crate) struct QuicOptions {
     pub tls_key_path: PathBuf,
 }
 
+#[cfg(feature = "websocket")]
 #[derive(Debug)]
 pub(crate) struct WsOptions {
     pub address: SocketAddr,
@@ -163,6 +164,7 @@ pub struct ServerBuilder<H: AppHandler = DefaultAppHandler> {
     pub(crate) tcp_opts: Option<TcpOptions>,
     #[cfg(feature = "quic")]
     pub(crate) quic_opts: Option<QuicOptions>,
+    #[cfg(feature = "websocket")]
     pub(crate) ws_opts: Option<WsOptions>,
     pub(crate) listener_opts: ListenerOptions,
     pub(crate) mem_options: MemoryUsageOptions,
@@ -236,6 +238,7 @@ impl<H: AppHandler> ServerBuilder<H> {
         self
     }
 
+    #[cfg(feature = "websocket")]
     pub fn with_ws(mut self, address: SocketAddr) -> Self {
         self.ws_opts = Some(WsOptions { address });
         self
@@ -310,6 +313,7 @@ impl<H: AppHandler> ServerBuilder<H> {
             tcp_opts: self.tcp_opts,
             #[cfg(feature = "quic")]
             quic_opts: self.quic_opts,
+            #[cfg(feature = "websocket")]
             ws_opts: self.ws_opts,
             listener_opts: self.listener_opts,
             app_handler: Some(app_handler),

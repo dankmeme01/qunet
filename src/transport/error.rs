@@ -47,6 +47,9 @@ pub enum TransportError {
     #[cfg(feature = "quic")]
     #[error("QUIC error: {0}")]
     QuicError(#[from] QuicError),
+    #[cfg(feature = "websocket")]
+    #[error("WebSocket error: {0}")]
+    WebSocketError(#[from] tokio_tungstenite::tungstenite::Error),
     #[error("Not implemented: {0}")]
     NotImplemented(&'static str),
     #[error("Client requested the connection to be suspended")]

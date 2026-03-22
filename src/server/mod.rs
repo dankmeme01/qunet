@@ -103,6 +103,8 @@ pub struct Server<H: AppHandler> {
     tcp_listener: Option<Arc<TcpServerListener<H>>>,
     #[cfg(feature = "quic")]
     quic_listener: Option<Arc<QuicServerListener<H>>>,
+    #[cfg(feature = "websocket")]
+    ws_listener: Option<Arc<WsServerListener<H>>>,
     pub(crate) buffer_pool: Arc<HybridBufferPool>,
     pub(crate) app_handler: H,
 
@@ -162,6 +164,8 @@ impl<H: AppHandler> Server<H> {
             tcp_listener: None,
             #[cfg(feature = "quic")]
             quic_listener: None,
+            #[cfg(feature = "websocket")]
+            ws_listener: None,
             buffer_pool,
             app_handler,
 
@@ -235,6 +239,15 @@ impl<H: AppHandler> Server<H> {
             self.quic_listener = Some(Arc::new(listener));
         }
 
+        #[cfg(feature = "websocket")]
+        if let Some(opts) = builder.ws_opts.take() {
+            let listener =
+                WsServerListener::new(opts, self.shutdown_token.clone(), &builder.listener_opts)
+                    .await?;
+
+            self.ws_listener = Some(Arc::new(listener));
+        }
+
         // Setup qdb stuff
         let qdb_data = if let Some(data) = builder.qdb_data.take() {
             data.into_boxed_slice()
@@ -301,6 +314,12 @@ impl<H: AppHandler> Server<H> {
         if let Some(quic) = self.quic_listener.clone() {
             let srv = self.clone();
             self.listener_tracker.spawn(async move { srv.run_listener(quic).await });
+        }
+
+        #[cfg(feature = "websocket")]
+        if let Some(ws) = self.ws_listener.clone() {
+            let srv = self.clone();
+            self.listener_tracker.spawn(async move { srv.run_listener(ws).await });
         }
 
         self.listener_tracker.close();
@@ -1082,6 +1101,7 @@ impl<H: AppHandler> Server<H> {
             debug!("- {} (QUIC)", quic.address);
         }
 
+        #[cfg(feature = "websocket")]
         if let Some(ws) = &builder.ws_opts {
             debug!("- {} (WebSocket)", ws.address);
         }
