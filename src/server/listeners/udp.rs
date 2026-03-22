@@ -275,7 +275,6 @@ impl<H: AppHandler> UdpServerListener<H> {
         }
 
         // sure hope it's enough
-        // let mut out_buf = uninit_bytes::<256>();
         let mut out_buf = [0u8; 256];
         let mut writer = ByteWriter::new(&mut out_buf);
         writer.write_u8(MSG_PONG);
@@ -286,7 +285,7 @@ impl<H: AppHandler> UdpServerListener<H> {
         let mut protocol_count = 0;
         writer.write_u8(0);
 
-        // write the protocols, in order of preference: tcp > quic > udp
+        // write the protocols, in order of preference: tcp > quic > udp > ws
 
         if let Some(listener) = &server.tcp_listener {
             writer.write_u8(PROTO_TCP);
@@ -303,6 +302,13 @@ impl<H: AppHandler> UdpServerListener<H> {
 
         if let Some(listener) = &server.udp_listener {
             writer.write_u8(PROTO_UDP);
+            writer.write_u16(listener.port());
+            protocol_count += 1;
+        }
+
+        #[cfg(feature = "websocket")]
+        if let Some(listener) = &server.ws_listener {
+            writer.write_u8(PROTO_WEBSOCKET);
             writer.write_u16(listener.port());
             protocol_count += 1;
         }
