@@ -350,10 +350,10 @@ impl<H: AppHandler> UdpServerListener<H> {
 
         // adjust fragmentation limit, must be between 1000 and 1400
         if frag_limit == 0 {
-            frag_limit = UDP_PACKET_LIMIT as u16;
+            frag_limit = UDP_SAFE_MTU as u16;
         }
 
-        frag_limit = frag_limit.clamp(1000, UDP_PACKET_LIMIT as u16);
+        frag_limit = frag_limit.clamp(1000, UDP_MAX_ALLOWED_MTU as u16);
 
         let transport = QunetTransport::new_server(
             QunetTransportKind::Udp(ClientUdpTransport::new(socket, frag_limit as usize)),
@@ -376,7 +376,7 @@ impl<H: AppHandler> UdpServerListener<H> {
     ) -> Result<(), ListenerError> {
         // TODO: this causes the fragmentation limit to be forgotten about
         let transport = QunetTransport::new_server(
-            QunetTransportKind::Udp(ClientUdpTransport::new(socket, UDP_PACKET_LIMIT)),
+            QunetTransportKind::Udp(ClientUdpTransport::new(socket, UDP_SAFE_MTU)),
             peer,
             ProtocolVersion::current(),
             [0; 16],

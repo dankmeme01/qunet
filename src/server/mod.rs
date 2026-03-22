@@ -978,7 +978,7 @@ impl<H: AppHandler> Server<H> {
                         .await?;
 
                     return Ok(());
-                } else if size > UDP_PACKET_LIMIT {
+                } else if size > UDP_MAX_ALLOWED_MTU {
                     transport
                         .send_message(
                             QunetMessage::ConnectionError {

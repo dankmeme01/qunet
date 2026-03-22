@@ -29,7 +29,7 @@ use crate::{
         BufferKind, ClientCloseFlags, MsgData, PingFlags, QUNET_SMALL_MESSAGE_SIZE, QunetMessage,
         channel,
     },
-    protocol::{DEFAULT_PORT, ProtocolVersion, QunetConnectionError, UDP_PACKET_LIMIT},
+    protocol::{DEFAULT_PORT, ProtocolVersion, QunetConnectionError, UDP_SAFE_MTU},
     transport::{
         QunetMessageOpts, QunetTransport, QunetTransportKind, TransportError,
         TransportErrorOutcome, compression::CompressionHandlerImpl, tcp::ClientTcpTransport,
@@ -806,7 +806,7 @@ impl<H: EventHandler> Client<H> {
                 .send_message(
                     QunetMessage::HandshakeStart {
                         protocol_version: ProtocolVersion::current(),
-                        frag_limit: UDP_PACKET_LIMIT as u16,
+                        frag_limit: UDP_SAFE_MTU as u16,
                         qdb_hash: [0u8; 16],
                     },
                     None,

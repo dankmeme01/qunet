@@ -37,7 +37,9 @@ pub const QDB_ZSTD_COMPRESSION_LEVEL: i32 = 12;
 
 pub const DEFAULT_PORT: u16 = 4340;
 
-pub const UDP_PACKET_LIMIT: usize = 1400;
+pub const UDP_MAX_ALLOWED_MTU: usize = 1400;
+pub const UDP_SAFE_MTU: usize = 1200;
+
 pub const DEFAULT_MESSAGE_SIZE_LIMIT: usize = 1024 * 1024; // 1 MiB limit for incoming messages
 
 pub const HANDSHAKE_START_SIZE: usize = 1 + 2 + 2 + 2 + 16; // header, qunet ver, frag limit, qdb hash
