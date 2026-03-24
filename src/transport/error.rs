@@ -105,8 +105,10 @@ impl TransportError {
             TransportError::MessageChannelClosed
             | TransportError::ZeroLengthMessage
             | TransportError::MessageTooLong
+            | TransportError::DecodeError(_)
             | TransportError::Timeout
             | TransportError::TooUnreliable
+            | TransportError::DefragmentationError
             | TransportError::TooManyPendingFragments
             | TransportError::SuspendRequested
             | TransportError::IdleTimeout
@@ -114,6 +116,9 @@ impl TransportError {
 
             #[cfg(feature = "quic")]
             TransportError::QuicError(_) => TransportErrorOutcome::Terminate,
+
+            #[cfg(feature = "websocket")]
+            TransportError::WebSocketError(_) => TransportErrorOutcome::Terminate,
 
             // Errors that indicate a bug in qunet
             TransportError::CompressionError(_)
