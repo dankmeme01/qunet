@@ -38,6 +38,11 @@ impl HeapByteWriter {
     }
 
     #[inline]
+    pub fn written(&self) -> &[u8] {
+        &self.buffer[..self.pos]
+    }
+
+    #[inline]
     pub fn write_bytes(&mut self, data: &[u8]) {
         let len = data.len();
 
