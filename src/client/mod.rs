@@ -234,14 +234,14 @@ impl<H: EventHandler> Client<H> {
     }
 
     /// Send a data message to the server
-    pub async fn send_data(&self, data: &[u8]) -> bool {
+    pub fn send_data(&self, data: &[u8]) -> bool {
         let mut buf = self.request_buffer(data.len());
         buf.append_bytes(data);
         self.send_data_bufkind(buf)
     }
 
     /// Send an unreliable data message to the server
-    pub async fn send_unreliable_data(&self, data: &[u8]) -> bool {
+    pub fn send_unreliable_data(&self, data: &[u8]) -> bool {
         let mut buf = self.request_buffer(data.len());
         buf.append_bytes(data);
         self.send_unreliable_data_bufkind(buf)
