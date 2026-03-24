@@ -362,6 +362,20 @@ impl QunetMessage {
                     Ok(QunetMessage::ClientClose { flags })
                 }
 
+                MSG_SERVER_CLOSE => {
+                    let error_code_num = reader.read_u32()?;
+                    let error_code = QunetConnectionError::from_u32(error_code_num)
+                        .ok_or(QunetMessageDecodeError::InvalidErrorCode(error_code_num))?;
+
+                    let error_message = if error_code == QunetConnectionError::Custom {
+                        Some(Cow::Owned(reader.read_string_u16()?.to_owned()))
+                    } else {
+                        None
+                    };
+
+                    Ok(QunetMessage::ServerClose { error_code, error_message })
+                }
+
                 MSG_CLIENT_RECONNECT => {
                     let connection_id = reader.read_u64()?;
 
