@@ -391,13 +391,13 @@ impl QunetTransport {
         //     self.data.idle_timeout, self.data.keepalive_interval
         // );
 
-        if since_last_exchange >= self.data.keepalive_interval {
-            self.send_message(QunetMessage::Keepalive { timestamp: 0 }, None, &()).await?;
-        }
-
         if since_last_exchange >= self.data.idle_timeout {
             debug!("[{}] idle timeout reached, closing connection", self.data.address);
             return Err(TransportError::IdleTimeout);
+        }
+
+        if since_last_exchange >= self.data.keepalive_interval {
+            self.send_message(QunetMessage::Keepalive { timestamp: 0 }, None, &()).await?;
         }
 
         match &mut self.kind {
