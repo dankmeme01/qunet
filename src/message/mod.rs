@@ -357,7 +357,8 @@ impl QunetMessage {
                 }
 
                 MSG_CLIENT_CLOSE => {
-                    let flags = reader.read_bits::<ClientCloseFlags>()?;
+                    // older qunet-cpp didn't send the flags properly, so assume default if not sent
+                    let flags = reader.read_bits::<ClientCloseFlags>().unwrap_or_default();
 
                     Ok(QunetMessage::ClientClose { flags })
                 }
