@@ -109,6 +109,8 @@ pub(crate) struct QunetTransportData {
     pub last_data_exchange: Instant,
     pub keepalive_interval: Duration,
     pub compression_func: Arc<dyn ShouldCompressFn>,
+    /// True if this is a client transport that is connected to a server,
+    /// false if this is a server transport representing a connection to a client.
     pub is_client: bool,
     pub rate_limiter: RateLimiter,
 }
@@ -327,11 +329,16 @@ impl QunetTransport {
 
     #[inline]
     pub async fn receive_message(&mut self) -> Result<QunetMessage, TransportError> {
+        let res = self.receive_message_inner().await;
+
+        // if receive_message_inner returned eventually, that means the peer did send some data - even if invalid.
+        // always update the exchange time in that case, to try and avoid disconnecting clients that send invalid data.
+        // let our caller decide what they actually want to do with the error
         if !self.data.is_client {
             self.data.update_exchange_time();
         }
 
-        let msg = self.receive_message_inner().await?;
+        let msg = res?;
 
         // if the client exceeded the rate limit, forcibly disconnect them
         if !self.data.rate_limiter.consume() {
@@ -376,9 +383,13 @@ impl QunetTransport {
 
     #[inline]
     pub async fn handle_timer_expiry(&mut self) -> Result<(), TransportError> {
-        // if there's been no activity for a while, close the connection
+        // if there's been no activity for a while, close the connection or send a keepalive
         let now = Instant::now();
         let since_last_exchange = now.duration_since(self.data.last_data_exchange);
+        // debug!(
+        //     "since last exchange: {since_last_exchange:?}, idle timeout: {:?}, keepalive interval: {:?}",
+        //     self.data.idle_timeout, self.data.keepalive_interval
+        // );
 
         if since_last_exchange >= self.data.keepalive_interval {
             self.send_message(QunetMessage::Keepalive { timestamp: 0 }, None, &()).await?;
