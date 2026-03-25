@@ -31,7 +31,7 @@ tokio = { version = "1.49.0", features = [
 ] }
 tokio-util = { version = "0.7.18", default-features = false, features = ["rt"] }
 tracing = "0.1.44"
-lz4_flex = { version = "0.12.0", default-features = false, features = [
+lz4_flex = { version = "0.13.0", default-features = false, features = [
     "checked-decode",
 ] }
 dashmap = { version = "6.1.0", features = ["inline"] }

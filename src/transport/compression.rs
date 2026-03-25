@@ -1,5 +1,6 @@
 use std::{cell::RefCell, ops::DerefMut, sync::Arc};
 
+use lz4_flex::block::CompressTable;
 use thiserror::Error;
 use zstd_safe::{CCtx, CDict, DCtx, DDict};
 
@@ -8,6 +9,8 @@ use crate::{buffers::BufPool, message::BufferKind, protocol::MSG_ZSTD_COMPRESSIO
 thread_local! {
     static ZSTD_CCTX: RefCell<CCtx<'static>> = RefCell::new(CCtx::create());
     static ZSTD_DCTX: RefCell<DCtx<'static>> = RefCell::new(DCtx::create());
+
+    static LZ4_CCTX: RefCell<CompressTable> = RefCell::new(CompressTable::default());
 }
 
 #[derive(Debug, Error)]
@@ -95,7 +98,10 @@ pub fn zstd_decompress(
 }
 
 pub fn lz4_compress(data: &[u8], output: &mut [u8]) -> Result<usize, CompressError> {
-    Ok(lz4_flex::compress_into(data, output)?)
+    let result = LZ4_CCTX
+        .with_borrow_mut(|ctx| lz4_flex::block::compress_into_with_table(data, output, ctx));
+
+    Ok(result?)
 }
 
 pub fn lz4_decompress(data: &[u8], output: &mut [u8]) -> Result<usize, DecompressError> {
