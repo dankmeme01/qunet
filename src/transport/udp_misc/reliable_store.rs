@@ -357,7 +357,7 @@ impl ReliableStore {
 
     fn process_acks(&mut self, acks: &[u16]) {
         for ack in acks {
-            debug!("Remote acknowledged message with ID {}", ack);
+            trace!("Remote acknowledged message with ID {}", ack);
 
             // find the message in the local unacked queue
             let pos = self.local_unacked.iter().position(|m| m.message_id == *ack);

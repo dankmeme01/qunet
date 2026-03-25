@@ -685,7 +685,7 @@ impl<H: AppHandler> Server<H> {
             };
 
             // run cleanup
-            trace!(
+            debug!(
                 "connection {} terminated, suspending: {}",
                 transport.connection_id(),
                 should_suspend
