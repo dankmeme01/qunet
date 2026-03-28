@@ -1272,6 +1272,12 @@ pub struct WeakServerHandle<H: AppHandler> {
     inner: Weak<Server<H>>,
 }
 
+impl<H: AppHandler> Clone for WeakServerHandle<H> {
+    fn clone(&self) -> Self {
+        Self { inner: self.inner.clone() }
+    }
+}
+
 impl<H: AppHandler> WeakServerHandle<H> {
     pub fn upgrade(&self) -> Option<ServerHandle<H>> {
         self.inner.upgrade().map(ServerHandle::from)
