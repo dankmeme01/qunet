@@ -339,15 +339,22 @@ impl<H: AppHandler> Server<H> {
         loop {
             cfg_if::cfg_if! {
                 if #[cfg(unix)] {
+                    use tokio::signal::unix;
                     let wait_for_usr1 = {
-                        use tokio::signal::unix;
                         Box::pin(async move {
                             unix::signal(unix::SignalKind::user_defined1()).unwrap().recv().await.is_some()
+                        })
+                    };
+
+                    let wait_for_usr2 = {
+                        Box::pin(async move {
+                            unix::signal(unix::SignalKind::user_defined2()).unwrap().recv().await.is_some()
                         })
                     };
                 } else {
                     // this future will never complete
                     let wait_for_usr1 = Box::pin(async move { std::future::pending().await });
+                    let wait_for_usr2 = Box::pin(async move { std::future::pending().await });
                 }
             }
 
@@ -369,6 +376,10 @@ impl<H: AppHandler> Server<H> {
 
                 _ = wait_for_usr1 => {
                     self.app_handler.on_sigusr1(&self).await;
+                }
+
+                _ = wait_for_usr2 => {
+                    self.app_handler.on_sigusr2(&self).await;
                 }
             };
         }
