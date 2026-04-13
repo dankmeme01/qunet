@@ -1,6 +1,6 @@
 # Qunet protocol
 
-Current protocol version: v1.0
+Current protocol version: v1.1
 
 Table of contents:
 
@@ -317,6 +317,7 @@ The UDP transport layer modifies the qunet header to add the following flags for
 
 * Bit 5 (0 being least significant, 7 being most significant) - whether a **Fragmentation Information** extension follows this header
 * Bit 4 - whether a **Reliability Information** extension follows this header
+* Bit 3 - whether a **Message Boundary** extension follows this header. **Only set since protocol v1.1**
 
 Additionally, when fragmenting, this transport *may* set the compression/reliability bits to zeroes and omit the **Compression** or **Reliability** header extensions for all but one fragment, as this data is redundant.
 
@@ -332,6 +333,10 @@ If the **Fragmentation** bit is set, the following header is encoded after the q
 * Fragmented message ID (`u16`) - this should be unique per qunet message, exists to differentiate fragments of unrelated messages
 * Fragment index (`u16`) - only the lower 15 bits of this should be used (so maximum 32768 fragments), the top bit indicates if this is the last fragment
 
+If the **Message Boundary** bit is set, the following header is encoded after the qunet header and reliability/fragmentation headers:
+
+* Message length (`u16`) - total length of this specific message, including the qunet header byte, all extensions and the payload. See [Message Batching](#message-batching)
+
 Additionally, right after the qunet header and before UDP-specific extensions, the **Connection ID** (`u64`) must be included (**only for client -> server packets**). This applies to every message type except [HandshakeStart](#handshakestart), connection ID is completely omitted during the handshake.
 
 #### Framing
@@ -341,6 +346,18 @@ The implementation of this transport protocol should manually handle fragmentati
 If a message is longer than a specific preset limit (this can be the MTU of the link layer, or for safety a slightly lower number), the message should be split up into fragments. Each fragment includes the qunet header, with the **Fragmentation** bit set to 1, and followed by the **Fragmentation Information** header, which should contain a message ID (must be the same for all fragments), index of the fragment (starts from 0, increments for each fragment, top bit must be set for the last fragment), and the fragment offset, which indicates where to put this fragment.
 
 Once all the fragments have arrived, the message can be reassambled and decoded. If all the fragments don't arrive after a specified period of time, the message can be discarded. Clients and servers can also be configured to completely reject fragmented messages and return a [ConnectionError](#connectionerror) when receiving one.
+
+#### Message Batching
+
+The UDP transport normally tries to map messages to datagrams in a 1:1 fashion, that means sending one Qunet message causes one UDP packet to be sent (of course fragmentation and reliability may make a difference). This may not be very efficient if an application tries to send multiple small messages in a short period of time, and for this reason protocol v1.1 adds ability to send multiple messages as one packet.
+
+Grouping messages into one packet is done as the final thing before sending out the datagram, and it is also entirely applicable for fragments or reliable messages. For example, a 80-byte (final) fragment, a reliable data message and a regular message can all be transparently sent in one packet, making the transmission more efficient while ensuring the application doesn't see any difference.
+
+This optimization is entirely optional and flexible, endpoints may batch messages in various ways considering the following constraints:
+* The final message in a datagram must not have a **Message Boundary** extension. The remainder of the packet is treated as the rest of that message.
+* Only one non-data message can be sent in a single packet, and it must always be the last one, since it's impossible to define boundaries for non-data messages.
+
+Batching is done by taking serialized messages (after doing fragmentation/reliability processing) and attaching the **Message Boundary** extension to each of them (except the last) describing their length. Then all messages are encoded sequentially and sent as one datagram.
 
 ## QUIC
 
