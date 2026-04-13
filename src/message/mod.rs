@@ -425,40 +425,25 @@ impl QunetMessage {
 
         // try to pick the most efficient buffer kind
 
-        let buf_kind = if let RawOrSlice::Raw(QunetRawMessage::Large { buffer, .. }) = raw_msg {
-            BufferKind::Pooled {
-                buf: buffer,
-                pos: meta.data_offset,
-                size: data_len,
-            }
-        } else {
-            match raw_msg {
-                RawOrSlice::Raw(QunetRawMessage::Small { data, len }) => {
-                    debug_assert!(len <= QUNET_SMALL_MESSAGE_SIZE);
+        let buf_kind = match raw_msg {
+            RawOrSlice::Slice(data) => {
+                if data_len <= QUNET_SMALL_MESSAGE_SIZE {
+                    // note that when a Slice is passed, it is already offset
                     let mut small_buf = [0u8; QUNET_SMALL_MESSAGE_SIZE];
-                    small_buf[..data_len]
-                        .copy_from_slice(&data[meta.data_offset..meta.data_offset + data_len]);
+                    small_buf[..data_len].copy_from_slice(data);
 
                     BufferKind::Small { buf: small_buf, size: data_len }
+                } else {
+                    // request a buffer from the pool
+                    let mut buf = buffer_pool.get_or_heap(data_len);
+                    buf.append_bytes(data);
+
+                    buf
                 }
+            }
 
-                RawOrSlice::Slice(data) => {
-                    if data_len <= QUNET_SMALL_MESSAGE_SIZE {
-                        // note that when a Slice is passed, it is already offset
-                        let mut small_buf = [0u8; QUNET_SMALL_MESSAGE_SIZE];
-                        small_buf[..data_len].copy_from_slice(data);
-
-                        BufferKind::Small { buf: small_buf, size: data_len }
-                    } else {
-                        // request a buffer from the pool
-                        let mut buf = buffer_pool.get_or_heap(data_len);
-                        buf.append_bytes(data);
-
-                        buf
-                    }
-                }
-
-                RawOrSlice::Raw(_) => unreachable!(),
+            RawOrSlice::Raw(QunetRawMessage(buffer)) => {
+                buffer.into_subslice(meta.data_offset, data_len)
             }
         };
 

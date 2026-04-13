@@ -6,8 +6,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, trace, warn};
 
 use crate::{
-    buffers::{BufferPool, ByteReader, ByteWriter},
-    message::{PingFlags, QUNET_SMALL_MESSAGE_SIZE, QunetMessage, QunetRawMessage},
+    buffers::{BufPool, BufferPool, ByteReader, ByteWriter},
+    message::{BufferKind, PingFlags, QUNET_SMALL_MESSAGE_SIZE, QunetMessage, QunetRawMessage},
     protocol::*,
     server::{
         Server, ServerHandle,
@@ -137,11 +137,19 @@ impl<H: AppHandler> UdpServerListener<H> {
 
         // we try to reuse the same buffer when accepting packets,
         // only getting a new one when we give away this buffer to another task
-        let mut buf = self.buffer_pool.get_unchecked().await;
+        let mut buf = BufferKind::new_pooled(self.buffer_pool.get_unchecked().await);
 
         loop {
+            // SAFETY: we only read the initialized bytes
+            let wnd = unsafe { buf.write_window(UDP_MAX_ALLOWED_MTU).unwrap() };
+
             // TODO: dabble into recvmmsg for better performance, linux only
-            let (len, peer) = socket.recv_from(&mut buf).await.map_err(ListenerError::IoError)?;
+            let (len, peer) = socket.recv_from(wnd).await.map_err(ListenerError::IoError)?;
+
+            // SAFETY: we trust we read 'len' bytes
+            unsafe {
+                buf.set_len(len);
+            }
 
             if len == 0 {
                 continue;
@@ -195,15 +203,12 @@ impl<H: AppHandler> UdpServerListener<H> {
                     let mut msg_data = [0u8; QUNET_SMALL_MESSAGE_SIZE];
                     msg_data[..len].copy_from_slice(data);
 
-                    QunetRawMessage::Small { data: msg_data, len }
+                    QunetRawMessage(buf.clone_into_small())
                 } else {
-                    let msg = QunetRawMessage::Large { buffer: buf, len };
+                    let msg = QunetRawMessage(buf);
 
                     // get a new buffer for the next message
-                    buf = match self.buffer_pool.try_get() {
-                        Some(x) => x,
-                        None => self.buffer_pool.get_unchecked().await,
-                    };
+                    buf = self.buffer_pool.get_or_heap(UDP_MAX_ALLOWED_MTU);
 
                     msg
                 };

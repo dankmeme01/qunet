@@ -131,6 +131,31 @@ impl BufferKind {
         }
     }
 
+    /// Sets the length of the buffer. This should be called after you wrote into the buffer returned by write_window.
+    pub unsafe fn set_len(&mut self, len: usize) {
+        match self {
+            BufferKind::Heap(buf) => unsafe {
+                buf.set_len(len);
+            },
+            BufferKind::Pooled { size, .. } => {
+                *size = len;
+            }
+            BufferKind::Small { size, .. } => {
+                *size = len;
+            }
+
+            BufferKind::Reference(arc) => {
+                if let Some(inner) = Arc::get_mut(arc) {
+                    unsafe { inner.set_len(len) }
+                } else {
+                    panic!(
+                        "tried calling set_len on BufferKind::Reference with more than 1 reference"
+                    );
+                }
+            }
+        }
+    }
+
     /// Resets the buffer. Any held memory will be completely released, and the buffer
     /// will be reset to a `Heap` buffer with zero capacity.
     /// This is intended to be used when the buffer is no longer needed.
@@ -157,6 +182,54 @@ impl BufferKind {
         }
 
         out
+    }
+
+    pub fn into_subslice(self, r_offset: usize, r_size: usize) -> BufferKind {
+        match self {
+            BufferKind::Pooled { buf, pos, size } => {
+                debug_assert!(r_offset + r_size <= size);
+                BufferKind::Pooled {
+                    buf,
+                    pos: pos + r_offset,
+                    size: r_size,
+                }
+            }
+
+            BufferKind::Small { buf, size } => {
+                debug_assert!(size <= QUNET_SMALL_MESSAGE_SIZE);
+                debug_assert!(r_offset + r_size <= size);
+
+                let mut small_buf = [0u8; QUNET_SMALL_MESSAGE_SIZE];
+                small_buf[..r_size].copy_from_slice(&buf[r_offset..r_offset + r_size]);
+
+                BufferKind::Small { buf: small_buf, size: r_size }
+            }
+
+            BufferKind::Heap(mut heap) => {
+                debug_assert!(r_offset + r_size <= heap.len());
+
+                heap.copy_within(r_offset..r_offset + r_size, 0);
+                heap.truncate(r_size);
+
+                BufferKind::Heap(heap)
+            }
+
+            BufferKind::Reference(arc) => (*arc).clone().into_subslice(r_offset, r_size),
+        }
+    }
+}
+
+impl Clone for BufferKind {
+    fn clone(&self) -> Self {
+        let size = self.len();
+
+        if size <= QUNET_SMALL_MESSAGE_SIZE {
+            self.clone_into_small()
+        } else {
+            let mut new_buf = Self::new_heap(size);
+            new_buf.append_bytes(self);
+            new_buf
+        }
     }
 }
 

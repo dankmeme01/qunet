@@ -1,27 +1,14 @@
 use std::ops::Deref;
 
-use crate::buffers::PooledBuffer;
+use crate::message::BufferKind;
 
 pub const QUNET_SMALL_MESSAGE_SIZE: usize = 71; // 119
 
-pub enum QunetRawMessage {
-    Small {
-        data: [u8; QUNET_SMALL_MESSAGE_SIZE],
-        len: usize,
-    },
-
-    Large {
-        buffer: PooledBuffer,
-        len: usize,
-    },
-}
+pub struct QunetRawMessage(pub BufferKind);
 
 impl QunetRawMessage {
     pub fn as_bytes(&self) -> &[u8] {
-        match self {
-            QunetRawMessage::Small { data, len } => &data[..*len],
-            QunetRawMessage::Large { buffer, len } => &buffer[..*len],
-        }
+        self.0.deref()
     }
 }
 
