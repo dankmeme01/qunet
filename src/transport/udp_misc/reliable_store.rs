@@ -346,8 +346,8 @@ impl ReliableStore {
         let mut base = (micros * 3) / 2 + ACK_DELAY;
         base = base.max(175_000); // min 175ms
 
-        let shift = nth_attempt.min(5);
-        Duration::from_micros(base << shift)
+        let mult = nth_attempt.min(5) as u64;
+        Duration::from_micros(base * mult)
     }
 
     #[inline]
