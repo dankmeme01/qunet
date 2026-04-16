@@ -557,10 +557,14 @@ impl QunetMessage {
     }
 
     /// Calculates the header size of the message.
-    pub fn calc_header_size(&self) -> usize {
+    pub fn calc_header_size(&self, udp_client: bool) -> usize {
         match self {
             Self::Data { kind, reliability, compression } => {
                 let mut size = 1; // header byte
+
+                if udp_client {
+                    size += 8; // connection ID size for UDP client messages
+                }
 
                 if let Some(CompressionHeader { .. }) = compression {
                     size += 4; // compression header size

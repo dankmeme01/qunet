@@ -215,7 +215,7 @@ impl ClientUdpTransport {
 
         // decide if the message needs to be fragmented.
 
-        let unfrag_total_size = message.calc_header_size() + data.len();
+        let unfrag_total_size = message.calc_header_size(transport_data.is_client) + data.len();
 
         if unfrag_total_size <= self.mtu {
             // no fragmentation :)
@@ -261,7 +261,7 @@ impl ClientUdpTransport {
 
         // decide if the message needs to be fragmented.
 
-        let unfrag_total_size = message.calc_header_size() + data.len();
+        let unfrag_total_size = message.calc_header_size(transport_data.is_client) + data.len();
 
         if unfrag_total_size <= self.mtu {
             // no fragmentation :)
@@ -307,8 +307,13 @@ impl ClientUdpTransport {
         // first fragment must include reliability and compression headers if they are present, rest don't have to
 
         let frag_hdr_size = 4;
-        let first_payload_size = self.mtu - message.calc_header_size() - frag_hdr_size;
-        let rest_payload_size = self.mtu - 1 - frag_hdr_size;
+        let client = transport_data.is_client;
+        let conn_id_size = if client { 8 } else { 0 };
+
+        let first_payload_size =
+            self.mtu - message.calc_header_size(transport_data.is_client) - frag_hdr_size;
+        // qunet header, connection ID for clients, and fragmentation header
+        let rest_payload_size = self.mtu - 1 - conn_id_size - frag_hdr_size;
 
         let frag_message_id = self.frag_store.next_message_id();
 
