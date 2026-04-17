@@ -1,6 +1,6 @@
 # Qunet protocol
 
-Current protocol version: v1.1
+Current protocol version: v1.2
 
 Table of contents:
 
@@ -114,6 +114,7 @@ Message types:
 * 13 - [QdbChunkResponse](#qdbchunkresponse)
 * 14 - [ReconnectSuccess](#reconnectsuccess)
 * 15 - [ReconnectFailure](#reconnectfailure)
+* 16 - [ConnectionControl](#connectioncontrol)
 * 64 - QdbgToggle
 * 65 - QdbgReport
 * 128-255 (`1xxxxxxx` in binary) - Data
@@ -268,6 +269,26 @@ Message structure: empty
 
 Message structure: empty
 
+## ConnectionControl
+
+This is a message that allows setting/retrieving various settings for this connection.
+
+Message structure:
+* Code (`u16`) - type of the control message
+* 0 or more bytes - arbitrary payload
+
+### QUNET_CONNCTL_SET_MTU (0x0001)
+
+Sets the MTU that the server may obey when sending UDP packets. If the server chooses to obey it (it may choose not to, for example if the MTU is too low or too high), it guarantees the server will not send a UDP packet with payload size being larget than the supplied limit (fragmentation will apply).
+
+* MTU (`u16`)
+
+### QUNET_CONNCTL_PMTUD_PROBE (0x0040)
+
+Probe for Path MTU Discovery. The server must either echo the same message with the same payload, or quietly ignore it.
+* Length (`u16`)
+* Data
+
 ## Data
 
 This is a special message type for application data. It covers values from 128 to 255, aka all values with the most significant bit being `1`. The other 7 bits are used for flags:
@@ -338,6 +359,8 @@ If the **Message Boundary** bit is set, the following header is encoded after th
 * Message length (`u16`) - total length of this specific message, including the qunet header byte, all extensions and the payload. See [Message Batching](#message-batching)
 
 Additionally, right after the qunet header and before UDP-specific extensions, the **Connection ID** (`u64`) must be included (**only for client -> server packets**). This applies to every message type except [HandshakeStart](#handshakestart), connection ID is completely omitted during the handshake.
+
+UDP non-data messages may include padding at the end of the message. Because all non-data messages have a length that is either fixed or can be extracted from reading the header, arbitrary bytes may be added to the end of the packet, and they must not impact how the packet is decoded on the receiver end.
 
 #### Framing
 
