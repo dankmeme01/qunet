@@ -20,6 +20,10 @@ use super::udp_misc::ReliableStore;
 
 const MAX_HEADER_SIZE: usize = 1 + 4 + 20 + 8; // qunet, compression, reliability, fragmentation headers
 
+/// Pad all control messages to be at least 64 bytes, so that it's less likely they are dropped by bad middleboxes.
+/// 64 - 14 (ethernet) - 20 (ipv4) - 8 (udp) = 22 bytes
+const MINIMUM_UDP_PAYLOAD: usize = 22;
+
 pub(crate) struct ClientUdpTransport {
     socket: Arc<UdpSocketExt>,
     mtu: usize,
@@ -173,6 +177,12 @@ impl ClientUdpTransport {
             let mut body_writer = ByteWriter::new(&mut body_buf);
 
             msg.encode_control_msg(&mut header_writer, &mut body_writer)?;
+
+            let written_bytes = header_writer.pos() + body_writer.pos();
+            if written_bytes < MINIMUM_UDP_PAYLOAD {
+                let to_pad = MINIMUM_UDP_PAYLOAD - written_bytes;
+                write_padding(&mut body_writer, to_pad);
+            }
 
             let mut vecs =
                 [IoSlice::new(header_writer.written()), IoSlice::new(body_writer.written())];
@@ -518,5 +528,17 @@ impl ClientUdpTransport {
 
         self.socket.send_to_vectored(data, transport_data.address).await?;
         Ok(())
+    }
+}
+
+fn write_padding(writer: &mut ByteWriter<'_>, bytes: usize) {
+    let mut written = 0;
+    while written < bytes {
+        let to_write = (bytes - written).min(8);
+        let val = rand::random::<u64>();
+
+        writer.write_bytes(&val.to_ne_bytes()[..to_write]);
+
+        written += to_write;
     }
 }
