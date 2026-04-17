@@ -48,6 +48,10 @@ pub enum QunetMessageDecodeError {
     InvalidErrorCode(u32),
     #[error("QDB chunk is zero bytes")]
     QdbChunkZeroBytes,
+    #[error("Invalid connection control code: {0}")]
+    InvalidConnectionControlCode(u16),
+    #[error("Malformed connection control message")]
+    MalformedConnCtl,
 }
 
 pub(crate) enum DataMessageKind {
@@ -125,6 +129,11 @@ pub(crate) struct HandshakeQdbData {
     pub data: BufferKind,
 }
 
+pub(crate) enum ConnectionControlMessage {
+    SetMtu(u16),
+    PMTUDProbe(BufferKind),
+}
+
 pub(crate) enum QunetMessage {
     Ping {
         ping_id: u32,
@@ -197,6 +206,8 @@ pub(crate) enum QunetMessage {
 
     ReconnectSuccess,
     ReconnectFailure,
+
+    ConnectionControl(ConnectionControlMessage),
 
     Data {
         kind: DataMessageKind,
@@ -403,12 +414,46 @@ impl QunetMessage {
 
                 MSG_RECONNECT_FAILURE => Ok(QunetMessage::ReconnectFailure),
 
+                MSG_CONNECTION_CONTROL => {
+                    let code = reader.read_u16()?;
+                    Self::decode_conn_ctl_message(code, buffer_pool, &mut reader)
+                }
+
                 _ => Err(QunetMessageDecodeError::InvalidMessageType),
             }
         } else {
             // data message
             Self::decode_data_message(meta.bare, buffer_pool, RawOrSlice::Slice(meta.data))
         }
+    }
+
+    fn decode_conn_ctl_message<P: BufPool>(
+        code: u16,
+        buffer_pool: &P,
+        reader: &mut ByteReader<'_>,
+    ) -> Result<QunetMessage, QunetMessageDecodeError> {
+        Ok(QunetMessage::ConnectionControl(match code {
+            QUNET_CONNCTL_SET_MTU => {
+                let mtu = reader.read_u16()?;
+                ConnectionControlMessage::SetMtu(mtu)
+            }
+
+            QUNET_CONNCTL_PMTUD_PROBE => {
+                let size = reader.read_u16()? as usize;
+                let rem_bytes = reader.remaining_bytes();
+                if size > rem_bytes.len() {
+                    return Err(QunetMessageDecodeError::MalformedConnCtl);
+                }
+
+                let mut buf = buffer_pool.get_or_heap(size);
+                let wnd = unsafe { buf.write_window(size).unwrap() };
+                reader.read_bytes(wnd)?;
+
+                ConnectionControlMessage::PMTUDProbe(buf)
+            }
+
+            _ => return Err(QunetMessageDecodeError::InvalidConnectionControlCode(code)),
+        }))
     }
 
     fn decode_data_message<P: BufPool>(
@@ -707,6 +752,21 @@ impl QunetMessage {
                 header_writer.write_u8(MSG_RECONNECT_FAILURE)?;
             }
 
+            Self::ConnectionControl(ConnectionControlMessage::SetMtu(mtu)) => {
+                header_writer.write_u8(MSG_CONNECTION_CONTROL)?;
+                body_writer.write_u16(QUNET_CONNCTL_SET_MTU)?;
+                body_writer.write_u16(*mtu)?;
+            }
+
+            Self::ConnectionControl(ConnectionControlMessage::PMTUDProbe(data)) => {
+                assert!(data.len() <= u16::MAX as usize, "PMTUDProbe data length must fit in u16");
+
+                header_writer.write_u8(MSG_CONNECTION_CONTROL)?;
+                body_writer.write_u16(QUNET_CONNCTL_PMTUD_PROBE)?;
+                body_writer.write_u16(data.len() as u16)?;
+                body_writer.write_bytes(data)?;
+            }
+
             _ => panic!(
                 "QunetMessage::encode_control_msg: called with unexpected message: {}",
                 self.type_str()
@@ -780,6 +840,10 @@ impl QunetMessage {
             QunetMessage::QdbChunkResponse { .. } => "QdbChunkResponse",
             QunetMessage::ReconnectSuccess => "ReconnectSuccess",
             QunetMessage::ReconnectFailure => "ReconnectFailure",
+            QunetMessage::ConnectionControl(msg) => match msg {
+                ConnectionControlMessage::SetMtu(_) => "ConnectionControl::SetMtu",
+                ConnectionControlMessage::PMTUDProbe(_) => "ConnectionControl::PMTUDProbe",
+            },
             QunetMessage::Data { .. } => "Data",
         }
     }

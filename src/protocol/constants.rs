@@ -15,6 +15,7 @@ pub const MSG_QDB_CHUNK_REQUEST: u8 = 12;
 pub const MSG_QDB_CHUNK_RESPONSE: u8 = 13;
 pub const MSG_RECONNECT_SUCCESS: u8 = 14;
 pub const MSG_RECONNECT_FAILURE: u8 = 15;
+pub const MSG_CONNECTION_CONTROL: u8 = 16;
 
 pub const MSG_QDBG_TOGGLE: u8 = 64;
 pub const MSG_QDBG_REPORT: u8 = 65;
@@ -25,6 +26,9 @@ pub const MSG_DATA_END: u8 = 0xff;
 pub const MSG_DATA_MASK: u8 = MSG_DATA;
 
 pub const MSG_DATA_LAST_FRAGMENT_MASK: u16 = 0x8000; // most significant bit of fragment index
+
+pub const QUNET_CONNCTL_SET_MTU: u16 = 0x0001;
+pub const QUNET_CONNCTL_PMTUD_PROBE: u16 = 0x0040;
 
 pub const PROTO_TCP: u8 = 0x01;
 pub const PROTO_UDP: u8 = 0x02;
