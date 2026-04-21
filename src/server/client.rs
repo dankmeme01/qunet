@@ -110,7 +110,7 @@ impl<H: AppHandler> ClientState<H> {
             // clear all permits, to prevent future waits from erroneously completing instantly
             // it should be impossible for there to be more than 1 permit, since set_suspended is a no-op if the value isn't changing
             debug_assert!(self.suspended_sema.available_permits() <= 1);
-            let _ = self.suspended_sema.try_acquire();
+            self.suspended_sema.forget_permits(1);
         }
     }
 
