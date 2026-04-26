@@ -72,7 +72,7 @@ impl<'a> ByteReader<'a> {
     }
 
     #[inline]
-    pub fn skip_bytes(&mut self, len: usize) -> Result<()> {
+    pub fn skip_bytes(&mut self, len: usize) -> Result<&[u8]> {
         if self.pos + len > self.buffer.len() {
             return Err(ByteReaderError::OutOfBounds {
                 pos: self.pos + len,
@@ -80,8 +80,9 @@ impl<'a> ByteReader<'a> {
             });
         }
 
+        let slice = &self.buffer[self.pos..self.pos + len];
         self.pos += len;
-        Ok(())
+        Ok(slice)
     }
 
     #[inline]
