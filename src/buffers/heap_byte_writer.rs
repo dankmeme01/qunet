@@ -202,6 +202,14 @@ impl HeapByteWriter {
     pub fn into_vec(self) -> Vec<u8> {
         self.into_inner()
     }
+
+    #[inline]
+    pub fn perform_at<F: FnOnce(&mut Self)>(&mut self, pos: usize, f: F) {
+        let old_pos = self.pos;
+        self.set_pos(pos);
+        f(self);
+        self.set_pos(old_pos);
+    }
 }
 
 impl Write for HeapByteWriter {
