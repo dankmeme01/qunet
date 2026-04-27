@@ -194,6 +194,14 @@ impl HeapByteWriter {
 
         Ok(())
     }
+
+    pub fn into_inner(self) -> Vec<u8> {
+        self.buffer
+    }
+
+    pub fn into_vec(self) -> Vec<u8> {
+        self.into_inner()
+    }
 }
 
 impl Write for HeapByteWriter {
