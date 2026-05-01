@@ -62,6 +62,19 @@ impl RateLimiter {
         }
     }
 
+    /// Returns whether tokens were available, false means rate limit was exceeded
+    /// Will handle refilling the bucket as well
+    pub fn consume_many(&mut self, count: u32) -> bool {
+        self.catch_up();
+
+        if self.tokens >= count {
+            self.tokens -= count;
+            true
+        } else {
+            false
+        }
+    }
+
     fn catch_up(&mut self) {
         let now = time();
         let elapsed_ns = now - self.last_refill_time;
