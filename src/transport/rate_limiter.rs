@@ -1,10 +1,12 @@
+use std::num::NonZeroU32;
+
 #[derive(Debug, Clone)]
 pub struct RateLimiter {
     max: u32,
     tokens: u32,
     ns_to_refill_one: u64,
     last_refill_time: u64,
-    pow2_shift: Option<u32>,
+    pow2_shift: Option<NonZeroU32>,
 }
 
 fn time() -> u64 {
@@ -31,7 +33,7 @@ impl RateLimiter {
         }
 
         let pow2_shift = if ns_to_refill_one.is_power_of_two() {
-            Some(ns_to_refill_one.trailing_zeros())
+            NonZeroU32::new(ns_to_refill_one.trailing_zeros())
         } else {
             None
         };
@@ -80,7 +82,7 @@ impl RateLimiter {
         let elapsed_ns = now - self.last_refill_time;
 
         let full_ticks = if let Some(shift) = self.pow2_shift {
-            elapsed_ns >> shift
+            elapsed_ns >> shift.get()
         } else {
             elapsed_ns / self.ns_to_refill_one
         };
