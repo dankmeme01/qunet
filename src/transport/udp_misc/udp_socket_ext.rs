@@ -134,10 +134,11 @@ impl UdpSocketExt {
         let mut mmsg_batch: Vec<MMsgHdr> = Vec::with_capacity(BATCH_SIZE);
         let mut tmp_iovs: Vec<IoVec> = Vec::with_capacity(BATCH_SIZE);
 
-        loop {
-            let timeout = tokio::time::sleep(MAX_DELAY);
+        let timeout = tokio::time::sleep(MAX_DELAY);
+        tokio::pin!(timeout);
 
-            tokio::pin!(timeout);
+        loop {
+            timeout.as_mut().reset(tokio::time::Instant::now() + MAX_DELAY);
 
             loop {
                 tokio::select! {
