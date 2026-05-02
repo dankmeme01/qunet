@@ -280,7 +280,7 @@ impl<H: AppHandler> UdpServerListener<H> {
         }
 
         // sure hope it's enough
-        let mut out_buf = [0u8; 256];
+        let mut out_buf = [0u8; 512];
         let mut writer = ByteWriter::new(&mut out_buf);
         writer.write_u8(MSG_PONG);
         writer.write_u32(ping_id);
@@ -319,14 +319,14 @@ impl<H: AppHandler> UdpServerListener<H> {
         }
 
         // write application specific data
-        let appdata_start = writer.pos();
         writer.write_u16(0); // length, set to 0 for now
+        let appdata_start = writer.pos();
 
         server.write_ping_appdata(&mut writer)?;
 
         // preserve end position
         let end_pos = writer.pos();
-        let appdata_size = end_pos - appdata_start - 2;
+        let appdata_size = end_pos - appdata_start;
 
         // write protocol count and appdata size
         writer.set_pos(protocol_start);
