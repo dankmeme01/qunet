@@ -1,18 +1,21 @@
-use std::collections::VecDeque;
-use std::io::IoSlice;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::{
+    collections::VecDeque,
+    io::IoSlice,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use tracing::{debug, debug_span, trace};
 
-use crate::message::QunetUdpMessageIter;
 use crate::{
     buffers::ByteWriter,
     message::{
         BufferKind, ConnectionControlMessage, DataHeader, DataMessageKind, QunetMessage,
-        ReliabilityHeader, channel::RawMessageReceiver,
+        QunetUdpMessageIter, ReliabilityHeader, channel::RawMessageReceiver,
     },
     protocol::*,
     server::{Server, app_handler::AppHandler},
