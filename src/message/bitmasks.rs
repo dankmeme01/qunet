@@ -46,8 +46,11 @@ pub struct DataHeader {
     // bits 0 and 1 - compression
     pub compression: CompressionType,
 
-    // bits 2 and 3 - currently unused
-    pub padding: B2,
+    // bit 2 - currently unused
+    pub padding: B1,
+
+    // bit 3 - message boundary (UDP only)
+    pub has_boundary: bool,
 
     // bit 4 - reliability (UDP only)
     pub is_reliable: bool,

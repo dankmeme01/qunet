@@ -233,6 +233,12 @@ impl Clone for BufferKind {
     }
 }
 
+impl Default for BufferKind {
+    fn default() -> Self {
+        BufferKind::new_small()
+    }
+}
+
 impl Write for BufferKind {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         if self.append_bytes(buf) {

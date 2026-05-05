@@ -10,7 +10,10 @@ use std::{
 use crate::client::{Client, EventHandler};
 use crate::{
     buffers::HybridBufferPool,
-    message::{CompressionHeader, CompressionType, DataMessageKind, QunetMessage, channel},
+    message::{
+        CompressionHeader, CompressionType, ConnectionControlMessage, DataMessageKind,
+        QunetMessage, channel,
+    },
     protocol::{ProtocolVersion, QunetHandshakeError},
     server::{
         Server, ServerHandle, app_handler::AppHandler, builder::ShouldCompressFn,
@@ -451,6 +454,16 @@ impl QunetTransport {
 
             #[cfg(feature = "websocket")]
             QunetTransportKind::Ws(ws) => ws.send_message(&self.data, message).await,
+        }
+    }
+
+    pub async fn handle_conn_ctl(
+        &mut self,
+        msg: &mut ConnectionControlMessage,
+    ) -> Result<(), TransportError> {
+        match &mut self.kind {
+            QunetTransportKind::Udp(udp) => udp.handle_conn_ctl(msg, &mut self.data).await,
+            _ => Ok(()),
         }
     }
 

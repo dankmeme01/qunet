@@ -26,12 +26,18 @@ pub(crate) struct ReliabilityHeader {
     pub acks: heapless::Vec<u16, 8>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct MessageBoundaryHeader {
+    pub length: u16,
+}
+
 pub struct QunetMessageBareMeta {
     pub(crate) header_byte: u8,
     pub(crate) is_data: bool,
     pub(crate) compression_header: Option<CompressionHeader>,
     pub(crate) fragmentation_header: Option<FragmentationHeader>,
     pub(crate) reliability_header: Option<ReliabilityHeader>,
+    pub(crate) boundary_header: Option<MessageBoundaryHeader>,
     pub(crate) data_offset: usize,
 }
 
@@ -41,7 +47,11 @@ pub struct QunetMessageMeta<'a> {
 }
 
 impl<'a> QunetMessageMeta<'a> {
-    pub fn parse(data: &'a [u8], udp: bool) -> Result<Self, QunetMessageDecodeError> {
+    pub fn parse(
+        data: &'a [u8],
+        udp_headers: bool,
+        udp_conn_id: bool,
+    ) -> Result<Self, QunetMessageDecodeError> {
         assert!(!data.is_empty(), "data must not be empty");
 
         let header = DataHeader::from_bits(data[0]);
@@ -50,7 +60,7 @@ impl<'a> QunetMessageMeta<'a> {
             // control messages never have additional headers.. except UDP connection ID
             // we don't need to parse the connection ID, it's been done before us, but we need to align the data properly
 
-            let data_start = if udp { 9 } else { 1 };
+            let data_start = if udp_conn_id { 9 } else { 1 };
 
             if data.len() < data_start {
                 // Technically this code shouldn't ever be reachable, but let's be safe
@@ -64,6 +74,7 @@ impl<'a> QunetMessageMeta<'a> {
                     compression_header: None,
                     fragmentation_header: None,
                     reliability_header: None,
+                    boundary_header: None,
                     data_offset: data_start,
                 },
                 data: &data[data_start..],
@@ -83,12 +94,12 @@ impl<'a> QunetMessageMeta<'a> {
 
         // Connection ID, fragmentation and reliability headers are only present in UDP
 
-        if udp {
+        if udp_conn_id {
             // skip connection ID, it's already been parsed before
             reader.skip_bytes(8)?;
         }
 
-        let reliability_header = if udp && header.is_reliable() {
+        let reliability_header = if udp_headers && header.is_reliable() {
             let message_id = reader.read_u16()?;
             let ack_count = reader.read_u16()?.min(8);
 
@@ -104,7 +115,7 @@ impl<'a> QunetMessageMeta<'a> {
             None
         };
 
-        let fragmentation_header = if udp && header.is_fragmented() {
+        let fragmentation_header = if udp_headers && header.is_fragmented() {
             let message_id = reader.read_u16()?;
             let mut fragment_index = reader.read_u16()?;
 
@@ -121,19 +132,32 @@ impl<'a> QunetMessageMeta<'a> {
             None
         };
 
+        let boundary_header = if udp_headers && header.has_boundary() {
+            Some(MessageBoundaryHeader { length: reader.read_u16()? })
+        } else {
+            None
+        };
+
         let bare = QunetMessageBareMeta {
             header_byte: data[0],
             is_data: true,
             compression_header,
             fragmentation_header,
             reliability_header,
+            boundary_header,
             data_offset: reader.pos() + 1, // +1 for the header byte, it was not included in the reader
         };
 
-        Ok(QunetMessageMeta {
-            bare,
-            data: reader.remaining_bytes(),
-        })
+        let mut remainder = reader.remaining_bytes();
+        if let Some(len) = bare.boundary_header.as_ref().map(|x| x.length as usize) {
+            if remainder.len() < len {
+                return Err(QunetMessageDecodeError::MalformedBoundaryHeader);
+            } else {
+                remainder = &remainder[..len];
+            }
+        }
+
+        Ok(QunetMessageMeta { bare, data: remainder })
     }
 }
 

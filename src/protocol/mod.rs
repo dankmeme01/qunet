@@ -6,8 +6,8 @@ use std::fmt::Display;
 pub use constants::*;
 pub use error::{QunetConnectionError, QunetHandshakeError};
 
-/// Current protocol: v1.0
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 0 };
+/// Current protocol: v1.2
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 2 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct ProtocolVersion {

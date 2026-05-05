@@ -1033,6 +1033,10 @@ impl<H: AppHandler> Server<H> {
                     .await?;
             }
 
+            QunetMessage::ConnectionControl(ctl) => {
+                transport.handle_conn_ctl(ctl).await?;
+            }
+
             msg @ QunetMessage::Data { .. } => {
                 // The actual server implementation may do things that take a while, such as making a web request,
                 // fetching data from a database, etc. all leading to `handle_data_message` taking a while to complete.

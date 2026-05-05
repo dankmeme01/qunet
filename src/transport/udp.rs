@@ -1,15 +1,21 @@
-use std::io::IoSlice;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    collections::VecDeque,
+    io::IoSlice,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
-use tracing::{debug, debug_span};
+use tracing::{debug, debug_span, trace};
 
 use crate::{
     buffers::ByteWriter,
     message::{
-        BufferKind, DataHeader, DataMessageKind, QunetMessage, ReliabilityHeader,
-        channel::RawMessageReceiver,
+        BufferKind, ConnectionControlMessage, DataHeader, DataMessageKind, QunetMessage,
+        QunetUdpMessageIter, ReliabilityHeader, channel::RawMessageReceiver,
     },
     protocol::*,
     server::{Server, app_handler::AppHandler},
@@ -24,23 +30,31 @@ const MAX_HEADER_SIZE: usize = 1 + 4 + 20 + 8; // qunet, compression, reliabilit
 /// 64 - 14 (ethernet) - 20 (ipv4) - 8 (udp) = 22 bytes
 const MINIMUM_UDP_PAYLOAD: usize = 22;
 
+// TODO: implement message batching for sending
+
 pub(crate) struct ClientUdpTransport {
     socket: Arc<UdpSocketExt>,
-    mtu: usize,
+    mtu: AtomicUsize,
     receiver: Option<RawMessageReceiver>,
     rel_store: ReliableStore,
     frag_store: FragmentStore,
+    pending_queue: VecDeque<QunetMessage>,
 }
 
 impl ClientUdpTransport {
     pub fn new(socket: Arc<UdpSocketExt>, mtu: usize) -> Self {
         Self {
             socket,
-            mtu,
+            mtu: AtomicUsize::new(mtu),
             receiver: None,
             rel_store: ReliableStore::new(),
             frag_store: FragmentStore::new(),
+            pending_queue: VecDeque::new(),
         }
+    }
+
+    pub fn mtu(&self) -> usize {
+        self.mtu.load(Ordering::Relaxed)
     }
 
     #[allow(unused)] // Used in client implementation
@@ -75,11 +89,51 @@ impl ClientUdpTransport {
         self.rel_store.until_timer_expiry()
     }
 
+    pub async fn handle_conn_ctl(
+        &mut self,
+        msg: &mut ConnectionControlMessage,
+        transport_data: &mut QunetTransportData,
+    ) -> Result<(), TransportError> {
+        match msg {
+            ConnectionControlMessage::SetMtu(mtu) => {
+                debug!("received SetMtu({}) from connection {}", mtu, transport_data.connection_id);
+                if is_good_mtu(*mtu) {
+                    self.mtu.store(*mtu as usize, Ordering::Relaxed);
+                }
+            }
+
+            ConnectionControlMessage::PMTUDProbe(data) => {
+                trace!(
+                    "received PMTUDProbe ({} bytes) from connection {}",
+                    data.len(),
+                    transport_data.connection_id
+                );
+
+                // echo it back
+                self.send_message(
+                    transport_data,
+                    QunetMessage::ConnectionControl(ConnectionControlMessage::PMTUDProbe(
+                        std::mem::take(data),
+                    )),
+                    false,
+                )
+                .await?;
+            }
+        }
+
+        Ok(())
+    }
+
     #[inline]
     pub async fn receive_message(
         &mut self,
         transport_data: &mut QunetTransportData,
     ) -> Result<QunetMessage, TransportError> {
+        if let Some(msg) = self.pending_queue.pop_front() {
+            // we have a pending message, return it
+            return Ok(msg);
+        }
+
         if let Some(msg) = self.rel_store.pop_delayed_message() {
             // we have a delayed message, return it
             return Ok(msg);
@@ -96,6 +150,8 @@ impl ClientUdpTransport {
         &mut self,
         transport_data: &QunetTransportData,
     ) -> Result<Option<QunetMessage>, TransportError> {
+        debug_assert!(self.pending_queue.is_empty());
+
         let raw_msg = match &self.receiver {
             Some(r) => match r.recv().await {
                 Some(msg) => Ok(msg),
@@ -105,9 +161,26 @@ impl ClientUdpTransport {
             None => unreachable!("run_setup was not called before receiving messages"),
         }?;
 
-        let mut message =
-            QunetMessage::from_raw_udp_message(raw_msg, &*transport_data.buffer_pool)?;
+        let mut ret_msg = None;
+        for msg in QunetUdpMessageIter::new(raw_msg, &*transport_data.buffer_pool) {
+            if let Some(msg) = self.process_one(msg?, transport_data)? {
+                if ret_msg.is_none() {
+                    ret_msg = Some(msg);
+                } else {
+                    // already have a message to return, queue this one for later
+                    self.pending_queue.push_back(msg);
+                }
+            }
+        }
 
+        Ok(ret_msg)
+    }
+
+    fn process_one(
+        &mut self,
+        mut message: QunetMessage,
+        transport_data: &QunetTransportData,
+    ) -> Result<Option<QunetMessage>, TransportError> {
         if !message.is_data() {
             // control messages don't need special handling
             return Ok(Some(message));
@@ -227,7 +300,7 @@ impl ClientUdpTransport {
 
         let unfrag_total_size = message.calc_header_size(transport_data.is_client) + data.len();
 
-        if unfrag_total_size <= self.mtu {
+        if unfrag_total_size <= self.mtu() {
             // no fragmentation :)
             self.do_send_unfrag_data(&message, transport_data).await?;
 
@@ -273,7 +346,7 @@ impl ClientUdpTransport {
 
         let unfrag_total_size = message.calc_header_size(transport_data.is_client) + data.len();
 
-        if unfrag_total_size <= self.mtu {
+        if unfrag_total_size <= self.mtu() {
             // no fragmentation :)
             self.do_send_unfrag_data(message, transport_data).await?;
 
@@ -320,10 +393,11 @@ impl ClientUdpTransport {
         let client = transport_data.is_client;
         let conn_id_size = if client { 8 } else { 0 };
 
+        let mtu = self.mtu();
         let first_payload_size =
-            self.mtu - message.calc_header_size(transport_data.is_client) - frag_hdr_size;
+            mtu - message.calc_header_size(transport_data.is_client) - frag_hdr_size;
         // qunet header, connection ID for clients, and fragmentation header
-        let rest_payload_size = self.mtu - 1 - conn_id_size - frag_hdr_size;
+        let rest_payload_size = mtu - 1 - conn_id_size - frag_hdr_size;
 
         let frag_message_id = self.frag_store.next_message_id();
 
@@ -414,7 +488,7 @@ impl ClientUdpTransport {
         qdb_data: Option<&[u8]>,
         qdb_uncompressed_size: usize,
     ) -> Result<(), TransportError> {
-        let max_chunk_size = self.mtu - HANDSHAKE_HEADER_SIZE_WITH_QDB;
+        let max_chunk_size = self.mtu() - HANDSHAKE_HEADER_SIZE_WITH_QDB;
 
         let mut header_buf = [0u8; HANDSHAKE_HEADER_SIZE_WITH_QDB];
         let mut header_writer = ByteWriter::new(&mut header_buf);
@@ -523,7 +597,9 @@ impl ClientUdpTransport {
         #[cfg(debug_assertions)]
         {
             let total_len = data.iter().map(|x| x.len()).sum::<usize>();
-            assert!(total_len <= self.mtu, "Data exceeds MTU size: {} > {}", total_len, self.mtu);
+            let mtu = self.mtu();
+
+            assert!(total_len <= mtu, "Data exceeds MTU size: {} > {}", total_len, mtu);
         }
 
         self.socket.send_to_vectored(data, transport_data.address).await?;
@@ -541,4 +617,8 @@ fn write_padding(writer: &mut ByteWriter<'_>, bytes: usize) {
 
         written += to_write;
     }
+}
+
+fn is_good_mtu(mtu: u16) -> bool {
+    mtu >= 1000 && mtu as usize <= UDP_MAX_ALLOWED_MTU
 }
