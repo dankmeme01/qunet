@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::io::IoSlice;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -6,6 +7,7 @@ use std::time::Duration;
 
 use tracing::{debug, debug_span, trace};
 
+use crate::message::QunetUdpMessageIter;
 use crate::{
     buffers::ByteWriter,
     message::{
@@ -31,6 +33,7 @@ pub(crate) struct ClientUdpTransport {
     receiver: Option<RawMessageReceiver>,
     rel_store: ReliableStore,
     frag_store: FragmentStore,
+    pending_queue: VecDeque<QunetMessage>,
 }
 
 impl ClientUdpTransport {
@@ -41,6 +44,7 @@ impl ClientUdpTransport {
             receiver: None,
             rel_store: ReliableStore::new(),
             frag_store: FragmentStore::new(),
+            pending_queue: VecDeque::new(),
         }
     }
 
@@ -120,6 +124,11 @@ impl ClientUdpTransport {
         &mut self,
         transport_data: &mut QunetTransportData,
     ) -> Result<QunetMessage, TransportError> {
+        if let Some(msg) = self.pending_queue.pop_front() {
+            // we have a pending message, return it
+            return Ok(msg);
+        }
+
         if let Some(msg) = self.rel_store.pop_delayed_message() {
             // we have a delayed message, return it
             return Ok(msg);
@@ -136,6 +145,8 @@ impl ClientUdpTransport {
         &mut self,
         transport_data: &QunetTransportData,
     ) -> Result<Option<QunetMessage>, TransportError> {
+        debug_assert!(self.pending_queue.is_empty());
+
         let raw_msg = match &self.receiver {
             Some(r) => match r.recv().await {
                 Some(msg) => Ok(msg),
@@ -145,9 +156,26 @@ impl ClientUdpTransport {
             None => unreachable!("run_setup was not called before receiving messages"),
         }?;
 
-        let mut message =
-            QunetMessage::from_raw_udp_message(raw_msg, &*transport_data.buffer_pool)?;
+        let mut ret_msg = None;
+        for msg in QunetUdpMessageIter::new(raw_msg, &*transport_data.buffer_pool) {
+            if let Some(msg) = self.process_one(msg?, transport_data)? {
+                if ret_msg.is_none() {
+                    ret_msg = Some(msg);
+                } else {
+                    // already have a message to return, queue this one for later
+                    self.pending_queue.push_back(msg);
+                }
+            }
+        }
 
+        Ok(ret_msg)
+    }
+
+    fn process_one(
+        &mut self,
+        mut message: QunetMessage,
+        transport_data: &QunetTransportData,
+    ) -> Result<Option<QunetMessage>, TransportError> {
         if !message.is_data() {
             // control messages don't need special handling
             return Ok(Some(message));

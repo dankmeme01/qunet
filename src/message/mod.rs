@@ -52,6 +52,8 @@ pub enum QunetMessageDecodeError {
     InvalidConnectionControlCode(u16),
     #[error("Malformed connection control message")]
     MalformedConnCtl,
+    #[error("Malformed message boundary header, could not read enough bytes")]
+    MalformedBoundaryHeader,
 }
 
 pub(crate) enum DataMessageKind {
@@ -78,6 +80,7 @@ pub(crate) enum Protocol {
     Tcp = 1,
     Udp = 2,
     Quic = 3,
+    Ws = 4,
 }
 
 impl Protocol {
@@ -86,6 +89,7 @@ impl Protocol {
             1 => Some(Self::Tcp),
             2 => Some(Self::Udp),
             3 => Some(Self::Quic),
+            4 => Some(Self::Ws),
             _ => None,
         }
     }
@@ -117,6 +121,10 @@ impl PongProtocol {
 
     pub fn as_quic(&self) -> Option<u16> {
         if self.protocol == Protocol::Quic { Some(self.port) } else { None }
+    }
+
+    pub fn as_ws(&self) -> Option<u16> {
+        if self.protocol == Protocol::Ws { Some(self.port) } else { None }
     }
 }
 
@@ -216,11 +224,6 @@ pub(crate) enum QunetMessage {
     },
 }
 
-enum RawOrSlice<'a> {
-    Raw(QunetRawMessage),
-    Slice(&'a [u8]),
-}
-
 impl QunetMessage {
     pub fn new_data(buf: BufferKind) -> Self {
         QunetMessage::Data {
@@ -237,7 +240,7 @@ impl QunetMessage {
         data: &'a [u8],
         udp: bool,
     ) -> Result<QunetMessageMeta<'a>, QunetMessageDecodeError> {
-        QunetMessageMeta::parse(data, udp)
+        QunetMessageMeta::parse(data, udp, udp)
     }
 
     /// Get a buffer for additional data in a message.
@@ -274,8 +277,8 @@ impl QunetMessage {
         meta: QunetMessageMeta<'_>,
         buffer_pool: &P,
     ) -> Result<QunetMessage, QunetMessageDecodeError> {
-        let mut reader = ByteReader::new(meta.data);
         if !meta.bare.is_data {
+            let mut reader = ByteReader::new(meta.data);
             match meta.bare.header_byte {
                 MSG_PING => {
                     let ping_id = reader.read_u32()?;
@@ -423,7 +426,7 @@ impl QunetMessage {
             }
         } else {
             // data message
-            Self::decode_data_message(meta.bare, buffer_pool, RawOrSlice::Slice(meta.data))
+            Self::decode_data_message(meta.bare, buffer_pool, meta.data)
         }
     }
 
@@ -459,37 +462,24 @@ impl QunetMessage {
     fn decode_data_message<P: BufPool>(
         meta: QunetMessageBareMeta,
         buffer_pool: &P,
-        raw_msg: RawOrSlice<'_>,
+        data: &[u8],
     ) -> Result<QunetMessage, QunetMessageDecodeError> {
-        // we want to try and not copy data/request buffers if possible
-
-        let data_len = match raw_msg {
-            RawOrSlice::Raw(ref raw) => raw.len() - meta.data_offset,
-            RawOrSlice::Slice(data) => data.len(), // already offset
-        };
-
         // try to pick the most efficient buffer kind
+        let buf_kind = if data.len() <= QUNET_SMALL_MESSAGE_SIZE {
+            // note that when a slice is passed, it is already offset
+            let mut small_buf = [0u8; QUNET_SMALL_MESSAGE_SIZE];
+            small_buf[..data.len()].copy_from_slice(data);
 
-        let buf_kind = match raw_msg {
-            RawOrSlice::Slice(data) => {
-                if data_len <= QUNET_SMALL_MESSAGE_SIZE {
-                    // note that when a Slice is passed, it is already offset
-                    let mut small_buf = [0u8; QUNET_SMALL_MESSAGE_SIZE];
-                    small_buf[..data_len].copy_from_slice(data);
-
-                    BufferKind::Small { buf: small_buf, size: data_len }
-                } else {
-                    // request a buffer from the pool
-                    let mut buf = buffer_pool.get_or_heap(data_len);
-                    buf.append_bytes(data);
-
-                    buf
-                }
+            BufferKind::Small {
+                buf: small_buf,
+                size: data.len(),
             }
+        } else {
+            // request a buffer from the pool
+            let mut buf = buffer_pool.get_or_heap(data.len());
+            buf.append_bytes(data);
 
-            RawOrSlice::Raw(QunetRawMessage(buffer)) => {
-                buffer.into_subslice(meta.data_offset, data_len)
-            }
+            buf
         };
 
         let data_kind = if let Some(header) = meta.fragmentation_header {
@@ -503,22 +493,6 @@ impl QunetMessage {
             reliability: meta.reliability_header,
             compression: meta.compression_header,
         })
-    }
-
-    /// Decodes a `QunetRawMessage` into a `QunetMessage`. UDP is assumed.
-    #[inline]
-    pub fn from_raw_udp_message<P: BufPool>(
-        raw_msg: QunetRawMessage,
-        buffer_pool: &P,
-    ) -> Result<QunetMessage, QunetMessageDecodeError> {
-        let meta = QunetMessageMeta::parse(&raw_msg, true)?;
-
-        if !meta.bare.is_data {
-            // control message, no need to read the data
-            return Self::decode(meta, buffer_pool);
-        }
-
-        Self::decode_data_message(meta.bare, buffer_pool, RawOrSlice::Raw(raw_msg))
     }
 
     /// This function must only be used for UDP messages.
@@ -846,5 +820,46 @@ impl QunetMessage {
             },
             QunetMessage::Data { .. } => "Data",
         }
+    }
+}
+
+/// Iterator over batched messages in a single qunet message
+pub(crate) struct QunetUdpMessageIter<'a, P: BufPool> {
+    buf: BufferKind,
+    pos: usize,
+    eof: bool,
+    pool: &'a P,
+}
+
+impl<'a, P: BufPool> QunetUdpMessageIter<'a, P> {
+    pub fn new(msg: QunetRawMessage, pool: &'a P) -> Self {
+        Self {
+            buf: msg.0,
+            pos: 0,
+            eof: false,
+            pool,
+        }
+    }
+}
+
+impl<'a, P: BufPool> Iterator for QunetUdpMessageIter<'a, P> {
+    type Item = Result<QunetMessage, QunetMessageDecodeError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let remainder = &self.buf[self.pos..];
+        if remainder.is_empty() || self.eof {
+            return None;
+        }
+
+        // connection id is only present in the very first message in the batch
+        let expect_conn_id = self.pos == 0;
+        let meta = match QunetMessageMeta::parse(remainder, true, expect_conn_id) {
+            Ok(meta) => meta,
+            Err(e) => return Some(Err(e)),
+        };
+
+        self.pos += meta.bare.data_offset + meta.data.len();
+
+        Some(QunetMessage::decode(meta, self.pool))
     }
 }
