@@ -27,6 +27,8 @@ const MAX_HEADER_SIZE: usize = 1 + 4 + 20 + 8; // qunet, compression, reliabilit
 /// 64 - 14 (ethernet) - 20 (ipv4) - 8 (udp) = 22 bytes
 const MINIMUM_UDP_PAYLOAD: usize = 22;
 
+// TODO: implement message batching for sending
+
 pub(crate) struct ClientUdpTransport {
     socket: Arc<UdpSocketExt>,
     mtu: AtomicUsize,
