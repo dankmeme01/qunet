@@ -459,6 +459,22 @@ impl QunetMessage {
         }))
     }
 
+    fn decode_conn_ctl_message_size(
+        code: u16,
+        data: &[u8],
+    ) -> Result<usize, QunetMessageDecodeError> {
+        Ok(match code {
+            QUNET_CONNCTL_SET_MTU => 2,
+
+            QUNET_CONNCTL_PMTUD_PROBE => {
+                let length = ByteReader::new(data).read_u16()? as usize;
+                2 + length
+            }
+
+            _ => Err(QunetMessageDecodeError::InvalidConnectionControlCode(code))?,
+        })
+    }
+
     fn decode_data_message<P: BufPool>(
         meta: QunetMessageBareMeta,
         buffer_pool: &P,
@@ -862,4 +878,50 @@ impl<'a, P: BufPool> Iterator for QunetUdpMessageIter<'a, P> {
 
         Some(QunetMessage::decode(meta, self.pool))
     }
+}
+
+#[test]
+fn test_multi_msg_iterator() {
+    use crate::buffers::HybridBufferPool;
+
+    #[rustfmt::skip]
+    let data: &[u8] = &[
+        // keepalive header
+        0x3,
+        // connection id
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        // keepalive data
+        0x63, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+        // data (6 bytes)
+        0x88, 0x06, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+        // connection control (SetMTU = 0x578 aka 1400)
+        0x10, 0x01, 0x00, 0x78, 0x05,
+        // data (4 bytes)
+        0x80, 0x01, 0x02, 0x03, 0x04,
+    ];
+
+    let mut buf = BufferKind::new_heap(data.len());
+    buf.append_bytes(data);
+
+    let msg = QunetRawMessage(buf);
+    let buf_pool = HybridBufferPool::default();
+
+    let mut iter = QunetUdpMessageIter::new(msg, &buf_pool);
+
+    let first = iter.next().unwrap().unwrap();
+    assert!(matches!(first, QunetMessage::Keepalive { timestamp: 0x63 }));
+
+    let second = iter.next().unwrap().unwrap();
+    assert!(matches!(second, QunetMessage::Data { .. }));
+    assert_eq!(second.data_bytes(), Some(&[1, 2, 3, 4, 5, 6][..]));
+
+    let third = iter.next().unwrap().unwrap();
+    assert!(matches!(
+        third,
+        QunetMessage::ConnectionControl(ConnectionControlMessage::SetMtu(1400))
+    ));
+
+    let fourth = iter.next().unwrap().unwrap();
+    assert!(matches!(fourth, QunetMessage::Data { .. }));
+    assert_eq!(fourth.data_bytes(), Some(&[1, 2, 3, 4][..]));
 }

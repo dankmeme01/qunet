@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 
 use crate::{
     buffers::ByteReader,
-    message::{CompressionType, DataHeader, QunetMessageDecodeError},
+    message::{CompressionType, DataHeader, QunetMessage, QunetMessageDecodeError},
     protocol::*,
 };
 
@@ -64,7 +64,14 @@ impl<'a> QunetMessageMeta<'a> {
 
             if data.len() < data_start {
                 // Technically this code shouldn't ever be reachable, but let's be safe
-                return Err(QunetMessageDecodeError::MissingConnectionId);
+                return Err(QunetMessageDecodeError::InvalidHeader);
+            }
+
+            let mut reader = ByteReader::new(&data[data_start..]);
+            let data_len = Self::length_for_non_data_message(&mut reader, data[0])?;
+
+            if data.len() < data_start + data_len {
+                return Err(QunetMessageDecodeError::InvalidHeader);
             }
 
             return Ok(QunetMessageMeta {
@@ -77,7 +84,7 @@ impl<'a> QunetMessageMeta<'a> {
                     boundary_header: None,
                     data_offset: data_start,
                 },
-                data: &data[data_start..],
+                data: &data[data_start..data_start + data_len],
             });
         }
 
@@ -158,6 +165,104 @@ impl<'a> QunetMessageMeta<'a> {
         }
 
         Ok(QunetMessageMeta { bare, data: remainder })
+    }
+
+    pub fn length_for_non_data_message(
+        reader: &mut ByteReader,
+        header_byte: u8,
+    ) -> Result<usize, QunetMessageDecodeError> {
+        // add assertion so we don't forget to update this
+        assert_eq!(PROTOCOL_VERSION, ProtocolVersion { major: 1, minor: 2 });
+
+        Ok(match header_byte {
+            MSG_PING => 5,
+
+            MSG_PONG => {
+                let mut total = 0;
+
+                total += 4;
+                reader.skip_bytes(4)?;
+
+                let protocols = reader.read_u8()? as usize;
+                total += 1 + 3 * protocols;
+                reader.skip_bytes(3 * protocols)?;
+
+                let data_len = reader.read_u16()? as usize;
+                total += 2 + data_len;
+
+                total
+            }
+
+            MSG_KEEPALIVE => 9,
+
+            MSG_KEEPALIVE_RESPONSE => {
+                let mut total = 0;
+
+                total += 8;
+                reader.skip_bytes(8)?;
+
+                let data_len = reader.read_u16()? as usize;
+                total += 2 + data_len;
+
+                total
+            }
+
+            MSG_HANDSHAKE_START => 2 + 2 + 2 + 16,
+
+            MSG_HANDSHAKE_FINISH => {
+                let mut total = 0;
+
+                // connection id
+                total += 8;
+                reader.skip_bytes(8)?;
+
+                total += 1;
+                if reader.read_bool()? {
+                    total += 12;
+                    reader.skip_bytes(12)?;
+
+                    total += 4;
+                    total += reader.read_u32()? as usize;
+                }
+
+                total
+            }
+
+            MSG_HANDSHAKE_FAILURE => {
+                reader.skip_bytes(4)?;
+                4 + 2 + reader.read_u16()? as usize
+            }
+
+            MSG_CLIENT_CLOSE => 1,
+
+            MSG_SERVER_CLOSE => {
+                reader.skip_bytes(4)?;
+                4 + 2 + reader.read_u16()? as usize
+            }
+
+            MSG_CLIENT_RECONNECT => 8,
+
+            MSG_CONNECTION_ERROR => 4,
+
+            MSG_QDB_CHUNK_REQUEST => 8,
+
+            MSG_QDB_CHUNK_RESPONSE => {
+                reader.skip_bytes(4)?;
+                4 + 4 + reader.read_u32()? as usize
+            }
+
+            MSG_RECONNECT_SUCCESS => 0,
+            MSG_RECONNECT_FAILURE => 0,
+
+            MSG_CONNECTION_CONTROL => {
+                let code = reader.read_u16()?;
+                let msg_size =
+                    QunetMessage::decode_conn_ctl_message_size(code, reader.remaining_bytes())?;
+                2 + msg_size
+            }
+
+            _ => return Err(QunetMessageDecodeError::InvalidHeader),
+        })
     }
 }
 
