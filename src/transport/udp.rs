@@ -163,7 +163,12 @@ impl ClientUdpTransport {
 
         let mut ret_msg = None;
         for msg in QunetUdpMessageIter::new(raw_msg, &*transport_data.buffer_pool) {
-            if let Some(msg) = self.process_one(msg?, transport_data)? {
+            let msg = msg?;
+            if matches!(msg, QunetMessage::Padding) {
+                continue;
+            }
+
+            if let Some(msg) = self.process_one(msg, transport_data)? {
                 if ret_msg.is_none() {
                     ret_msg = Some(msg);
                 } else {
@@ -607,7 +612,13 @@ impl ClientUdpTransport {
     }
 }
 
-fn write_padding(writer: &mut ByteWriter<'_>, bytes: usize) {
+fn write_padding(writer: &mut ByteWriter<'_>, mut bytes: usize) {
+    assert!(bytes > 0);
+
+    // write a special padding message at the end that is understood by the parser
+    writer.write_u8(MSG_PADDING);
+    bytes -= 1;
+
     let mut written = 0;
     while written < bytes {
         let to_write = (bytes - written).min(8);

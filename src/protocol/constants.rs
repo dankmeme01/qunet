@@ -20,6 +20,8 @@ pub const MSG_CONNECTION_CONTROL: u8 = 16;
 pub const MSG_QDBG_TOGGLE: u8 = 64;
 pub const MSG_QDBG_REPORT: u8 = 65;
 
+pub const MSG_PADDING: u8 = 127;
+
 pub const MSG_DATA: u8 = 0x80;
 pub const MSG_DATA_START: u8 = 0x80;
 pub const MSG_DATA_END: u8 = 0xff;

@@ -117,6 +117,7 @@ Message types:
 * 16 - [ConnectionControl](#connectioncontrol)
 * 64 - QdbgToggle
 * 65 - QdbgReport
+* 127 - padding
 * 128-255 (`1xxxxxxx` in binary) - Data
 
 ## Ping
@@ -359,8 +360,6 @@ If the **Message Boundary** bit is set, the following header is encoded after th
 * Message length (`u16`) - length of the data in this specific message, excluding headers. See [Message Batching](#message-batching)
 
 Additionally, right after the qunet header and before UDP-specific extensions, the **Connection ID** (`u64`) must be included (**only for client -> server packets**). This applies to every message type except [HandshakeStart](#handshakestart), connection ID is completely omitted during the handshake.
-
-UDP non-data messages may include padding at the end of the message. Because all non-data messages have a length that is either fixed or can be extracted from reading the header, arbitrary bytes may be added to the end of the packet, and they must not impact how the packet is decoded on the receiver end.
 
 #### Framing
 

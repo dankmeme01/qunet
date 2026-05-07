@@ -217,6 +217,8 @@ pub(crate) enum QunetMessage {
 
     ConnectionControl(ConnectionControlMessage),
 
+    Padding,
+
     Data {
         kind: DataMessageKind,
         reliability: Option<ReliabilityHeader>,
@@ -421,6 +423,8 @@ impl QunetMessage {
                     let code = reader.read_u16()?;
                     Self::decode_conn_ctl_message(code, buffer_pool, &mut reader)
                 }
+
+                MSG_PADDING => Ok(QunetMessage::Padding),
 
                 _ => Err(QunetMessageDecodeError::InvalidMessageType),
             }
@@ -834,6 +838,7 @@ impl QunetMessage {
                 ConnectionControlMessage::SetMtu(_) => "ConnectionControl::SetMtu",
                 ConnectionControlMessage::PMTUDProbe(_) => "ConnectionControl::PMTUDProbe",
             },
+            QunetMessage::Padding => "Padding",
             QunetMessage::Data { .. } => "Data",
         }
     }
@@ -862,16 +867,17 @@ impl<'a, P: BufPool> Iterator for QunetUdpMessageIter<'a, P> {
     type Item = Result<QunetMessage, QunetMessageDecodeError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let remainder = &self.buf[self.pos..];
-        if remainder.is_empty() || self.eof {
+        if self.eof || self.pos >= self.buf.len() {
             return None;
         }
+
+        let remainder = &self.buf[self.pos..];
 
         // connection id is only present in the very first message in the batch
         let expect_conn_id = self.pos == 0;
         let meta = match QunetMessageMeta::parse(remainder, true, expect_conn_id) {
             Ok(meta) => meta,
-            Err(e) => return Some(Err(e)),
+            Err(e) => return Some(Err(dbg!(e))),
         };
 
         self.pos += meta.bare.data_offset + meta.data.len();
@@ -924,4 +930,39 @@ fn test_multi_msg_iterator() {
     let fourth = iter.next().unwrap().unwrap();
     assert!(matches!(fourth, QunetMessage::Data { .. }));
     assert_eq!(fourth.data_bytes(), Some(&[1, 2, 3, 4][..]));
+
+    assert!(iter.next().is_none());
+}
+
+#[test]
+fn test_padding() {
+    use crate::buffers::HybridBufferPool;
+
+    #[rustfmt::skip]
+    let data: &[u8] = &[
+        // keepalive header
+        0x3,
+        // connection id
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        // keepalive data
+        0x63, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+        // padding (header + 3 bytes, pads to 22 in total)
+        0x7f, 0x67, 0x67, 0x67,
+    ];
+
+    let mut buf = BufferKind::new_heap(data.len());
+    buf.append_bytes(data);
+
+    let msg = QunetRawMessage(buf);
+    let buf_pool = HybridBufferPool::default();
+
+    let mut iter = QunetUdpMessageIter::new(msg, &buf_pool);
+
+    let first = iter.next().unwrap().unwrap();
+    assert!(matches!(first, QunetMessage::Keepalive { timestamp: 0x63 }));
+
+    let second = iter.next().unwrap().unwrap();
+    assert!(matches!(second, QunetMessage::Padding));
+
+    assert!(iter.next().is_none());
 }

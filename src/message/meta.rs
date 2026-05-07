@@ -258,6 +258,8 @@ impl<'a> QunetMessageMeta<'a> {
                 2 + msg_size
             }
 
+            MSG_PADDING => reader.remaining(),
+
             _ => return Err(QunetMessageDecodeError::InvalidHeader),
         })
     }
