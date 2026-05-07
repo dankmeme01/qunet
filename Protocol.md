@@ -356,7 +356,7 @@ If the **Fragmentation** bit is set, the following header is encoded after the q
 
 If the **Message Boundary** bit is set, the following header is encoded after the qunet header and reliability/fragmentation headers:
 
-* Message length (`u16`) - total length of this specific message, including the qunet header byte, all extensions and the payload. See [Message Batching](#message-batching)
+* Message length (`u16`) - length of the data in this specific message, excluding headers. See [Message Batching](#message-batching)
 
 Additionally, right after the qunet header and before UDP-specific extensions, the **Connection ID** (`u64`) must be included (**only for client -> server packets**). This applies to every message type except [HandshakeStart](#handshakestart), connection ID is completely omitted during the handshake.
 
@@ -372,15 +372,13 @@ Once all the fragments have arrived, the message can be reassambled and decoded.
 
 #### Message Batching
 
-The UDP transport normally tries to map messages to datagrams in a 1:1 fashion, that means sending one Qunet message causes one UDP packet to be sent (of course fragmentation and reliability may make a difference). This may not be very efficient if an application tries to send multiple small messages in a short period of time, and for this reason protocol v1.1 adds ability to send multiple messages as one packet.
+The UDP transport normally tries to map messages to datagrams in a 1:1 fashion, that means sending one Qunet message causes one UDP packet to be sent (of course fragmentation and reliability may make a difference). This may not be very efficient if an application tries to send multiple small messages in a short period of time, and for this reason protocol v1.2 adds ability to send multiple messages as one packet.
 
 Grouping messages into one packet is done as the final thing before sending out the datagram, and it is also entirely applicable for fragments or reliable messages. For example, a 80-byte (final) fragment, a reliable data message and a regular message can all be transparently sent in one packet, making the transmission more efficient while ensuring the application doesn't see any difference.
 
-This optimization is entirely optional and flexible, endpoints may batch messages in various ways considering the following constraints:
-* The final message in a datagram must not have a **Message Boundary** extension. The remainder of the packet is treated as the rest of that message.
-* Only one non-data message can be sent in a single packet, and it must always be the last one, since it's impossible to define boundaries for non-data messages.
+Batching is done by taking serialized messages (after doing fragmentation/reliability processing) and attaching the **Message Boundary** extension to each of them (except the last) describing their length. Then all messages are encoded sequentially and sent as one datagram. Non-data messages cannot have extra headers, so their length is either a constant or derived from the data.
 
-Batching is done by taking serialized messages (after doing fragmentation/reliability processing) and attaching the **Message Boundary** extension to each of them (except the last) describing their length. Then all messages are encoded sequentially and sent as one datagram.
+This optimization is entirely optional and flexible, endpoints may batch messages in various ways. An endpoint that implements v1.2 must be able to correctly decode batched messages, but does not need to produce any itself.
 
 ## QUIC
 
