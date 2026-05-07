@@ -37,7 +37,6 @@ pub struct QunetMessageBareMeta {
     pub(crate) compression_header: Option<CompressionHeader>,
     pub(crate) fragmentation_header: Option<FragmentationHeader>,
     pub(crate) reliability_header: Option<ReliabilityHeader>,
-    pub(crate) boundary_header: Option<MessageBoundaryHeader>,
     pub(crate) data_offset: usize,
 }
 
@@ -81,7 +80,6 @@ impl<'a> QunetMessageMeta<'a> {
                     compression_header: None,
                     fragmentation_header: None,
                     reliability_header: None,
-                    boundary_header: None,
                     data_offset: data_start,
                 },
                 data: &data[data_start..data_start + data_len],
@@ -151,12 +149,11 @@ impl<'a> QunetMessageMeta<'a> {
             compression_header,
             fragmentation_header,
             reliability_header,
-            boundary_header,
             data_offset: reader.pos() + 1, // +1 for the header byte, it was not included in the reader
         };
 
         let mut remainder = reader.remaining_bytes();
-        if let Some(len) = bare.boundary_header.as_ref().map(|x| x.length as usize) {
+        if let Some(len) = boundary_header.as_ref().map(|x| x.length as usize) {
             if remainder.len() < len {
                 return Err(QunetMessageDecodeError::MalformedBoundaryHeader);
             } else {
