@@ -48,11 +48,20 @@ pub(crate) async fn make_socket(
     }
 
     if let Some(size) = recv_buffer_size {
-        socket.set_recv_buffer_size(size)?;
+        // the kernel doubles the value according to man pages, so divide by 2 for comparison
+        let old_size = socket.recv_buffer_size().unwrap_or_default() / 2;
+        if size > old_size {
+            debug!("increasing UDP recv buffer size from {old_size} to {size}");
+            socket.set_recv_buffer_size(size)?;
+        }
     }
 
     if let Some(size) = send_buffer_size {
-        socket.set_send_buffer_size(size)?;
+        let old_size = socket.send_buffer_size().unwrap_or_default() / 2;
+        if size > old_size {
+            debug!("increasing UDP send buffer size from {old_size} to {size}");
+            socket.set_send_buffer_size(size)?;
+        }
     }
 
     // disable IPV6_V6ONLY
