@@ -274,22 +274,7 @@ impl<H: AppHandler> UdpServerListener<H> {
         let ping_id = reader.read_u32()?;
         let flags = reader.read_bits::<PingFlags>()?;
 
-        if flags.no_protocols() {
-            let mut out_buf = [0u8; 10];
-            let mut writer = ByteWriter::new(&mut out_buf);
-
-            writer.write_u8(MSG_PONG);
-            writer.write_u32(ping_id);
-            writer.write_u8(0); // no protocols
-            writer.write_u16(0); // no app data
-
-            socket.send_to(writer.written(), peer).await.map_err(ListenerError::IoError)?;
-
-            return Ok(());
-        }
-
-        // sure hope it's enough
-        let mut out_buf = [0u8; 512];
+        let mut out_buf = [0u8; 1024];
         let mut writer = ByteWriter::new(&mut out_buf);
         writer.write_u8(MSG_PONG);
         writer.write_u32(ping_id);
@@ -300,31 +285,32 @@ impl<H: AppHandler> UdpServerListener<H> {
         writer.write_u8(0);
 
         // write the protocols, in order of preference: tcp > quic > udp > ws
+        if !flags.no_protocols() {
+            if let Some(listener) = &server.tcp_listener {
+                writer.write_u8(PROTO_TCP);
+                writer.write_u16(listener.port());
+                protocol_count += 1;
+            }
 
-        if let Some(listener) = &server.tcp_listener {
-            writer.write_u8(PROTO_TCP);
-            writer.write_u16(listener.port());
-            protocol_count += 1;
-        }
+            #[cfg(feature = "quic")]
+            if let Some(listener) = &server.quic_listener {
+                writer.write_u8(PROTO_QUIC);
+                writer.write_u16(listener.port());
+                protocol_count += 1;
+            }
 
-        #[cfg(feature = "quic")]
-        if let Some(listener) = &server.quic_listener {
-            writer.write_u8(PROTO_QUIC);
-            writer.write_u16(listener.port());
-            protocol_count += 1;
-        }
+            if let Some(listener) = &server.udp_listener {
+                writer.write_u8(PROTO_UDP);
+                writer.write_u16(listener.port());
+                protocol_count += 1;
+            }
 
-        if let Some(listener) = &server.udp_listener {
-            writer.write_u8(PROTO_UDP);
-            writer.write_u16(listener.port());
-            protocol_count += 1;
-        }
-
-        #[cfg(feature = "websocket")]
-        if let Some(listener) = &server.ws_listener {
-            writer.write_u8(PROTO_WEBSOCKET);
-            writer.write_u16(listener.port());
-            protocol_count += 1;
+            #[cfg(feature = "websocket")]
+            if let Some(listener) = &server.ws_listener {
+                writer.write_u8(PROTO_WEBSOCKET);
+                writer.write_u16(listener.port());
+                protocol_count += 1;
+            }
         }
 
         // write application specific data
