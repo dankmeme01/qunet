@@ -28,7 +28,7 @@ const MAX_HEADER_SIZE: usize = 1 + 4 + 20 + 8; // qunet, compression, reliabilit
 
 /// Pad all control messages to be at least 64 bytes, so that it's less likely they are dropped by bad middleboxes.
 /// 64 - 14 (ethernet) - 20 (ipv4) - 8 (udp) = 22 bytes
-const MINIMUM_UDP_PAYLOAD: usize = 22;
+pub(crate) const MINIMUM_UDP_PAYLOAD: usize = 22;
 
 // TODO: implement message batching for sending
 
@@ -612,7 +612,7 @@ impl ClientUdpTransport {
     }
 }
 
-fn write_padding(writer: &mut ByteWriter<'_>, mut bytes: usize) {
+pub(crate) fn write_padding(writer: &mut ByteWriter<'_>, mut bytes: usize) {
     assert!(bytes > 0);
 
     // write a special padding message at the end that is understood by the parser
