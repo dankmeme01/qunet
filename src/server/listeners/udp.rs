@@ -316,10 +316,11 @@ impl<H: AppHandler> UdpServerListener<H> {
             }
         }
 
-        // write application specific data
-        writer.write_u16(0); // length, set to 0 for now
-        let appdata_start = writer.pos();
+        let appdata_len_start = writer.pos();
+        writer.write_u16(0); // application data length, set to 0 for now
 
+        // write application specific data
+        let appdata_start = writer.pos();
         server.write_ping_appdata(&mut writer)?;
 
         // preserve end position
@@ -329,7 +330,7 @@ impl<H: AppHandler> UdpServerListener<H> {
         // write protocol count and appdata size
         writer.set_pos(protocol_start);
         writer.write_u8(protocol_count);
-        writer.set_pos(appdata_start);
+        writer.set_pos(appdata_len_start);
         writer.write_u16(appdata_size as u16);
 
         // restore end position
