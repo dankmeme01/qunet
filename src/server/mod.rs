@@ -351,10 +351,17 @@ impl<H: AppHandler> Server<H> {
                             unix::signal(unix::SignalKind::user_defined2()).unwrap().recv().await.is_some()
                         })
                     };
+
+                    let wait_for_term = {
+                        Box::pin(async move {
+                            unix::signal(unix::SignalKind::terminate()).unwrap().recv().await.is_some()
+                        })
+                    };
                 } else {
                     // this future will never complete
                     let wait_for_usr1 = Box::pin(async move { std::future::pending().await });
                     let wait_for_usr2 = Box::pin(async move { std::future::pending().await });
+                    let wait_for_term = Box::pin(async move { std::future::pending().await });
                 }
             }
 
@@ -371,6 +378,11 @@ impl<H: AppHandler> Server<H> {
 
                 _ = tokio::signal::ctrl_c() => {
                     info!("Interrupt received, trying to shut down gracefully");
+                    break;
+                }
+
+                _ = wait_for_term => {
+                    info!("Termination signal received, trying to shut down gracefully");
                     break;
                 }
 
