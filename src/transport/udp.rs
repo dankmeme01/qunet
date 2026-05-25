@@ -495,7 +495,7 @@ impl ClientUdpTransport {
     ) -> Result<(), TransportError> {
         let max_chunk_size = self.mtu() - HANDSHAKE_HEADER_SIZE_WITH_QDB;
 
-        let mut header_buf = [0u8; HANDSHAKE_HEADER_SIZE_WITH_QDB];
+        let mut header_buf = [0u8; 64];
         let mut header_writer = ByteWriter::new(&mut header_buf);
 
         header_writer.write_u8(MSG_HANDSHAKE_FINISH);
@@ -538,7 +538,10 @@ impl ClientUdpTransport {
         } else {
             debug!("Sending UDP handshake response (no QDB)");
 
-            // no qdb
+            // pad and send
+            let pad_bytes = MINIMUM_UDP_PAYLOAD.saturating_sub(header_writer.pos());
+            write_padding(&mut header_writer, pad_bytes);
+
             self.send_packet(header_writer.written(), transport_data).await?;
         }
 
@@ -613,7 +616,9 @@ impl ClientUdpTransport {
 }
 
 pub(crate) fn write_padding(writer: &mut ByteWriter<'_>, mut bytes: usize) {
-    assert!(bytes > 0);
+    if bytes == 0 {
+        return;
+    }
 
     // write a special padding message at the end that is understood by the parser
     writer.write_u8(MSG_PADDING);

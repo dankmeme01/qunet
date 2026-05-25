@@ -338,9 +338,7 @@ impl<H: AppHandler> UdpServerListener<H> {
 
         // write dummy bytes to reach the 64 bit mark
         let dummy_cnt = MINIMUM_UDP_PAYLOAD.saturating_sub(writer.written().len());
-        if dummy_cnt > 0 {
-            crate::transport::udp::write_padding(&mut writer, dummy_cnt);
-        }
+        crate::transport::udp::write_padding(&mut writer, dummy_cnt);
 
         // send the response
         socket.send_to(writer.written(), peer).await.map_err(ListenerError::IoError)?;
