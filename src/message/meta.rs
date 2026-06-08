@@ -226,15 +226,29 @@ impl<'a> QunetMessageMeta<'a> {
             }
 
             MSG_HANDSHAKE_FAILURE => {
-                reader.skip_bytes(4)?;
-                4 + 2 + reader.read_u16()? as usize
+                let mut total = 0;
+
+                let code = reader.read_u32()?;
+                total += 4;
+
+                if code == 0 {
+                    total += 2 + reader.read_u16()? as usize;
+                }
+                total
             }
 
             MSG_CLIENT_CLOSE => 1,
 
             MSG_SERVER_CLOSE => {
-                reader.skip_bytes(4)?;
-                4 + 2 + reader.read_u16()? as usize
+                let mut total = 0;
+
+                let code = reader.read_u32()?;
+                total += 4;
+
+                if code == 0 {
+                    total += 2 + reader.read_u16()? as usize;
+                }
+                total
             }
 
             MSG_CLIENT_RECONNECT => 8,
