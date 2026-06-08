@@ -113,15 +113,13 @@ impl<H: AppHandler> ServerListener<H> for TcpServerListener<H> {
                     Ok((stream, addr)) => Self::accept_connection(server.clone(), stream, addr),
 
                     Err(err) => {
-                        // unfortunately, EMFILE and ENFILE errors don't have a specific error kind,
-                        // we have to convert to string and check the contents
-                        let err_string = err.to_string();
+                        let os_err = err.raw_os_error();
 
-                        if err_string == "Too many open files" {
-                            error!("Failed to accept TCP connection: Too many open files. Server is unable to accept new connections until the limit is raised. Sleeping for 1 second to prevent log spam.");
+                        if os_err == Some(libc::EMFILE) || os_err == Some(libc::ENFILE) {
+                            error!("Failed to accept TCP connection: Too many open files. Server is unable to accept new connections until the limit is raised. Sleeping for 1 second to prevent log spam. Error: {err}");
                             tokio::time::sleep(Duration::from_secs(1)).await;
                         } else {
-                            error!("Failed to accept TCP connection: {err_string}");
+                            error!("Failed to accept TCP connection: {err}");
                         }
                     }
                 },
