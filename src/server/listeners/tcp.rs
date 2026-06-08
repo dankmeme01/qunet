@@ -115,7 +115,7 @@ impl<H: AppHandler> ServerListener<H> for TcpServerListener<H> {
                     Err(err) => {
                         let os_err = err.raw_os_error();
 
-                        if os_err == Some(libc::EMFILE) || os_err == Some(libc::ENFILE) {
+                        if is_fd_limit(os_err) {
                             error!("Failed to accept TCP connection: Too many open files. Server is unable to accept new connections until the limit is raised. Sleeping for 1 second to prevent log spam. Error: {err}");
                             tokio::time::sleep(Duration::from_secs(1)).await;
                         } else {
@@ -140,4 +140,14 @@ impl<H: AppHandler> ServerListener<H> for TcpServerListener<H> {
     fn port(&self) -> u16 {
         self.opts.address.port()
     }
+}
+
+#[cfg(unix)]
+fn is_fd_limit(err: Option<i32>) -> bool {
+    matches!(err, Some(libc::EMFILE) | Some(libc::ENFILE))
+}
+
+#[cfg(not(unix))]
+fn is_fd_limit(_err: Option<i32>) -> bool {
+    false
 }
