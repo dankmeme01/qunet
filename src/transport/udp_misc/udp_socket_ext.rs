@@ -181,10 +181,10 @@ impl UdpSocketExt {
 
         for (buf, sockaddr, socklen) in batch.iter() {
             debug_assert!(tmp_iovs.len() < tmp_iovs.capacity());
-            tmp_iovs.push(IoVec {
+            tmp_iovs.push(IoVec(libc::iovec {
                 iov_base: buf.as_ptr() as *mut _,
                 iov_len: buf.len(),
-            });
+            }));
             let iov = tmp_iovs.last().unwrap();
 
             let header = libc::msghdr {
@@ -197,7 +197,7 @@ impl UdpSocketExt {
                 msg_flags: 0,
             };
 
-            mmsg_batch.push(MMsgHdr { msg_hdr: header, msg_len: 0 });
+            mmsg_batch.push(MMsgHdr(libc::mmsghdr { msg_hdr: header, msg_len: 0 }));
         }
 
         // sendmmsg may not send everything at once, so loop until the request is satisfied
@@ -210,6 +210,12 @@ impl UdpSocketExt {
 
                 Err(e) => {
                     tracing::error!("Error in vectored send: {e}");
+                    tracing::error!("Dump of relevant packets ({})", mmsg_batch.len() - start_idx);
+                    for pkt in &mmsg_batch[start_idx..] {
+                        let m = &pkt.0.msg_hdr;
+                        tracing::error!("- {}", describe_msghdr(m));
+                    }
+
                     break;
                 }
             }
@@ -296,23 +302,28 @@ async fn vectored_msend(socket: &UdpSocket, data: &mut [MMsgHdr]) -> io::Result<
         .await
 }
 
+#[cfg(target_os = "linux")]
+fn describe_msghdr(m: &libc::msghdr) -> String {
+    let name =
+        unsafe { std::slice::from_raw_parts(m.msg_name as *const u8, m.msg_namelen as usize) };
+
+    format!(
+        "msghdr {{ name: {name:?}, iovlen: {}, controllen: {}, flags: {} }}",
+        m.msg_iovlen, m.msg_controllen, m.msg_flags
+    )
+}
+
 cfg_if! {
     if #[cfg(target_os = "linux")] {
         #[repr(C)]
-        struct MMsgHdr {
-            msg_hdr: libc::msghdr,
-            msg_len: libc::c_uint,
-        }
+        struct MMsgHdr(pub libc::mmsghdr);
 
         unsafe impl Send for MMsgHdr {}
         unsafe impl Sync for MMsgHdr {}
 
         #[cfg(target_os = "linux")]
         #[repr(C)]
-        struct IoVec {
-            iov_base: *mut libc::c_void,
-            iov_len: libc::size_t,
-        }
+        struct IoVec(pub libc::iovec);
 
         unsafe impl Send for IoVec {}
         unsafe impl Sync for IoVec {}
