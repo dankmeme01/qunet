@@ -191,7 +191,7 @@ impl QunetTransport {
             setup,
             client.buffer_pool.clone(),
             Duration::from_secs(60),
-            Duration::from_secs(30),
+            client.keepalive_interval,
             Arc::new(should_compress_adaptive),
             RateLimiter::new_unlimited(),
         )

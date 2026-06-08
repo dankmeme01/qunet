@@ -130,6 +130,7 @@ pub struct Client<H: EventHandler> {
     compressor: Mutex<CompressionHandlerImpl<HybridBufferPool>>,
     tx_msg_queue: (channel::Sender<QueuedMessage>, channel::Receiver<QueuedMessage>),
     disconnect_notify: Notify,
+    pub(crate) keepalive_interval: Duration,
 }
 
 impl Client<DefaultEventHandler> {
@@ -142,6 +143,8 @@ impl<H: EventHandler> Client<H> {
     pub fn from_builder(mut builder: ClientBuilder<H>) -> Self {
         let event_handler =
             builder.event_handler.take().expect("Event handler must be set in the builder");
+        let keepalive_interval =
+            builder.keepalive_interval.unwrap_or_else(|| Duration::from_secs(30));
 
         // init buffer pool
         let buffer_pool = Arc::new(HybridBufferPool::new(1024 * 8, 512 * 1024));
@@ -159,6 +162,7 @@ impl<H: EventHandler> Client<H> {
             compressor: Mutex::new(compressor),
             tx_msg_queue,
             disconnect_notify: Notify::new(),
+            keepalive_interval,
         }
     }
 
