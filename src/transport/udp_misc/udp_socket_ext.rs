@@ -71,6 +71,8 @@ impl UdpSocketExt {
     }
 
     pub async fn send_to(&self, data: &[u8], target: SocketAddr) -> io::Result<()> {
+        self.verify_target(&target)?;
+
         #[cfg(target_os = "linux")]
         {
             if self.should_batch(data.len()) {
@@ -93,6 +95,8 @@ impl UdpSocketExt {
         data: &mut [io::IoSlice<'_>],
         target: SocketAddr,
     ) -> io::Result<()> {
+        self.verify_target(&target)?;
+
         #[cfg(target_os = "linux")]
         {
             let total_len: usize = data.iter().map(|slice| slice.len()).sum();
@@ -121,6 +125,17 @@ impl UdpSocketExt {
 
     fn should_batch(&self, size: usize) -> bool {
         CAN_BATCH_SEND && self.worker_task.get().is_some() && size <= MAX_SIZE_TO_BATCH
+    }
+
+    fn verify_target(&self, target: &SocketAddr) -> io::Result<()> {
+        // user code may give us an invalid socket address with the port being 0,
+        // while this is almost definitely a bug in that code, we want to handle it earlier before it gets to `sendmmsg`,
+        // so that invalid input causes only that specific packet to fail, instead of causing an entire batch to be dropped.
+        if target.port() == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Target port cannot be zero"));
+        }
+
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]

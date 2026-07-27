@@ -167,6 +167,11 @@ impl<H: AppHandler> UdpServerListener<H> {
                 continue;
             }
 
+            if peer.port() == 0 {
+                debug!("[UDP {peer}] received packet with port 0, ignoring");
+                continue;
+            }
+
             let data = &buf[..len];
 
             // handle pings
@@ -245,7 +250,7 @@ impl<H: AppHandler> UdpServerListener<H> {
         loop {
             let (len, peer) = socket.recv_from(&mut buf).await.map_err(ListenerError::IoError)?;
 
-            if len == 0 || buf[0] != MSG_PING {
+            if len == 0 || buf[0] != MSG_PING || peer.port() == 0 {
                 // ignore empty packets or packets that are not ping messages
                 continue;
             }
