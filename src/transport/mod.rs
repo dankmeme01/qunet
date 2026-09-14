@@ -374,13 +374,16 @@ impl QunetTransport {
 
     #[inline]
     pub fn until_timer_expiry(&self) -> Option<Duration> {
-        let timeout = if self.data.is_client {
-            // for clients, the timer expires when we haven't sent any message in the keepalive interval
-            self.data.keepalive_interval.saturating_sub(self.data.last_data_sent.elapsed())
-        } else {
-            // for servers, the timer expires when we haven't received any message in the idle timeout interval
-            self.data.idle_timeout.saturating_sub(self.data.last_data_received.elapsed())
-        };
+        // for everyone, the timer expires when we haven't received any message in the idle timeout interval
+        let mut timeout =
+            self.data.idle_timeout.saturating_sub(self.data.last_data_received.elapsed());
+
+        if self.data.is_client {
+            // for clients, the timer additionaly expires when we haven't sent any message in the keepalive interval
+            timeout = timeout.min(
+                self.data.keepalive_interval.saturating_sub(self.data.last_data_sent.elapsed()),
+            );
+        }
 
         match &self.kind {
             QunetTransportKind::Udp(udp) => Some(udp.until_timer_expiry().min(timeout)),
@@ -402,7 +405,10 @@ impl QunetTransport {
 
         // have not received any message recently, close due to inactivity
         if since_received >= self.data.idle_timeout {
-            debug!("[{}] idle timeout reached, closing connection", self.data.address);
+            debug!(
+                "[{}] idle timeout reached, closing connection (no tx in {:?}, no rx in {:?})",
+                self.data.address, since_sent, since_received
+            );
             return Err(TransportError::IdleTimeout);
         }
 
