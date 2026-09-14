@@ -379,7 +379,7 @@ impl QunetTransport {
             self.data.idle_timeout.saturating_sub(self.data.last_data_received.elapsed());
 
         if self.data.is_client {
-            // for clients, the timer additionaly expires when we haven't sent any message in the keepalive interval
+            // for clients, the timer additionally expires when we haven't sent any message in the keepalive interval
             timeout = timeout.min(
                 self.data.keepalive_interval.saturating_sub(self.data.last_data_sent.elapsed()),
             );
