@@ -109,7 +109,8 @@ pub(crate) struct QunetTransportData {
     pub closed: bool,
     pub buffer_pool: Arc<HybridBufferPool>,
     pub idle_timeout: Duration,
-    pub last_data_exchange: Instant,
+    pub last_data_received: Instant,
+    pub last_data_sent: Instant,
     pub keepalive_interval: Duration,
     pub compression_func: Arc<dyn ShouldCompressFn>,
     /// True if this is a client transport that is connected to a server,
@@ -126,8 +127,19 @@ pub(crate) struct QunetTransport {
 
 impl QunetTransportData {
     #[inline]
-    fn update_exchange_time(&mut self) {
-        self.last_data_exchange = Instant::now();
+    fn update_received_time(&mut self) {
+        self.last_data_received = Instant::now();
+    }
+
+    #[inline]
+    fn update_sent_time(&mut self) {
+        self.last_data_sent = Instant::now();
+    }
+
+    fn update_both_times(&mut self) {
+        let now = Instant::now();
+        self.last_data_received = now;
+        self.last_data_sent = now;
     }
 
     pub fn message_size_limit(&self) -> usize {
@@ -218,7 +230,8 @@ impl QunetTransport {
                 closed: false,
                 setup,
                 buffer_pool,
-                last_data_exchange: Instant::now(),
+                last_data_received: Instant::now(),
+                last_data_sent: Instant::now(),
                 idle_timeout,
                 keepalive_interval,
                 compression_func,
@@ -273,9 +286,7 @@ impl QunetTransport {
         qdb_data: Option<&[u8]>,
         qdb_uncompressed_size: usize,
     ) -> Result<(), TransportError> {
-        if self.data.is_client {
-            self.data.update_exchange_time();
-        }
+        self.data.update_sent_time();
 
         match &mut self.kind {
             QunetTransportKind::Udp(udp) => {
@@ -303,7 +314,7 @@ impl QunetTransport {
         &mut self,
         server: &Server<H>,
     ) -> Result<(), TransportError> {
-        self.data.update_exchange_time();
+        self.data.update_both_times();
 
         match &mut self.kind {
             QunetTransportKind::Udp(udp) => udp.run_server_setup(&self.data, server).await,
@@ -335,11 +346,9 @@ impl QunetTransport {
         let res = self.receive_message_inner().await;
 
         // if receive_message_inner returned eventually, that means the peer did send some data - even if invalid.
-        // always update the exchange time in that case, to try and avoid disconnecting clients that send invalid data.
+        // always update the received time in that case, to try and avoid disconnecting clients that send invalid data.
         // let our caller decide what they actually want to do with the error
-        if !self.data.is_client {
-            self.data.update_exchange_time();
-        }
+        self.data.update_received_time();
 
         let msg = res?;
 
@@ -366,11 +375,11 @@ impl QunetTransport {
     #[inline]
     pub fn until_timer_expiry(&self) -> Option<Duration> {
         let timeout = if self.data.is_client {
-            // for clients, the timer expires when the keepalive interval is reached
-            self.data.keepalive_interval.saturating_sub(self.data.last_data_exchange.elapsed())
+            // for clients, the timer expires when we haven't sent any message in the keepalive interval
+            self.data.keepalive_interval.saturating_sub(self.data.last_data_sent.elapsed())
         } else {
-            // for servers, the timer expires when the idle timeout is reached
-            self.data.idle_timeout.saturating_sub(self.data.last_data_exchange.elapsed())
+            // for servers, the timer expires when we haven't received any message in the idle timeout interval
+            self.data.idle_timeout.saturating_sub(self.data.last_data_received.elapsed())
         };
 
         match &self.kind {
@@ -388,18 +397,17 @@ impl QunetTransport {
     pub async fn handle_timer_expiry(&mut self) -> Result<(), TransportError> {
         // if there's been no activity for a while, close the connection or send a keepalive
         let now = Instant::now();
-        let since_last_exchange = now.duration_since(self.data.last_data_exchange);
-        // debug!(
-        //     "since last exchange: {since_last_exchange:?}, idle timeout: {:?}, keepalive interval: {:?}",
-        //     self.data.idle_timeout, self.data.keepalive_interval
-        // );
+        let since_sent = now.duration_since(self.data.last_data_sent);
+        let since_received = now.duration_since(self.data.last_data_received);
 
-        if since_last_exchange >= self.data.idle_timeout {
+        // have not received any message recently, close due to inactivity
+        if since_received >= self.data.idle_timeout {
             debug!("[{}] idle timeout reached, closing connection", self.data.address);
             return Err(TransportError::IdleTimeout);
         }
 
-        if since_last_exchange >= self.data.keepalive_interval {
+        // have not sent any message recently, send a keepalive
+        if since_sent >= self.data.keepalive_interval {
             self.send_message(QunetMessage::Keepalive { timestamp: 0 }, None, &()).await?;
         }
 
@@ -428,9 +436,7 @@ impl QunetTransport {
         opts: Option<QunetMessageOpts>,
         ch: &C,
     ) -> Result<(), TransportError> {
-        if self.data.is_client {
-            self.data.update_exchange_time();
-        }
+        self.data.update_sent_time();
 
         let opts = opts.unwrap_or_default();
 
