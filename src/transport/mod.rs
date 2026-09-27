@@ -22,7 +22,7 @@ use crate::{
     transport::compression::CompressionHandler,
 };
 
-use tracing::trace;
+use tracing::{trace, warn};
 
 use self::{tcp::ClientTcpTransport, udp::ClientUdpTransport};
 
@@ -354,6 +354,10 @@ impl QunetTransport {
 
         // if the client exceeded the rate limit, forcibly disconnect them
         if !self.data.rate_limiter.consume() {
+            warn!(
+                "[{} @ {}] rate limit exceeded, disconnecting client",
+                self.data.connection_id, self.data.address
+            );
             return Err(TransportError::RateLimitExceeded);
         }
 
