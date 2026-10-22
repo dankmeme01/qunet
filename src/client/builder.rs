@@ -10,6 +10,7 @@ pub struct ClientBuilder<H: EventHandler = DefaultEventHandler> {
     pub(crate) event_handler: Option<H>,
     pub(crate) quic_cert_path: Option<PathBuf>,
     pub(crate) keepalive_interval: Option<Duration>,
+    pub(crate) connect_timeout: Option<Duration>,
 }
 
 impl<H: EventHandler> ClientBuilder<H> {
@@ -18,6 +19,7 @@ impl<H: EventHandler> ClientBuilder<H> {
             event_handler: Some(event_handler),
             quic_cert_path: self.quic_cert_path,
             keepalive_interval: self.keepalive_interval,
+            connect_timeout: self.connect_timeout,
         }
     }
 
@@ -28,6 +30,11 @@ impl<H: EventHandler> ClientBuilder<H> {
 
     pub fn with_keepalive_interval(mut self, interval: Duration) -> Self {
         self.keepalive_interval = Some(interval);
+        self
+    }
+
+    pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
+        self.connect_timeout = Some(timeout);
         self
     }
 
