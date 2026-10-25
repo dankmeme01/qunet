@@ -3,7 +3,7 @@ use std::{
     ops::Deref,
     path::PathBuf,
     str::FromStr,
-    sync::{Arc, atomic::Ordering},
+    sync::{Arc, Weak, atomic::Ordering},
     time::{Duration, Instant},
 };
 
@@ -915,6 +915,18 @@ pub struct ClientHandle<H: EventHandler> {
     inner: Arc<Client<H>>,
 }
 
+impl<H: EventHandler> ClientHandle<H> {
+    pub fn new(client: Client<H>) -> Self {
+        Self { inner: Arc::new(client) }
+    }
+
+    pub fn downgrade(&self) -> WeakClientHandle<H> {
+        WeakClientHandle {
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
+}
+
 impl<H: EventHandler> Clone for ClientHandle<H> {
     fn clone(&self) -> Self {
         Self { inner: Arc::clone(&self.inner) }
@@ -926,5 +938,21 @@ impl<H: EventHandler> Deref for ClientHandle<H> {
 
     fn deref(&self) -> &Self::Target {
         &self.inner
+    }
+}
+
+pub struct WeakClientHandle<H: EventHandler> {
+    inner: Weak<Client<H>>,
+}
+
+impl<H: EventHandler> Clone for WeakClientHandle<H> {
+    fn clone(&self) -> Self {
+        Self { inner: self.inner.clone() }
+    }
+}
+
+impl<H: EventHandler> WeakClientHandle<H> {
+    pub fn upgrade(&self) -> Option<ClientHandle<H>> {
+        self.inner.upgrade().map(|arc| ClientHandle { inner: arc })
     }
 }

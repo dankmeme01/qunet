@@ -60,7 +60,7 @@ impl<H: AppHandler> ClientState<H> {
         &self.app_data
     }
 
-    pub async fn send_data(&self, data: &[u8], server: &Server<H>) -> bool {
+    pub fn send_data(&self, data: &[u8], server: &Server<H>) -> bool {
         let mut buf = server.request_buffer(data.len());
         buf.append_bytes(data);
         self.send_data_bufkind(buf)

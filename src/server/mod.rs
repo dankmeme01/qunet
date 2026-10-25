@@ -1280,7 +1280,7 @@ impl<H: AppHandler> ServerHandle<H> {
         Server::run_server(self.clone()).await
     }
 
-    pub fn make_weak(&self) -> WeakServerHandle<H> {
+    pub fn downgrade(&self) -> WeakServerHandle<H> {
         WeakServerHandle {
             inner: Arc::downgrade(&self.inner),
         }
