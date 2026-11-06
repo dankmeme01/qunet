@@ -11,7 +11,8 @@ use atomic_enum::atomic_enum;
 use hickory_resolver::{
     Resolver,
     config::{LookupIpStrategy, ResolverOpts},
-    name_server::TokioConnectionProvider,
+    net::runtime::TokioRuntimeProvider,
+    proto::rr::RData,
 };
 use nohash_hasher::IntMap;
 use socket2::Domain;
@@ -88,7 +89,7 @@ pub enum ConnectionError {
     #[error("Invalid protocol in URL")]
     InvalidProtocol,
     #[error("DNS resolution failed: {0}")]
-    DnsError(#[from] hickory_resolver::ResolveError),
+    DnsError(#[from] hickory_resolver::net::NetError),
     #[error("DNS resolution failed: no results")]
     DnsNoResults,
     #[error("All connection attempts failed")]
@@ -167,10 +168,11 @@ pub struct Client<H: EventHandler> {
     pub(crate) event_handler: H,
     pub(crate) buffer_pool: Arc<HybridBufferPool>,
     conn_state: AtomicConnectionState,
-    resolver: Option<Resolver<TokioConnectionProvider>>,
+    resolver: Option<Resolver<TokioRuntimeProvider>>,
     compressor: Mutex<CompressionHandlerImpl<HybridBufferPool>>,
     tx_msg_queue: (channel::Sender<QueuedMessage>, channel::Receiver<QueuedMessage>),
     disconnect_notify: Notify,
+    #[cfg(feature = "quic")]
     quic_cert_path: Option<PathBuf>,
     connect_timeout: Duration,
     pub(crate) keepalive_interval: Duration,
@@ -204,6 +206,7 @@ impl<H: EventHandler> Client<H> {
             compressor: Mutex::new(compressor),
             tx_msg_queue,
             disconnect_notify: Notify::new(),
+            #[cfg(feature = "quic")]
             quic_cert_path: builder.quic_cert_path,
             connect_timeout: builder.connect_timeout.unwrap_or(Duration::from_secs(10)),
             keepalive_interval,
@@ -218,7 +221,8 @@ impl<H: EventHandler> Client<H> {
 
         // Note here: builder_tokio automatically uses /etc/resolv.conf for us
         // This does not happen in `builder_with_config` for some reason
-        self.resolver = Some(Resolver::builder_tokio().unwrap().with_options(opts).build());
+        self.resolver =
+            Some(Resolver::builder_tokio().unwrap().with_options(opts).build().unwrap());
 
         self.event_handler.post_setup(self).await.map_err(ClientOutcome::CustomError)?;
 
@@ -440,29 +444,27 @@ impl<H: EventHandler> Client<H> {
     async fn _dns_fetch_srv(&self, hostname: &str) -> Result<Vec<SocketAddr>, ConnectionError> {
         let resolver = self.resolver.as_ref().unwrap();
 
-        trace!("looking up SRV {hostname}");
+        trace!("looking up SRV for {hostname}");
 
-        let res = resolver.srv_lookup(hostname).await?;
-        let record = match res.iter().next() {
-            Some(record) => record,
-            None => return Err(ConnectionError::DnsNoResults),
-        };
-
-        let sockaddrs: Vec<_> = res
-            .ip_iter()
-            .map(|x| {
-                let port = record.port();
-                SocketAddr::new(x, if port != 0 { port } else { DEFAULT_PORT })
+        let result = resolver
+            .srv_lookup(hostname)
+            .await?
+            .answers()
+            .iter()
+            .filter_map(|ans| match &ans.data {
+                RData::SRV(srv) => Some((srv.target.to_utf8(), srv.port)),
+                _ => None,
             })
-            .collect();
+            .next();
 
-        trace!("{hostname} (SRV) -> {sockaddrs:?}");
+        match result {
+            Some((target, port)) => {
+                debug!("SRV {hostname} -> {target}:{port}");
+                self._dns_fetch_ip(&target, port).await
+            }
 
-        if sockaddrs.is_empty() {
-            return Err(ConnectionError::DnsNoResults);
+            None => Err(ConnectionError::DnsNoResults),
         }
-
-        Ok(sockaddrs)
     }
 
     async fn _ping_addrs(

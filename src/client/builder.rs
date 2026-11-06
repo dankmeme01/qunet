@@ -8,6 +8,7 @@ use crate::client::{
 #[derive(Default, Debug)]
 pub struct ClientBuilder<H: EventHandler = DefaultEventHandler> {
     pub(crate) event_handler: Option<H>,
+    #[cfg(feature = "quic")]
     pub(crate) quic_cert_path: Option<PathBuf>,
     pub(crate) keepalive_interval: Option<Duration>,
     pub(crate) connect_timeout: Option<Duration>,
@@ -17,12 +18,14 @@ impl<H: EventHandler> ClientBuilder<H> {
     pub fn with_event_handler<E: EventHandler>(self, event_handler: E) -> ClientBuilder<E> {
         ClientBuilder {
             event_handler: Some(event_handler),
+            #[cfg(feature = "quic")]
             quic_cert_path: self.quic_cert_path,
             keepalive_interval: self.keepalive_interval,
             connect_timeout: self.connect_timeout,
         }
     }
 
+    #[cfg(feature = "quic")]
     pub fn with_quic_cert_path<P: Into<PathBuf>>(mut self, path: P) -> Self {
         self.quic_cert_path = Some(path.into());
         self

@@ -132,6 +132,9 @@ impl BufferKind {
     }
 
     /// Sets the length of the buffer. This should be called after you wrote into the buffer returned by write_window.
+    ///
+    /// # Safety
+    /// the length must not exceed the capacity of the buffer, and uninitialized data must not be read
     pub unsafe fn set_len(&mut self, len: usize) {
         match self {
             BufferKind::Heap(buf) => unsafe {
